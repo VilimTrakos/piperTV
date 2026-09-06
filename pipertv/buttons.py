@@ -22,7 +22,6 @@ _ROWS = [
     ("playback", [("rewind", "Rewind"), ("play", "Play"), ("fast_forward", "Fast forward")]),
     ("playback", [("previous", "Previous"), ("pause", "Pause"), ("next", "Next")]),
     ("playback", [("record", "Record"), ("three_d", "3D"), ("stop", "Stop")]),
-    ("teletext", [("text", "Text"), ("subtitles", "Subtitles"), ("text_mix", "Text mix")]),
     ("teletext", [("tv_radio", "TV / Radio"), ("audio", "Audio"), ("format", "Picture format")]),
 ]
 

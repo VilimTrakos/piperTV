@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f4f5f1">
+  <title>Piper TV · Remote recorder</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Piper TV home"><span class="brand-mark" aria-hidden="true">p<span>·</span></span><span>Piper<span class="brand-light">TV</span></span></a>
+    <span class="header-label">IR REMOTE STUDIO</span>
+    <a class="button button-small button-outline" href="/api/export" download="remote.json" id="export-all">Export library <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main>
+    <div class="page-heading"><div><div class="eyebrow">LEARN IT. KEEP IT. USE IT AGAIN.</div><h1>Every button, captured.</h1><p>Turn your TV remote into a reusable library of infrared signals.</p></div><div class="library-count"><strong id="saved-count">0</strong><span>of <span id="total-count">—</span> buttons saved</span></div></div>
+    <div id="demo-banner" class="demo-banner" hidden><span class="demo-tag">DEMO</span><span>You’re trying simulated signals. The GPIO receiver is not used in demo mode.</span></div>
+    <div id="global-error" class="notice error-notice" role="alert" hidden></div>
+
+    <div class="workspace">
+      <section class="remote-panel" aria-labelledby="remote-heading">
+        <div class="panel-heading"><div><span class="eyebrow">01 / SELECT</span><h2 id="remote-heading">Your remote</h2></div><span class="small-pill">ONE FOR ALL</span></div>
+        <p class="panel-description">Choose the button you want to learn.</p>
+        <div class="remote-stage"><div id="remote" class="remote" aria-label="TV remote buttons"><div class="remote-top" aria-hidden="true"><span class="ir-window"></span></div><div id="remote-keys"></div><div class="remote-brand" aria-hidden="true">ONE<span>FOR ALL</span></div></div></div>
+        <div class="remote-legend"><span><i class="legend-selected"></i>Selected</span><span><i class="legend-saved"></i>Saved</span></div>
+        <p class="remote-note">Some icons are small in the reference photo. You can rename any button to match your remote.</p>
+      </section>
+
+      <div class="details-column">
+        <section class="receiver-card" aria-labelledby="receiver-heading">
+          <div class="receiver-top"><div class="receiver-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 9h6v6H9zM9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></svg></div><div class="receiver-text"><h2 id="receiver-heading">Raspberry Pi receiver</h2><p id="receiver-detail">Checking connection…</p></div><span id="connection-badge" class="status-badge"><i></i><span>Checking</span></span></div>
+          <button id="test-receiver" class="text-button">Test receiver</button><p id="local-receiver-error" class="inline-error" role="alert" hidden></p>
+        </section>
+
+        <section class="capture-card" aria-labelledby="capture-heading">
+          <div class="panel-heading"><div><span class="eyebrow">02 / RECORD</span><h2 id="capture-heading">Capture a signal</h2></div><span id="selected-section" class="section-label">SYSTEM</span></div>
+          <div class="selected-key"><span class="selected-key-icon" id="selected-icon" aria-hidden="true">⏻</span><div><span class="field-label">SELECTED BUTTON</span><h3 id="selected-label">Power</h3><code id="selected-id">power</code></div><button id="rename-button" class="icon-button" aria-label="Rename selected button" title="Rename button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg></button></div>
+          <form id="rename-form" class="rename-form" hidden><label for="button-label">Button name</label><div class="input-row"><input id="button-label" type="text" maxlength="80" required><button class="button button-dark button-small" type="submit">Save</button><button class="button button-outline button-small" id="cancel-rename" type="button">Cancel</button></div></form>
+          <div id="capture-status" class="capture-status" role="status" aria-live="polite"><span id="capture-status-icon" class="capture-state-icon" aria-hidden="true">↗</span><h3 id="capture-status-title">Ready when you are</h3><p id="capture-status-copy">Click Record, then point your real remote at the receiver and press the selected button once.</p></div>
+          <div class="capture-actions"><button id="record-button" class="button button-primary" disabled><span class="record-dot" aria-hidden="true"></span><span id="record-label">Record signal</span></button><button id="cancel-capture" class="button button-outline" hidden>Cancel</button></div>
+          <div class="capture-footer"><span><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></svg>10 seconds to press</span><span>Saved automatically</span></div>
+        </section>
+
+        <section class="samples-card" aria-labelledby="samples-heading">
+          <div class="panel-heading"><div><span class="eyebrow">03 / KEEP</span><h2 id="samples-heading">Saved signals <span id="sample-count" class="count-badge">0</span></h2></div></div>
+          <div id="samples-empty" class="empty-state"><span class="empty-wave" aria-hidden="true">▁▁▔▔▁▔▁▁▔▔▁</span><h3>This button is a blank slate.</h3><p>Its recorded signals will appear here, ready to inspect and export.</p></div>
+          <div id="samples-content" hidden><label class="field-label" for="sample-select">RECORDING</label><select id="sample-select"></select><div class="waveform-panel"><div class="waveform-heading"><span>RAW INFRARED TIMING</span><span id="waveform-duration">—</span></div><div id="waveform" class="waveform" aria-label="Infrared pulse and space waveform"></div></div><dl class="signal-stats"><div><dt>Intervals</dt><dd id="signal-intervals">—</dd></div><div><dt>Carrier</dt><dd id="signal-carrier">—</dd></div><div><dt>Recorded</dt><dd id="signal-date">—</dd></div></dl><p id="signal-note" class="sample-note">The 38 kHz carrier is assumed from the receiver; this sensor records the pulse envelope.</p><div class="sample-actions"><a id="export-sample" class="button button-outline button-small" download>Export raw signal <span aria-hidden="true">↗</span></a><button id="delete-sample" class="text-button danger">Delete recording</button></div><details class="raw-details"><summary>View signal data <span aria-hidden="true">⌄</span></summary><pre id="signal-json"></pre></details></div>
+          <p class="samples-tip"><span aria-hidden="true">↻</span> Record the same button more than once to preserve signals that alternate between presses.</p>
+        </section>
+      </div>
+    </div>
+    <footer class="app-footer"><span><i aria-hidden="true"></i><span id="storage-location">Stored on this server</span></span><code id="storage-path" title="Local recording file">Loading library…</code><span>Built for your next project.</span></footer>
+  </main>
+</body>
+</html>
