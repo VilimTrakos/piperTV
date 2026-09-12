@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from pipertv.app import create_app, main
 from pipertv.session import ControlSession
+from pipertv.tv import ButtonLog
 
 
 class AppTests(unittest.TestCase):
@@ -147,8 +148,16 @@ class FakeRemote:
 
     def __init__(self):
         self.session = ControlSession()
+        self.buttons = ButtonLog()
         self.started = self.closed = self.held = self.released = 0
         self.reloaded = 0
+
+    def events(self, after=0):
+        result = self.buttons.since(after)
+        state = self.session.snapshot()
+        result["mode"] = state["mode"]
+        result["control"] = state["control"]
+        return result
 
     def reload_recordings(self):
         self.reloaded += 1
@@ -273,6 +282,69 @@ class ControlEndpointTests(unittest.TestCase):
         self.assertEqual(self.remote.reloaded, 1)
 
 
+class TvInterfaceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.remote = FakeRemote()
+        self.app = create_app(data=Path(self.temporary.name) / "recordings.json",
+                              demo=True, remote=self.remote)
+        self.client = self.app.test_client()
+        workbench = self.app.extensions["pipertv"]
+        self.addCleanup(workbench.backend.close)
+        self.addCleanup(workbench.close)
+
+    def test_the_interface_and_its_assets_are_served(self):
+        for path in ("/tv", "/tv.html", "/tv.css", "/tv.js"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                response.close()
+
+    def test_the_page_carries_no_inline_styles_the_policy_would_block(self):
+        # style-src 'self' has no 'unsafe-inline', so a style attribute in the
+        # markup would silently not apply on the Pi.
+        response = self.client.get("/tv")
+        page = response.get_data(as_text=True)
+        response.close()
+        self.assertNotIn("style=", page)
+        self.assertNotIn("<style", page)
+
+    def test_presses_reach_the_page_in_order(self):
+        for button in ("up", "right", "ok"):
+            self.remote.buttons.append(button, "piper")
+        feed = self.client.get("/api/tv/events?after=0").get_json()
+        self.assertEqual([event["button"] for event in feed["events"]],
+                         ["up", "right", "ok"])
+        self.assertEqual(feed["sequence"], 3)
+        self.assertFalse(feed["missed"])
+
+    def test_the_page_only_receives_what_it_has_not_seen(self):
+        self.remote.buttons.append("up", "piper")
+        seen = self.client.get("/api/tv/events").get_json()["sequence"]
+        self.remote.buttons.append("down", "piper")
+        feed = self.client.get(f"/api/tv/events?after={seen}").get_json()
+        self.assertEqual([event["button"] for event in feed["events"]], ["down"])
+
+    def test_the_feed_reports_the_gate_verdict(self):
+        feed = self.client.get("/api/tv/events").get_json()
+        self.assertEqual(feed["control"], "off")
+        self.assertIsNone(feed["mode"])
+
+        state = self.client.post("/api/control/manual", json={"confirmed": True}).get_json()
+        self.client.post("/api/control/mode",
+                         json={"mode": "piper", "session_id": state["session"]["id"]})
+        feed = self.client.get("/api/tv/events").get_json()
+        self.assertEqual((feed["control"], feed["mode"]), ("on", "piper"))
+
+    def test_a_nonsense_position_is_rejected(self):
+        for after in ("-1", "abc", "1.5", ""):
+            with self.subTest(after=after):
+                response = self.client.get(f"/api/tv/events?after={after}")
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("error", response.get_json())
+
+
 class ControlDisabledTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -298,11 +370,21 @@ class ControlDisabledTests(unittest.TestCase):
         cases = [self.client.get("/api/control"),
                  self.client.post("/api/control/mode", json={"mode": "pointer", "session_id": "x"}),
                  self.client.post("/api/control/manual", json={"confirmed": True}),
-                 self.client.post("/api/control/stop", json={})]
+                 self.client.post("/api/control/stop", json={}),
+                 self.client.get("/api/tv/events")]
         for response in cases:
             with self.subTest(path=response.request.path):
                 self.assertEqual(response.status_code, 404)
                 self.assertIn("error", response.get_json())
+
+    def test_the_tv_interface_is_still_served_without_remote_control(self):
+        # Without a remote the page falls back to keyboard navigation, so it
+        # must still load rather than 404 alongside its feed.
+        for path in ("/tv", "/tv.css", "/tv.js"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                response.close()
 
     def test_recording_still_works_without_desktop_control(self):
         self.assertEqual(self.client.post("/api/captures", json={"button_id": "power"}).status_code, 202)

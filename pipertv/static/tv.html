@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#08090B">
+  <title>Piper</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/tv.css">
+  <script src="/tv.js" defer></script>
+</head>
+<body>
+
+<main id="screen-boot" class="screen is-shown">
+  <div class="boot">
+    <h1 class="wordmark wordmark-xl">piper</h1>
+    <div class="boot-bar"><div id="boot-fill" class="boot-fill"></div></div>
+    <p id="boot-status" class="mono boot-status">starting</p>
+  </div>
+  <p id="boot-meta" class="mono boot-meta">raspberry pi</p>
+</main>
+
+<main id="screen-home" class="screen">
+  <header class="tv-header">
+    <div class="wordmark">piper</div>
+    <div class="tv-meta">
+      <span id="home-source">checking the TV</span>
+      <span id="home-clock" class="ink"></span>
+    </div>
+  </header>
+
+  <section class="history" aria-labelledby="history-heading">
+    <h2 id="history-heading" class="section-label">Last opened</h2>
+    <ul id="history-list" class="history-list"></ul>
+    <p class="mono history-note">launch history only — piper can't see inside these apps</p>
+  </section>
+
+  <section class="dial" aria-label="Services">
+    <div id="ring" class="ring"></div>
+    <div class="focus-caption">
+      <div id="focus-name" class="focus-name"></div>
+      <div id="focus-note" class="mono focus-note"></div>
+    </div>
+  </section>
+
+  <p id="ring-hint" class="mono ring-hint"></p>
+</main>
+
+<div id="tv-notice" class="notice" role="status" hidden></div>
+
+</body>
+</html>
