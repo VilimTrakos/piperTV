@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
+from .control import RemoteControl
 from .learner import Workbench
 from .storage import RecordingStore
 
@@ -20,15 +21,27 @@ STATIC = Path(__file__).parent / "static"
 
 
 def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
-               demo: bool = False, workbench: Workbench | None = None) -> Flask:
-    """Build one application and one capture manager, shared by all browsers."""
+               demo: bool = False, workbench: Workbench | None = None,
+               control: bool = False, remote: RemoteControl | None = None) -> Flask:
+    """Build one application and one capture manager, shared by all browsers.
+
+    Desktop control is opt-in: it opens real devices and runs a detector thread,
+    so it stays off unless this Pi is meant to be driven by its own remote.
+    """
     if workbench is None:
         path = data or Path("data/demo-recordings.json" if demo else "data/recordings.json")
-        workbench = Workbench(RecordingStore(path), device=device, demo=demo)
+        store = RecordingStore(path)
+        if remote is None and control and not demo:
+            remote = RemoteControl(store, device=device)
+        # The gate stands the desktop down while a button is being learned.
+        workbench = Workbench(store, device=device, demo=demo, gate=remote)
     app = Flask(__name__, static_folder=str(STATIC), static_url_path="/static")
     app.config.update(MAX_CONTENT_LENGTH=32768, JSON_SORT_KEYS=False)
     app.json.sort_keys = False
     app.extensions["pipertv"] = workbench
+    app.extensions["pipertv_control"] = remote
+    if remote is not None:
+        remote.start()
     local_names = {"localhost", socket.gethostname().lower(), socket.getfqdn().lower()}
     local_names |= {name + ".local" for name in tuple(local_names) if "." not in name}
 
@@ -126,7 +139,10 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
 
     @app.get("/api/health")
     def health():
-        return jsonify(local_health())
+        result = local_health()
+        if remote is not None:
+            result["control"] = remote.health()
+        return jsonify(result)
 
     @app.post("/api/captures")
     def start_capture():
@@ -150,6 +166,8 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
     def delete_sample(button_id, sample):
         # Existing UI sends a JSON content type with an empty DELETE body.
         workbench.store.delete_sample(button_id, int(sample))
+        if remote is not None:
+            remote.reload_recordings()
         return state()
 
     @app.get("/api/export")
@@ -170,6 +188,31 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         response.headers["Content-Disposition"] = f'attachment; filename="{button_id}.ir"'
         return response
 
+    def desktop() -> RemoteControl:
+        if remote is None:
+            raise KeyError("Desktop control is not running on this server.")
+        return remote
+
+    @app.get("/api/control")
+    def control_state():
+        return jsonify(desktop().snapshot())
+
+    @app.post("/api/control/mode")
+    def choose_mode():
+        # The session id ties the choice to one visit to the Pi's input, so a
+        # stale browser cannot re-enable control after the TV switched away.
+        values = body()
+        return jsonify(desktop().choose(values.get("mode"), values.get("session_id")))
+
+    @app.post("/api/control/manual")
+    def confirm_manually():
+        return jsonify(desktop().manual(body().get("confirmed")))
+
+    @app.post("/api/control/stop")
+    def stop_control():
+        body()
+        return jsonify(desktop().stop())
+
     return app
 
 
@@ -180,14 +223,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--device", default="/dev/lirc0")
     parser.add_argument("--demo", action="store_true", help="Test the UI without GPIO hardware")
     parser.add_argument("--data", type=Path, help="Recordings JSON path (demo uses a separate default file)")
+    parser.add_argument("--no-control", action="store_true",
+                        help="Learn remote buttons only; do not let the remote drive this desktop")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     try:
-        app = create_app(args.data, args.device, args.demo)
+        app = create_app(args.data, args.device, args.demo,
+                         control=not args.demo and not args.no_control)
     except (ValueError, OSError) as exc:
         parser.exit(1, f"PiperTV: {exc}\n")
     workbench = app.extensions["pipertv"]
+    remote = app.extensions["pipertv_control"]
     print(f"PiperTV {'DEMO' if args.demo else 'IR learner'} running on this Raspberry Pi.", flush=True)
     print(f"Open http://<raspberry-pi-ip>:{args.port} from your PC browser.", flush=True)
     print(f"Recordings: {workbench.store.path}", flush=True)
@@ -206,6 +253,8 @@ def main(argv: list[str] | None = None) -> None:
         pass
     finally:
         workbench.close()
+        if remote is not None:
+            remote.close()
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 

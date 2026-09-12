@@ -44,6 +44,9 @@
   let mutating = false;
   let pollTimer = null;
   let lastStatus = "idle";
+  let control = null;
+  let controlTimer = null;
+  let controlActionError = "";
 
   async function api(path, options = {}) {
     const controller = new AbortController();
@@ -416,6 +419,75 @@
     finally { mutating = false; updateControls(); }
   });
 
+  function showControlError(message) {
+    $("control-error").textContent = message || "";
+    $("control-error").hidden = !message;
+  }
+
+  function renderControl() {
+    if (!control) { $("control-card").hidden = true; return; }
+    $("control-card").hidden = false;
+    const on = control.control === "on";
+    const badge = $("control-badge");
+    badge.className = `status-badge ${on ? "connected" : "disconnected"}`;
+    const manual = control.origin === "manual";
+    badge.querySelector("span").textContent = on ? `${manual ? "Manual" : "On"} · ${control.mode}` : "Off";
+    $("control-detail").textContent = control.hold || (manual
+      ? "Manual confirmation: you said the TV is showing the Pi. Stop control when you switch away."
+      : control.detail || "");
+    // A mode belongs to one visit, so the choice reappears on every new one.
+    $("control-modes").hidden = !control.needs_mode;
+    $("control-manual").hidden = Boolean(control.session);
+    $("control-stop").hidden = !control.session;
+    const runtime = control.runtime || {};
+    const problem = [runtime.pointer, runtime.receiver, runtime.desktop,
+      ...(control.mode === "snapping" ? [runtime.targets] : [])].find(part => part?.error);
+    $("control-runtime-error").textContent = problem?.error || "";
+    $("control-runtime-error").hidden = !problem;
+  }
+
+  async function refreshControl() {
+    try {
+      control = await api("/api/control");
+      showControlError(controlActionError);
+    } catch (error) {
+      // 404 means this server was started without desktop control.
+      if (error.status === 404) { control = null; renderControl(); return; }
+      showControlError(error.message);
+      return;
+    }
+    renderControl();
+  }
+
+  function pollControl() {
+    clearTimeout(controlTimer);
+    // The TV can change input at any time, so the gate is re-read on a timer.
+    controlTimer = setTimeout(async () => { await refreshControl(); pollControl(); }, 2500);
+  }
+
+  async function controlAction(path, payload) {
+    try {
+      control = await api(path, { method: "POST", body: JSON.stringify(payload) });
+      controlActionError = "";
+      showControlError("");
+      renderControl();
+    } catch (error) {
+      controlActionError = error.message;
+      showControlError(controlActionError);
+      await refreshControl();
+    }
+  }
+
+  async function chooseMode(mode) {
+    if (!control?.session) return;
+    await controlAction("/api/control/mode", { mode, session_id: control.session.id });
+  }
+
+  $("mode-pointer").addEventListener("click", () => chooseMode("pointer"));
+  $("mode-snapping").addEventListener("click", () => chooseMode("snapping"));
+  $("control-confirm").addEventListener("click", () => controlAction("/api/control/manual", { confirmed: true }));
+  $("control-stop").addEventListener("click", () => controlAction("/api/control/stop", {}));
+
   async function initialize() {
     try {
       state = await api("/api/state");
@@ -434,6 +506,8 @@
       }
       try { health = await api("/api/health"); } catch (error) { health = { ok: false, error: error.message }; }
       renderConnection();
+      await refreshControl();
+      pollControl();
     } catch (error) {
       showError(error.message);
       $("receiver-detail").textContent = "App unavailable";
