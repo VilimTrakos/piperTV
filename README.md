@@ -2,7 +2,7 @@
 
 Run this **Python/Flask app on your Raspberry Pi 3B+**, then open its remote control in a browser on your PC. Select an on-screen button, click **Record signal**, and press the matching button on your real remote. A TSOP2238 receiver connected to the Pi records the signal, and the app saves it on the Pi for later use.
 
-The interface follows the supplied One For All remote photo. Some small symbols are approximate; button names can be edited. Your PC needs only a browser, and the Pi does not need a desktop environment.
+The interface follows the supplied One For All remote photo. Some small symbols are approximate; button names can be edited. Your PC needs only a browser. Recording works without a Pi desktop; controlling the Pi's mouse requires a running desktop session.
 
 ## Set up the Pi
 
@@ -62,7 +62,7 @@ Restart with the same `--data` path to continue learning. Keep a backup of this 
 
 Use one running app per data file. If another app or editor changes or deletes it, PiperTV refuses to overwrite it and asks you to restart. Stop other writers, then restart with the same `--data` path to load the current contents. A hidden `.lock` file beside the JSON coordinates saves between processes; leave it in place while apps are running.
 
-Each capture preserves demodulated pulse/space durations in microseconds. **38 kHz is an assumed carrier frequency, not a measured one**: the TSOP2238 removes the carrier before the GPIO receives the signal. Protocol decoding and transmission are not part of this app. Replaying a recording later requires a separate IR LED transmitter and suitable driver hardware; the TSOP2238 only receives. See the [Vishay datasheet](https://www.vishay.com/docs/82459/tsop48.pdf).
+Each capture preserves demodulated pulse/space durations in microseconds. **38 kHz is an assumed carrier frequency, not a measured one**: the TSOP2238 removes the carrier before the GPIO receives the signal. Desktop control recognizes RC5 commands and compares other learned pulse timings; the saved recordings remain raw. Replaying a recording later requires a separate IR LED transmitter and suitable driver hardware; the TSOP2238 only receives. See the [Vishay datasheet](https://www.vishay.com/docs/82459/tsop48.pdf).
 
 ## Options and checks
 
@@ -75,4 +75,22 @@ The server listens on port 8765; use `--host` and `--port` to change its address
 
 The demo exercises the interface and storage without GPIO hardware. Automated tests cover software behavior; reception still needs to be verified with your Raspberry Pi, wiring, and remote.
 
-The local capture code and saved recordings can be reused by a future application that responds to the remote. This app provides the learning step; a future interface would add its own button recognition and actions.
+## Control the Pi's desktop with the remote
+
+Once buttons are learned, the same receiver can drive the Pi's own mouse pointer. Follow [section 6 of the setup guide](docs/raspberry-pi.md) to load `uinput` and install `v4l-utils`, then start the app as usual:
+
+```bash
+python3 -m pipertv
+```
+
+Control is deliberately hard to switch on by accident. It runs only while all three of these hold at once:
+
+1. The TV reports over HDMI-CEC that it is showing the Pi's input.
+2. You chose **Pointer** or **Snapping** in the browser **for that visit**.
+3. No recording is in progress.
+
+Pointer mode nudges the cursor and speeds up while a direction is held. Snapping jumps it to the next target in that direction. Switching the TV to another source turns control off and forgets the mode, so coming back asks again instead of silently resuming.
+
+If your TV cannot report its input, the interface offers an explicit manual confirmation with a visible stop action. A manual session is your assertion, not evidence, and it is shown as such. What a TV can and cannot report is covered in [the detection notes](docs/hdmi-detection.md), including why desktop icons are not snapping targets on a Wayland session.
+
+Start with `--no-control` to learn buttons without ever driving the desktop.

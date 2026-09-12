@@ -126,6 +126,138 @@ python3 -m pipertv
 
 Recordings are saved on the Pi in `~/piperTV/data/recordings.json` when started as above. Use the interface's JSON export to download them to your PC, or copy the file using your usual file transfer method. For a different location, start with `python3 -m pipertv --data ~/tv-remotes/living-room.json`.
 
+## 6. Let PiperTV move the desktop cursor
+
+Desktop control needs access to CEC and a virtual input device. The earlier
+deployment notes describe Raspberry Pi OS (Debian 13, aarch64) with a Wayland
+session under labwc; use the checks below to verify your current installation.
+The mode choice appears in the open recording interface, not a native desktop
+dialog. Keep that interface open on the PC while testing TV input switches.
+
+### The virtual pointer
+
+PiperTV moves the real cursor through `/dev/uinput`. The desktop session must
+accept the virtual pointer; test movement on the display you intend to use.
+If the module is not loaded and the device is root-owned, load it at boot and grant the
+`input` group access:
+
+```bash
+sudo modprobe uinput
+echo uinput | sudo tee /etc/modules-load.d/pipertv-uinput.conf
+sudo tee /etc/udev/rules.d/99-pipertv-uinput.rules >/dev/null <<'RULE'
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
+RULE
+sudo udevadm control --reload-rules
+sudo udevadm trigger --name-match=uinput
+```
+
+Check the node and your group membership:
+
+```bash
+ls -l /dev/uinput                      # crw-rw---- root input
+id -nG | tr ' ' '\n' | grep -x input
+```
+
+If your account is not in `input`, add it with `sudo usermod -aG input "$USER"`,
+then log out and back in. The module configuration and udev rule make access
+persistent. After rebooting, check that `/dev/uinput` exists and is writable by
+your account.
+
+### HDMI-CEC
+
+`cec-ctl` comes from `v4l-utils`. The tested Pi exposed `/dev/cec0` as
+`root:video`. Check the device permissions and your account's groups:
+
+```bash
+sudo apt install v4l-utils
+ls -l /dev/cec0                        # crw-rw---- root video
+id -nG | tr ' ' '\n' | grep -x video
+```
+
+If the device belongs to `video` and your account does not, run
+`sudo usermod -aG video "$USER"`, then log out and back in.
+That membership allows opening the device. Selecting monitor mode additionally
+needs `CAP_NET_ADMIN`, as documented by the [Linux CEC API](https://docs.kernel.org/userspace-api/media/cec/cec-ioc-g-mode.html). As an
+ordinary account `cec-ctl --monitor` prints *"Selecting monitor mode failed, you
+may have to run this as root."* and exits — with status 0, so only the message
+reveals it. Check yours:
+
+```bash
+timeout 5 cec-ctl -d /dev/cec0 --monitor --show-raw --skip-info
+```
+
+If that prints the refusal, automatic HDMI detection cannot work as your own
+account. PiperTV reports the reason and leaves automatic control off. You can
+explicitly confirm that the Pi is selected in the interface, but that manual
+assertion cannot notice a silent TV input change; use **Stop** when leaving it.
+
+Grant the capability to `cec-ctl` itself so the Flask app can stay under your
+normal account. The monitor receives this capability when it runs:
+
+```bash
+sudo apt install libcap2-bin
+sudo setcap cap_net_admin+ep /usr/bin/cec-ctl
+sudo getcap /usr/bin/cec-ctl                 # cap_net_admin=ep
+```
+
+`setcap` and `getcap` live in `/usr/sbin`, which is normally not on a desktop
+account's `PATH`; run them through `sudo` as above. Then repeat the monitor
+check — it should print `Initial Event: State Change: PA: …` rather than the
+refusal.
+
+**Upgrading `v4l-utils` silently removes this.** The capability is stored on the
+binary, not in a package file, so a replaced binary loses it. If HDMI detection
+stops working after an update, apply `setcap` again.
+
+Do **not** grant the same thing through a `NOPASSWD` sudoers rule instead.
+PiperTV's monitor command begins with `stdbuf`, and permitting `stdbuf` as root
+would effectively permit running anything as root.
+
+### Snapping targets
+
+Snapping reads controls through the accessibility bus, using `pyatspi` from the
+[`python3-pyatspi` system package](https://packages.debian.org/trixie/python3-pyatspi).
+That package depends on `python3-gi`; installing `python3-gi` alone does not install
+`pyatspi`. System packages are hidden from a plain virtual environment. Install
+the binding and let this environment see system packages:
+
+```bash
+sudo apt install python3-pyatspi
+cd ~/piperTV
+/usr/bin/python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+python3 -c "import flask, pyatspi; print('both available')"
+```
+
+Launch the app from a terminal in the **Pi's logged-in graphical session** when
+testing Snapping, so it can reach that session's accessibility bus. A separate
+SSH session may have different session environment variables.
+
+Applications must register with the bus before their controls can be snapped to.
+If this labwc installation disables the bridge, edit
+`~/.config/labwc/environment` and set `NO_AT_BRIDGE=0`, then run
+`gsettings set org.gnome.desktop.interface toolkit-accessibility true` as the
+desktop user. Log out of the graphical session and back in, then reopen the
+applications to apply the environment change. Preserve other entries in that
+file. See [the detection notes](hdmi-detection.md) for the desktop-icon limitation.
+
+### Check readiness and try a session
+
+Start `python3 -m pipertv` from the project directory with the virtual environment
+active. `--no-control` keeps the app in learning-only mode; `--demo` also disables
+desktop control. Open `http://PI_ADDRESS:8765/api/health` to inspect pointer,
+receiver, targets, and detection errors, and `/api/control` for the current
+source/session state.
+
+Keep the recording interface open on the PC. Switch away from the Pi input and
+back, choose **Pointer**, and test the learned directions, **OK** for left-click,
+and **Menu** for right-click. Then test Snapping against controls that appear in
+the accessibility bus. Positive CEC evidence expires after 120 seconds without
+a fresh relevant report; an Unknown state stops automatic control and clears
+the mode choice. The full TV-switch-to-IR-movement sequence still needs live
+verification on the TV.
+
 ## Troubleshooting
 
 | Symptom | Check |
