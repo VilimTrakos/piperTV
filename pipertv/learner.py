@@ -17,10 +17,13 @@ TERMINAL = {"captured", "timeout", "cancelled", "error"}
 
 
 class Workbench:
-    def __init__(self, store, device="/dev/lirc0", demo=False, backend=None):
+    def __init__(self, store, device="/dev/lirc0", demo=False, backend=None, gate=None):
         self.store = store
         self.backend = backend if backend is not None else CaptureManager(device=device, demo=demo)
         self.demo = demo
+        # Optional desktop-control gate. Learning a button must not also act on
+        # it, and the receiver cannot be shared with a capture.
+        self.gate = gate
         self.lock = threading.RLock()
         self.jobs = {}
         self.active_id = None
@@ -52,6 +55,10 @@ class Workbench:
         with self.lock:
             if self.active_id:
                 raise RuntimeError("A capture is already in progress. Finish or cancel it first.")
+            if self.gate is not None:
+                # Close the gate and release the receiver before this capture
+                # opens it, so the press being learned is not also obeyed.
+                self.gate.hold()
             while len(self.jobs) >= 100:
                 self.jobs.pop(next(iter(self.jobs)))
             job_id = uuid.uuid4().hex
@@ -100,6 +107,14 @@ class Workbench:
                         self.store.append(job["button_id"], outcome["signal"])
                     except Exception as exc:
                         outcome = {"status": "error", "error": f"Capture was not saved: {exc}"}
+                # Finish the interlock before publishing a terminal job. A new
+                # recording may start as soon as this lock is released; the old
+                # job must never lift that new recording's hold afterward.
+                if self.gate is not None:
+                    try:
+                        self.gate.release()
+                    except Exception:
+                        pass  # A control fault must not hide a saved recording.
                 job.update(outcome)
                 self.active_id = None
 

@@ -114,5 +114,100 @@ class WorkbenchTests(unittest.TestCase):
         self.assertFalse(self.backend.started.is_set())
 
 
+class RecordingGate:
+    """Stands in for the desktop-control gate wrapped around a capture."""
+
+    def __init__(self):
+        self.held = self.released = 0
+        self.fail = False
+
+    def hold(self):
+        if self.fail:
+            raise RuntimeError("The receiver is still closing; recording must wait.")
+        self.held += 1
+
+    def release(self):
+        self.released += 1
+
+
+class RecordingGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = RecordingStore(Path(self.temp.name) / "recordings.json")
+        self.backend = ControlledReceiver()
+        self.gate = RecordingGate()
+        self.app = Workbench(self.store, backend=self.backend, gate=self.gate)
+        self.addCleanup(self.backend.release.set)
+        self.addCleanup(self.app.close)
+
+    def wait_for(self, predicate, timeout=3):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_recording_stands_the_desktop_down_and_restores_it(self):
+        job = self.app.start({"button_id": "power"})
+        self.assertTrue(self.backend.started.wait(1))
+        self.assertEqual(self.gate.held, 1)
+        self.assertEqual(self.gate.released, 0, "control must stay down while recording")
+        self.backend.release.set()
+        self.assertTrue(self.wait_for(lambda: self.gate.released == 1))
+        self.assertEqual(self.app.get(job["id"])["status"], "captured")
+
+    def test_a_cancelled_recording_still_restores_control(self):
+        job = self.app.start({"button_id": "mute"})
+        self.assertTrue(self.backend.started.wait(1))
+        self.app.cancel(job["id"])
+        self.backend.release.set()
+        self.assertTrue(self.wait_for(lambda: self.gate.released == 1))
+
+    def test_capture_is_not_published_finished_until_control_release_finishes(self):
+        entered, finish = threading.Event(), threading.Event()
+        observed = []
+
+        def slow_release():
+            observed.append(self.app.active_id)
+            entered.set()
+            finish.wait(2)
+            self.gate.released += 1
+
+        self.gate.release = slow_release
+        job = self.app.start({"button_id": "power"})
+        self.backend.release.set()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertEqual(observed, [job["id"]])
+            self.assertEqual(self.app.active_id, job["id"],
+                             "the next recording must not race the old gate release")
+        finally:
+            finish.set()
+        self.assertTrue(self.wait_for(lambda: self.app.active_id is None))
+        self.assertEqual(self.app.get(job["id"])["status"], "captured")
+
+    def test_a_gate_that_cannot_stand_down_prevents_the_capture(self):
+        self.gate.fail = True
+        with self.assertRaises(RuntimeError):
+            self.app.start({"button_id": "power"})
+        # The receiver must not be opened while the desktop is still listening.
+        self.assertFalse(self.backend.started.is_set())
+        self.assertIsNone(self.app.active_id)
+        self.assertEqual(self.gate.held, 0)
+
+    def test_a_failure_restoring_control_does_not_hide_the_recording(self):
+        def broken():
+            raise RuntimeError("the virtual pointer went away")
+
+        self.gate.release = broken
+        job = self.app.start({"button_id": "power"})
+        self.backend.release.set()
+        self.assertTrue(self.wait_for(lambda: self.app.active_id is None))
+        self.assertEqual(self.app.get(job["id"])["status"], "captured")
+        self.assertEqual(self.store.snapshot()["recordings"]["power"]["samples"], [SIGNAL])
+
+
 if __name__ == "__main__":
     unittest.main()
