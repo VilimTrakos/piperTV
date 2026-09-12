@@ -19,8 +19,9 @@ from .desktop import DesktopControl
 from .ir_control import IRController
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
-from .session import ControlSession
+from .session import DESKTOP_MODES, ControlSession
 from .targets import AtspiTargets
+from .tv import ButtonLog
 
 LOG = logging.getLogger(__name__)
 DEFAULT_SCREEN = (1920, 1080)
@@ -32,7 +33,8 @@ class RemoteControl:
     """Everything needed to let a learned remote drive this Pi's desktop."""
 
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
-                 poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None):
+                 poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
+                 buttons=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -40,8 +42,9 @@ class RemoteControl:
         self.targets = AtspiTargets(self.screen) if targets is None else targets
         self.desktop = (DesktopControl(self.session, self.screen, targets=self.targets)
                         if desktop is None else desktop)
+        self.buttons = ButtonLog() if buttons is None else buttons
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
-        self.controller = (IRController(store, self.desktop.press, self._enabled,
+        self.controller = (IRController(store, self._press, self._enabled,
                                         device=device)
                            if controller is None else controller)
         self.poll_s = poll_s
@@ -79,6 +82,18 @@ class RemoteControl:
         # that arrived between supervisor passes.
         self._refresh_source()
         return self.session.enabled()
+
+    def _press(self, button: str) -> None:
+        """Route one recognised press to whatever the chosen mode drives.
+
+        Every press is recorded for the interface on the TV, which asks for
+        them by number. The cursor moves only under a desktop mode, so the
+        Piper interface never drags the mouse around behind itself.
+        """
+        mode = self.session.snapshot()["mode"]
+        self.buttons.append(button, mode)
+        if mode in DESKTOP_MODES:
+            self.desktop.press(button)
 
     def _tick(self) -> None:
         """One supervisor pass: refresh the judgement, act on a lost visit."""
@@ -154,6 +169,16 @@ class RemoteControl:
 
     def reload_recordings(self) -> None:
         self.controller.reload_recordings()
+
+    # --- the interface on the TV -----------------------------------------
+
+    def events(self, after: int = 0) -> dict:
+        """Presses the TV interface has not seen yet, with the gate's verdict."""
+        result = self.buttons.since(after)
+        state = self.session.snapshot()
+        result["mode"] = state["mode"]
+        result["control"] = state["control"]
+        return result
 
     # --- reporting -------------------------------------------------------
 

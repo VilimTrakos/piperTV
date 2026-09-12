@@ -64,8 +64,10 @@ class FakeDesktop:
     def __init__(self):
         self.released = self.closed = 0
         self.active = False
+        self.presses = []
 
-    def press(self, _button):
+    def press(self, button):
+        self.presses.append(button)
         self.active = True  # pressing opens the virtual pointer
 
     def release(self):
@@ -289,6 +291,41 @@ class RecordingInterlockTests(unittest.TestCase):
         control.release()
         self.assertFalse(control.session.enabled())
         self.assertEqual(controller.resumed, 1, "reader waits on the gate for the next visit")
+
+
+class ButtonRoutingTests(unittest.TestCase):
+    def test_a_desktop_mode_moves_the_cursor_and_records_the_press(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "pointer")
+        control._press("right")
+        self.assertEqual(control.desktop.presses, ["right"])
+        events = control.events(0)["events"]
+        self.assertEqual([event["button"] for event in events], ["right"])
+        self.assertEqual(events[0]["mode"], "pointer")
+
+    def test_the_piper_interface_never_drags_the_cursor(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control._press("down")
+        self.assertEqual(control.desktop.presses, [],
+                         "the TV interface must not pull the mouse along behind it")
+        self.assertEqual([event["button"] for event in control.events(0)["events"]], ["down"])
+
+    def test_the_feed_reports_the_gate_verdict_alongside_the_presses(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        result = control.events(0)
+        self.assertEqual(result["mode"], "piper")
+        self.assertEqual(result["control"], "on")
+        self.assertFalse(result["missed"])
+
+    def test_the_page_receives_only_presses_it_has_not_seen(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control._press("up")
+        seen = control.events(0)["sequence"]
+        control._press("ok")
+        self.assertEqual([event["button"] for event in control.events(seen)["events"]], ["ok"])
 
 
 class ReportingTests(unittest.TestCase):
