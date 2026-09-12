@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"><style>body{margin:0;background:#16181C;font-family:Jost,system-ui,sans-serif;color:#F2F4F7}a{color:#5AA9E6;text-decoration:none}a:hover{color:#8CC6F0}</style></helmet>
+
+<div style="min-height:100vh;box-sizing:border-box;padding:32px;display:flex;gap:28px;align-items:flex-start;justify-content:center">
+
+<div style="flex:none;display:flex;flex-direction:column;gap:12px">
+<div style="width:1280px;height:720px;border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,.12);background:#08090B;position:relative;font-family:Jost,sans-serif">
+
+<sc-if value="{{ isBoot }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:36px;background:#08090B">
+<div style="font:300 78px/1 Jost;letter-spacing:.28em;padding-left:.28em">piper</div>
+<div style="width:280px;height:3px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden"><div style="height:3px;background:{{ acc }};width:{{ bootW }}"></div></div>
+<div style="font:400 15px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.4)">hdmi 2 active · pairing remote</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isHome }}">
+<div style="position:absolute;inset:0">
+<div style="position:absolute;top:0;left:0;right:0;height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 40px;box-sizing:border-box">
+<div style="font:500 22px/1 Jost;letter-spacing:.16em">piper</div>
+<div style="display:flex;align-items:center;gap:22px;font:300 17px/1 Jost;color:rgba(242,244,247,.5)"><span>wi-fi · home</span><span style="color:#F2F4F7">{{ clock }}</span><span style="width:20px;height:20px;border-radius:50%;border:2px solid rgba(242,244,247,.4)"></span></div>
+</div>
+<div style="position:absolute;top:66px;left:0;bottom:0;width:150px;padding:26px 0 0 28px;box-sizing:border-box;display:flex;flex-direction:column;gap:4px;font:400 18px/1 Jost">
+<sc-for list="{{ nav }}" as="n" hint-placeholder-count="5">
+<div style="display:flex;align-items:center;gap:12px;padding:10px 0;color:{{ n.fg }}"><div style="width:4px;height:20px;border-radius:2px;background:{{ n.bar }}"></div><span>{{ n.t }}</span></div>
+</sc-for>
+</div>
+<div style="position:absolute;top:66px;left:150px;right:0;bottom:50px;padding:20px 0 0 14px;box-sizing:border-box;display:flex;flex-direction:column;gap:22px;overflow:hidden">
+<sc-for list="{{ rows }}" as="row" hint-placeholder-count="3">
+<div>
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px"><div style="font:500 14px/1 Jost;letter-spacing:.18em;text-transform:uppercase;color:{{ row.hc }}">{{ row.label }}</div><div style="font:400 12px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.28)">{{ row.count }}</div></div>
+<div style="position:relative;overflow:hidden">
+<div style="display:flex;gap:16px;padding:8px 0;transform:translateX({{ row.dx }});transition:transform .28s cubic-bezier(.2,.7,.2,1)">
+<sc-for list="{{ row.items }}" as="it" hint-placeholder-count="6">
+<div style="flex:none;width:{{ it.w }}">
+<div style="width:{{ it.w }};height:{{ it.h }};border-radius:12px;background:{{ it.bg }};box-shadow:{{ it.ring }};transform:translateY({{ it.ty }});transition:transform .2s,box-shadow .2s;display:flex;align-items:{{ it.al }};justify-content:center;position:relative;overflow:hidden;border:1px solid rgba(255,255,255,.07)">
+<div style="font:500 {{ it.fs }} Jost;color:{{ it.lc }}">{{ it.l }}</div>
+<div style="position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(255,255,255,.14);display:{{ it.pd }}"><div style="height:4px;background:{{ acc }};width:{{ it.pw }}"></div></div>
+</div>
+<div style="margin-top:9px;font:400 14px/1.3 Jost;color:{{ it.tc }};text-align:{{ it.ta }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:{{ it.w }}">{{ it.n }}</div>
+</div>
+</sc-for>
+</div>
+<div style="position:absolute;top:0;right:0;bottom:0;width:90px;background:linear-gradient(90deg,rgba(8,9,11,0),#08090B)"></div>
+</div>
+</div>
+</sc-for>
+</div>
+<div style="position:absolute;bottom:0;left:150px;right:0;height:50px;display:flex;align-items:center;padding:0 40px;box-sizing:border-box;font:400 14px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.35)">{{ hint }}</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isSearch }}">
+<div style="position:absolute;inset:0">
+<div style="position:absolute;top:34px;left:48px;right:48px;height:66px;border-radius:12px;background:#12151B;border:2px solid {{ acc }};display:flex;align-items:center;padding:0 22px;box-sizing:border-box;font:400 28px/1 Jost">{{ query }}<span style="display:inline-block;width:2px;height:30px;background:{{ acc }};margin-left:3px"></span><span style="margin-left:16px;font:300 20px/1 Jost;color:rgba(242,244,247,.3);display:{{ phDisplay }}">Search services, films, channels…</span></div>
+<div style="position:absolute;top:126px;left:48px;width:620px">
+<div style="display:flex;flex-direction:column;gap:9px">
+<sc-for list="{{ kb }}" as="row" hint-placeholder-count="4">
+<div style="display:flex;gap:9px">
+<sc-for list="{{ row.keys }}" as="k" hint-placeholder-count="10">
+<div style="width:{{ k.w }};height:52px;border-radius:9px;display:flex;align-items:center;justify-content:center;font:400 {{ k.fs }} Jost;background:{{ k.bg }};color:{{ k.fg }};border:2px solid {{ k.bd }};transition:background .12s">{{ k.c }}</div>
+</sc-for>
+</div>
+</sc-for>
+</div>
+<div style="margin-top:24px;display:flex;gap:10px;align-items:center"><span style="font:400 13px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.3)">recent</span>
+<sc-for list="{{ recents }}" as="q" hint-placeholder-count="3">
+<div style="padding:8px 16px;border-radius:999px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);font:300 15px/1 Jost;color:rgba(242,244,247,.6)">{{ q }}</div>
+</sc-for>
+</div>
+</div>
+<div style="position:absolute;top:126px;left:700px;right:48px;bottom:56px;overflow:hidden">
+<div style="font:500 14px/1 Jost;letter-spacing:.18em;text-transform:uppercase;color:rgba(242,244,247,.4);margin-bottom:14px">{{ resultsLabel }}</div>
+<div style="display:flex;flex-direction:column;gap:11px">
+<sc-for list="{{ results }}" as="r" hint-placeholder-count="4">
+<div style="display:flex;gap:14px;align-items:center;padding:10px;border-radius:11px;background:{{ r.bg }};border:2px solid {{ r.bd }}">
+<div style="width:78px;height:48px;border-radius:7px;flex:none;background:repeating-linear-gradient(135deg,rgba(255,255,255,.06) 0 8px,rgba(255,255,255,0) 8px 16px),#15181E"></div>
+<div><div style="font:400 17px/1.2 Jost">{{ r.t }}</div><div style="margin-top:5px;display:flex;align-items:center;gap:8px;font:300 14px/1 Jost;color:rgba(242,244,247,.5)"><span style="width:8px;height:8px;border-radius:50%;background:{{ r.c }}"></span>{{ r.s }}</div></div>
+</div>
+</sc-for>
+</div>
+</div>
+<div style="position:absolute;bottom:0;left:0;right:0;height:56px;display:flex;align-items:center;padding:0 48px;box-sizing:border-box;font:400 14px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.35)">OK types · BACK deletes · ▶ past the keyboard for results</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isLaunch }}">
+<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;background:#08090B">
+<div style="width:150px;height:150px;border-radius:20px;background:{{ launchColor }};display:flex;align-items:center;justify-content:center;font:500 68px/1 Jost;color:rgba(255,255,255,.94);box-shadow:0 24px 60px rgba(0,0,0,.6)">{{ launchLetter }}</div>
+<div style="font:400 30px/1 Jost">Starting {{ launchName }}</div>
+<div style="width:240px;height:3px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden"><div style="height:3px;background:{{ acc }};width:{{ launchW }}"></div></div>
+<div style="font:400 14px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.38)">{{ launchNote }}</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isPlaying }}">
+<div style="position:absolute;inset:0;background:repeating-linear-gradient(135deg,rgba(255,255,255,.03) 0 12px,rgba(255,255,255,0) 12px 24px),#0B0D11">
+<div style="position:absolute;top:42%;left:0;right:0;text-align:center;font:400 16px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.26)">{{ launchName }} · video surface</div>
+<div style="position:absolute;left:0;right:0;bottom:0;height:250px;background:linear-gradient(to top,rgba(6,7,9,.97),rgba(6,7,9,0));padding:0 48px 36px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:flex-end;gap:22px">
+<div style="display:flex;justify-content:space-between;align-items:flex-end">
+<div><div style="font:400 32px/1.1 Jost">{{ playTitle }}</div><div style="margin-top:9px;display:flex;align-items:center;gap:9px;font:300 17px/1 Jost;color:rgba(242,244,247,.55)"><span style="width:9px;height:9px;border-radius:50%;background:{{ launchColor }}"></span>{{ launchName }}</div></div>
+<div style="font:400 15px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.45)">{{ playTime }}</div>
+</div>
+<div style="height:6px;border-radius:3px;background:rgba(255,255,255,.16);position:relative"><div style="height:6px;border-radius:3px;background:{{ acc }};width:{{ playW }}"></div></div>
+<div style="display:flex;align-items:center;gap:18px">
+<div style="width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,.07);border:2px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font:400 18px/1 Jost;color:rgba(242,244,247,.7)">⏮</div>
+<div style="width:66px;height:66px;border-radius:50%;background:{{ acc }};display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 5px rgba(90,169,230,.2);font:500 20px/1 Jost;color:#08090B">{{ playGlyph }}</div>
+<div style="width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,.07);border:2px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font:400 18px/1 Jost;color:rgba(242,244,247,.7)">⏭</div>
+<div style="flex:1"></div>
+<div style="font:400 14px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.4)">◀▶ skip 10s · OK play/pause · BACK to piper</div>
+</div>
+</div>
+</div>
+</sc-if>
+
+</div>
+<div style="font:300 12px/1.5 Jost,sans-serif;color:rgba(242,244,247,.45)">Click the screen once, then drive it with the arrow keys, Enter and Backspace — or use the remote on the right.</div>
+</div>
+
+<div style="flex:none;width:250px;border-radius:26px;background:#101318;border:1px solid rgba(255,255,255,.09);padding:26px 24px;box-sizing:border-box;display:flex;flex-direction:column;gap:22px;align-items:center">
+<div style="font:400 12px/1 'IBM Plex Mono',monospace;color:rgba(242,244,247,.35);letter-spacing:.14em">PIPER REMOTE</div>
+<div style="width:190px;height:190px;position:relative">
+<div onClick="{{ up }}" style="position:absolute;left:65px;top:0;width:60px;height:60px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font:400 20px/1 Jost;cursor:pointer;color:rgba(242,244,247,.75)" style-hover="background:rgba(255,255,255,.12)">▲</div>
+<div onClick="{{ down }}" style="position:absolute;left:65px;bottom:0;width:60px;height:60px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font:400 20px/1 Jost;cursor:pointer;color:rgba(242,244,247,.75)" style-hover="background:rgba(255,255,255,.12)">▼</div>
+<div onClick="{{ left }}" style="position:absolute;left:0;top:65px;width:60px;height:60px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font:400 20px/1 Jost;cursor:pointer;color:rgba(242,244,247,.75)" style-hover="background:rgba(255,255,255,.12)">◀</div>
+<div onClick="{{ right }}" style="position:absolute;right:0;top:65px;width:60px;height:60px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font:400 20px/1 Jost;cursor:pointer;color:rgba(242,244,247,.75)" style-hover="background:rgba(255,255,255,.12)">▶</div>
+<div onClick="{{ ok }}" style="position:absolute;left:65px;top:65px;width:60px;height:60px;border-radius:50%;background:{{ acc }};color:#08090B;display:flex;align-items:center;justify-content:center;font:500 15px/1 Jost;cursor:pointer">OK</div>
+</div>
+<div style="display:flex;gap:12px;width:100%">
+<div onClick="{{ back }}" style="flex:1;height:48px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font:400 15px/1 Jost;cursor:pointer;color:rgba(242,244,247,.75)" style-hover="background:rgba(255,255,255,.12)">Back</div>
+<div onClick="{{ searchKey }}" style="flex:1;height:48px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font:400 15px/1 Jost;cursor:pointer;color:rgba(242,244,247,.75)" style-hover="background:rgba(255,255,255,.12)">Search</div>
+</div>
+<div onClick="{{ home }}" style="width:100%;height:48px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font:400 15px/1 Jost;cursor:pointer;color:rgba(242,244,247,.75)" style-hover="background:rgba(255,255,255,.12)">Home</div>
+<div style="width:100%;height:1px;background:rgba(255,255,255,.08)"></div>
+<div style="width:100%;font:400 12px/1.9 'IBM Plex Mono',monospace;color:rgba(242,244,247,.4)">state&nbsp;&nbsp;{{ screen }}<br>focus&nbsp;&nbsp;{{ focusLabel }}</div>
+</div>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:800},&quot;accentColor&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#5AA9E6&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;#5AA9E6&quot;,&quot;#E8734A&quot;,&quot;#7DD87D&quot;,&quot;#C9A227&quot;],&quot;section&quot;:&quot;Theme&quot;}}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const S = this.svc();
+    this.state = { screen: 'boot', row: 1, cols: [0, 0, 0], query: '', kr: 1, kc: 4, launch: S.nf, playing: true, bootP: 0, launchP: 0, resultSel: -1 };
+  }
+  svc() {
+    return {
+      nf: { n: 'Netflix', l: 'N', c: '#A8382F' }, yt: { n: 'YouTube', l: 'Y', c: '#C4552F' },
+      pv: { n: 'Prime Video', l: 'P', c: '#1E8496' }, dp: { n: 'Disney+', l: 'D', c: '#2F4A9C' },
+      hb: { n: 'HBO Max', l: 'H', c: '#6B3FA0' }, px: { n: 'Plex', l: 'J', c: '#C39A22' },
+      kd: { n: 'Kodi', l: 'K', c: '#3B7A57' }, lm: { n: 'Local media', l: 'L', c: '#5A6570' },
+      br: { n: 'Browser', l: 'W', c: '#2A6FB0' }
+    };
+  }
+  acc() { return this.props.accentColor ?? '#5AA9E6'; }
+  componentDidMount() {
+    this.onKey = e => {
+      const k = e.key;
+      const map = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'ok', Backspace: 'back', Escape: 'back' };
+      if (map[k]) { e.preventDefault(); this.press(map[k]); }
+    };
+    window.addEventListener('keydown', this.onKey);
+    this.tick = setInterval(() => {
+      if (this.state.screen === 'boot') {
+        const p = this.state.bootP + 12;
+        if (p >= 100) this.setState({ screen: 'home', bootP: 100 }); else this.setState({ bootP: p });
+      } else if (this.state.screen === 'launch') {
+        const p = this.state.launchP + 14;
+        if (p >= 100) this.setState({ screen: 'playing', launchP: 100 }); else this.setState({ launchP: p });
+      }
+    }, 130);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this.onKey); clearInterval(this.tick); }
+  rowDefs() {
+    const S = this.svc();
+    return [
+      { label: 'Continue watching', kind: 'card', items: [
+        { n: 'Strange New Worlds · S2E4', s: S.nf, pw: '62%' }, { n: 'Dune: Part Two', s: S.hb, pw: '19%' },
+        { n: 'Le Mans 1971 restoration', s: S.yt, pw: '81%' }, { n: 'Blade Runner 2049', s: S.px, pw: '44%' },
+        { n: 'Drive to Survive · S7E2', s: S.pv, pw: '9%' }] },
+      { label: 'Most popular', kind: 'tile', items: [S.nf, S.yt, S.pv, S.dp, S.hb, S.px, S.kd, S.lm, S.br].map(s => ({ n: s.n, s })) },
+      { label: 'You use most', kind: 'small', items: [S.yt, S.px, S.nf, S.kd, S.pv, S.lm, S.hb, S.dp, S.br].map(s => ({ n: s.n, s })) }
+    ];
+  }
+  kbDefs() {
+    return [{ s: 'qwertyuiop' }, { s: 'asdfghjkl' }, { s: 'zxcvbnm' }, { s: '_<x' }];
+  }
+  press(a) {
+    const st = this.state;
+    if (st.screen === 'boot') { if (a === 'ok') this.setState({ screen: 'home' }); return; }
+    if (st.screen === 'playing') {
+      if (a === 'back') this.setState({ screen: 'home' });
+      if (a === 'ok') this.setState({ playing: !st.playing });
+      return;
+    }
+    if (st.screen === 'launch') { if (a === 'back') this.setState({ screen: 'home', launchP: 0 }); return; }
+    if (st.screen === 'home') {
+      const rows = this.rowDefs();
+      const cols = st.cols.slice();
+      if (a === 'up') { if (st.row === 0) this.setState({ screen: 'search' }); else this.setState({ row: st.row - 1 }); return; }
+      if (a === 'down') { this.setState({ row: Math.min(rows.length - 1, st.row + 1) }); return; }
+      if (a === 'left') { cols[st.row] = Math.max(0, cols[st.row] - 1); this.setState({ cols }); return; }
+      if (a === 'right') { cols[st.row] = Math.min(rows[st.row].items.length - 1, cols[st.row] + 1); this.setState({ cols }); return; }
+      if (a === 'ok') { this.setState({ screen: 'launch', launchP: 0, launch: rows[st.row].items[cols[st.row]].s, playing: true }); return; }
+      if (a === 'back') { this.setState({ screen: 'search' }); return; }
+      return;
+    }
+    // search
+    const kb = this.kbDefs();
+    if (a === 'up') { if (st.kr === 0) this.setState({ screen: 'home' }); else this.setState({ kr: st.kr - 1, kc: Math.min(st.kc, kb[st.kr - 1].s.length - 1) }); return; }
+    if (a === 'down') { const nr = Math.min(kb.length - 1, st.kr + 1); this.setState({ kr: nr, kc: Math.min(st.kc, kb[nr].s.length - 1) }); return; }
+    if (a === 'left') { this.setState({ kc: Math.max(0, st.kc - 1) }); return; }
+    if (a === 'right') {
+      if (st.kc >= kb[st.kr].s.length - 1) { this.setState({ resultSel: 0 }); return; }
+      this.setState({ kc: st.kc + 1 }); return;
+    }
+    if (a === 'back') { this.setState({ query: st.query.slice(0, -1), resultSel: -1 }); return; }
+    if (a === 'ok') {
+      if (st.resultSel >= 0) { const r = this.matches()[st.resultSel]; if (r) this.setState({ screen: 'launch', launchP: 0, launch: r.svc, playing: true }); return; }
+      const ch = kb[st.kr].s[st.kc];
+      if (ch === '_') this.setState({ query: st.query + ' ' });
+      else if (ch === '<') this.setState({ query: st.query.slice(0, -1) });
+      else if (ch === 'x') this.setState({ query: '' });
+      else this.setState({ query: (st.query + ch).slice(0, 24) });
+    }
+  }
+  catalog() {
+    const S = this.svc();
+    return [
+      { t: 'Strange New Worlds', s: 'Netflix · series', svc: S.nf }, { t: 'Stranger Things', s: 'Netflix · series', svc: S.nf },
+      { t: 'Dune: Part Two', s: 'HBO Max · film', svc: S.hb }, { t: 'Drive to Survive', s: 'Prime Video · series', svc: S.pv },
+      { t: 'Strange Parts', s: 'YouTube · channel', svc: S.yt }, { t: 'Doctor Strange', s: 'Disney+ · film', svc: S.dp },
+      { t: 'Blade Runner 2049', s: 'Plex · film', svc: S.px }, { t: 'Kodi library', s: 'Local media', svc: S.lm },
+      { t: 'Le Mans 1971 restoration', s: 'YouTube · video', svc: S.yt }, { t: 'Jazz radio · night set', s: 'Plex · music', svc: S.px }
+    ];
+  }
+  matches() {
+    const q = this.state.query.trim().toLowerCase();
+    const all = this.catalog();
+    if (!q) return all.slice(0, 5);
+    return all.filter(r => (r.t + ' ' + r.s).toLowerCase().includes(q)).slice(0, 5);
+  }
+  renderVals() {
+    const a = this.acc(), st = this.state, rows = this.rowDefs();
+    const dim = 'rgba(242,244,247,.55)';
+    const geo = { card: { w: '224px', h: '126px', fs: '0px', al: 'flex-end', ta: 'left' }, tile: { w: '124px', h: '124px', fs: '52px', al: 'center', ta: 'center' }, small: { w: '92px', h: '92px', fs: '38px', al: 'center', ta: 'center' } };
+    const step = { card: 240, tile: 140, small: 108 };
+    const vis = { card: 4, tile: 7, small: 9 };
+    const ms = this.matches();
+    return {
+      acc: a,
+      screen: st.screen,
+      isBoot: st.screen === 'boot', isHome: st.screen === 'home', isSearch: st.screen === 'search',
+      isLaunch: st.screen === 'launch', isPlaying: st.screen === 'playing',
+      bootP: st.bootP, bootW: st.bootP + '%',
+      clock: '20:14',
+      hint: '▲▼ rows · ◀▶ browse · OK open · ▲ from top row opens search',
+      focusLabel: st.screen === 'search' ? 'keyboard ' + st.kr + ',' + st.kc : 'row ' + st.row + ' · item ' + st.cols[st.row],
+      nav: ['Home', 'Search', 'Popular', 'Yours', 'Settings'].map((t, i) => ({
+        t, fg: i === 0 ? '#F2F4F7' : 'rgba(242,244,247,.4)', bar: i === 0 ? a : 'transparent'
+      })),
+      rows: rows.map((r, ri) => {
+        const g = geo[r.kind], col = st.cols[ri], off = Math.max(0, col - (vis[r.kind] - 2));
+        return {
+          label: r.label, hc: ri === st.row ? 'rgba(242,244,247,.75)' : 'rgba(242,244,247,.35)',
+          count: (col + 1) + ' / ' + r.items.length,
+          dx: '-' + off * step[r.kind] + 'px',
+          items: r.items.map((it, ci) => {
+            const on = ri === st.row && ci === col;
+            return {
+              n: it.n, l: r.kind === 'card' ? '' : it.s.l, w: g.w, h: g.h, fs: g.fs, al: g.al, ta: g.ta,
+              bg: r.kind === 'card' ? 'repeating-linear-gradient(135deg,rgba(255,255,255,.055) 0 10px,rgba(255,255,255,0) 10px 20px),#15181E' : it.s.c,
+              lc: on ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.72)',
+              tc: on ? '#F2F4F7' : dim,
+              ring: on ? '0 0 0 3px ' + a + ', 0 14px 30px rgba(0,0,0,.55)' : 'none',
+              ty: on ? '-6px' : '0px',
+              pd: r.kind === 'card' ? 'block' : 'none', pw: it.pw || '0%'
+            };
+          })
+        };
+      }),
+      query: st.query,
+      phDisplay: st.query ? 'none' : 'inline',
+      recents: ['strange', 'dune', 'jazz radio'],
+      kb: this.kbDefs().map((row, ri) => ({
+        keys: row.s.split('').map((c, ci) => {
+          const on = st.resultSel < 0 && ri === st.kr && ci === st.kc;
+          const wide = ri === 3;
+          return {
+            c: c === '_' ? 'space' : c === '<' ? '⌫' : c === 'x' ? 'clear' : c,
+            w: wide ? (c === '_' ? '300px' : '150px') : '52px',
+            fs: wide ? '17px' : '22px',
+            bg: on ? a : 'rgba(255,255,255,.055)',
+            fg: on ? '#08090B' : '#F2F4F7',
+            bd: on ? a : 'rgba(255,255,255,.09)'
+          };
+        })
+      })),
+      resultsLabel: st.query ? 'Results for “' + st.query + '”' : 'Suggested',
+      results: ms.map((r, i) => ({
+        t: r.t, s: r.s, c: r.svc.c,
+        bg: st.resultSel === i ? 'rgba(90,169,230,.1)' : 'rgba(255,255,255,.035)',
+        bd: st.resultSel === i ? a : 'rgba(255,255,255,.06)'
+      })),
+      launchName: st.launch.n, launchLetter: st.launch.l, launchColor: st.launch.c,
+      launchW: st.launchP + '%',
+      launchNote: st.launch.n === 'Browser' || st.launch.n === 'HBO Max' ? 'opening in browser · remote switches to cursor mode' : 'native app · handing over the screen',
+      playTitle: st.launch.n === 'Netflix' ? 'Strange New Worlds · S2E4' : st.launch.n === 'HBO Max' ? 'Dune: Part Two' : 'Resuming last title',
+      playTime: '0:31:12 · 1:42 left',
+      playW: '19%', playGlyph: st.playing ? '❚❚' : '▶',
+      up: () => this.press('up'), down: () => this.press('down'), left: () => this.press('left'),
+      right: () => this.press('right'), ok: () => this.press('ok'), back: () => this.press('back'),
+      searchKey: () => this.setState({ screen: 'search', resultSel: -1 }),
+      home: () => this.setState({ screen: 'home' })
+    };
+  }
+}
+</script>
+</body>
+</html>
