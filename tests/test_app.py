@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from pipertv.app import create_app, main
+from pipertv.session import ControlSession
 
 
 class AppTests(unittest.TestCase):
@@ -139,6 +140,175 @@ class AppTests(unittest.TestCase):
             main(["--demo", "--host", "127.0.0.1", "--port", "8765", "--data", str(self.path)])
         run.assert_called_once_with(host="127.0.0.1", port=8765, threaded=True,
                                     processes=1, debug=False, use_debugger=False, use_reloader=False)
+
+
+class FakeRemote:
+    """A real control gate with the devices and detector stubbed out."""
+
+    def __init__(self):
+        self.session = ControlSession()
+        self.started = self.closed = self.held = self.released = 0
+        self.reloaded = 0
+
+    def reload_recordings(self):
+        self.reloaded += 1
+
+    def start(self):
+        self.started += 1
+
+    def close(self):
+        self.closed += 1
+
+    def hold(self, reason="Recording a remote button."):
+        self.held += 1
+        return self.session.hold(reason)
+
+    def release(self):
+        self.released += 1
+        return self.session.release()
+
+    def snapshot(self):
+        return dict(self.session.snapshot(), detection={"state": "active", "reason": "test"})
+
+    def choose(self, mode, session_id):
+        return self.session.choose(mode, session_id)
+
+    def manual(self, confirmed):
+        return self.session.start_manual(confirmed)
+
+    def stop(self):
+        return self.session.stop()
+
+    def health(self):
+        return {"screen": [1920, 1080], "pointer": {"ok": True}}
+
+
+class ControlEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.path = Path(self.temporary.name) / "recordings.json"
+        self.remote = FakeRemote()
+        self.app = create_app(data=self.path, demo=True, remote=self.remote)
+        self.client = self.app.test_client()
+        workbench = self.app.extensions["pipertv"]
+        self.addCleanup(workbench.backend.close)
+        self.addCleanup(workbench.close)
+
+    def visit(self):
+        """Open a session the way the manual fallback would."""
+        return self.client.post("/api/control/manual", json={"confirmed": True}).get_json()
+
+    def test_the_control_layer_is_started_with_the_app(self):
+        self.assertEqual(self.remote.started, 1)
+
+    def test_state_reports_the_gate_and_the_detector(self):
+        response = self.client.get("/api/control")
+        self.assertEqual(response.status_code, 200)
+        state = response.get_json()
+        self.assertEqual(state["control"], "off")
+        self.assertEqual(state["detection"]["state"], "active")
+
+    def test_a_mode_can_only_be_chosen_for_the_current_visit(self):
+        state = self.visit()
+        self.assertTrue(state["needs_mode"])
+        chosen = self.client.post("/api/control/mode",
+                                  json={"mode": "pointer", "session_id": state["session"]["id"]})
+        self.assertEqual(chosen.status_code, 200)
+        self.assertEqual(chosen.get_json()["control"], "on")
+        self.assertTrue(self.remote.session.enabled())
+
+    def test_an_unknown_mode_is_rejected(self):
+        state = self.visit()
+        response = self.client.post("/api/control/mode",
+                                    json={"mode": "magic", "session_id": state["session"]["id"]})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.get_json())
+
+    def test_a_choice_from_an_earlier_visit_conflicts(self):
+        self.visit()
+        response = self.client.post("/api/control/mode",
+                                    json={"mode": "pointer", "session_id": "an-earlier-visit"})
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(self.remote.session.enabled())
+
+    def test_manual_control_needs_an_explicit_confirmation(self):
+        response = self.client.post("/api/control/manual", json={"confirmed": False})
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNone(self.remote.session.snapshot()["session"])
+
+    def test_control_can_be_stopped(self):
+        state = self.visit()
+        self.client.post("/api/control/mode",
+                         json={"mode": "snapping", "session_id": state["session"]["id"]})
+        self.assertTrue(self.remote.session.enabled())
+        response = self.client.post("/api/control/stop", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.get_json()["session"])
+        self.assertFalse(self.remote.session.enabled())
+
+    def test_recording_stands_the_desktop_down(self):
+        state = self.visit()
+        self.client.post("/api/control/mode",
+                         json={"mode": "pointer", "session_id": state["session"]["id"]})
+        self.assertEqual(self.client.post("/api/captures", json={"button_id": "power"}).status_code, 202)
+        self.assertEqual(self.remote.held, 1)
+        self.assertFalse(self.remote.session.enabled())
+
+    def test_health_includes_the_control_layer(self):
+        health = self.client.get("/api/health").get_json()
+        self.assertEqual(health["control"]["screen"], [1920, 1080])
+
+    def test_deleting_a_sample_refreshes_the_live_remote_mappings(self):
+        job = self.client.post("/api/captures", json={"button_id": "power"}).get_json()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = self.client.get("/api/captures/" + job["id"]).get_json()
+            if state["status"] == "captured":
+                break
+            time.sleep(.025)
+        self.assertEqual(state["status"], "captured")
+        response = self.client.delete("/api/buttons/power/samples/0", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.remote.reloaded, 1)
+
+
+class ControlDisabledTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.app = create_app(data=Path(self.temporary.name) / "recordings.json", demo=True)
+        self.client = self.app.test_client()
+        workbench = self.app.extensions["pipertv"]
+        self.addCleanup(workbench.backend.close)
+        self.addCleanup(workbench.close)
+
+    def test_control_is_off_unless_asked_for(self):
+        self.assertIsNone(self.app.extensions["pipertv_control"])
+
+    def test_demo_does_not_construct_a_hardware_controller(self):
+        with patch("pipertv.app.RemoteControl") as hardware:
+            app = create_app(data=Path(self.temporary.name) / "demo.json",
+                             demo=True, control=True)
+        self.addCleanup(app.extensions["pipertv"].close)
+        hardware.assert_not_called()
+        self.assertIsNone(app.extensions["pipertv_control"])
+
+    def test_the_control_endpoints_report_that_it_is_not_running(self):
+        cases = [self.client.get("/api/control"),
+                 self.client.post("/api/control/mode", json={"mode": "pointer", "session_id": "x"}),
+                 self.client.post("/api/control/manual", json={"confirmed": True}),
+                 self.client.post("/api/control/stop", json={})]
+        for response in cases:
+            with self.subTest(path=response.request.path):
+                self.assertEqual(response.status_code, 404)
+                self.assertIn("error", response.get_json())
+
+    def test_recording_still_works_without_desktop_control(self):
+        self.assertEqual(self.client.post("/api/captures", json={"button_id": "power"}).status_code, 202)
+
+    def test_health_omits_control(self):
+        self.assertNotIn("control", self.client.get("/api/health").get_json())
 
 
 if __name__ == "__main__":

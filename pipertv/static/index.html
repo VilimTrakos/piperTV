@@ -37,6 +37,29 @@
           <button id="test-receiver" class="text-button">Test receiver</button><p id="local-receiver-error" class="inline-error" role="alert" hidden></p>
         </section>
 
+        <section class="receiver-card" id="control-card" aria-labelledby="control-heading" hidden>
+          <div class="receiver-top">
+            <div class="receiver-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4v12l3-3h6l4-4V4z"/><path d="m13 13 3 7 2-5 5-2-7-3"/></svg></div>
+            <div class="receiver-text"><h2 id="control-heading">Control this desktop</h2><p id="control-detail">Checking what the TV is showing…</p></div>
+            <span id="control-badge" class="status-badge"><i></i><span>Off</span></span>
+          </div>
+          <div id="control-modes" hidden>
+            <span class="field-label">CHOOSE A MODE FOR THIS VISIT</span>
+            <div class="capture-actions">
+              <button id="mode-pointer" class="button button-primary" type="button">Pointer</button>
+              <button id="mode-snapping" class="button button-outline" type="button">Snapping</button>
+            </div>
+            <p class="remote-note">Pointer nudges the cursor. Snapping jumps it to the next target.</p>
+          </div>
+          <div id="control-manual" hidden>
+            <p class="remote-note">If detection is unavailable or outdated, confirm the TV's input yourself.</p>
+            <button id="control-confirm" class="text-button" type="button">The TV is showing the Pi — let me choose a mode</button>
+          </div>
+          <button id="control-stop" class="text-button danger" type="button" hidden>Stop controlling the desktop</button>
+          <p id="control-error" class="inline-error" role="alert" hidden></p>
+          <p id="control-runtime-error" class="inline-error" role="status" hidden></p>
+        </section>
+
         <section class="capture-card" aria-labelledby="capture-heading">
           <div class="panel-heading"><div><span class="eyebrow">02 / RECORD</span><h2 id="capture-heading">Capture a signal</h2></div><span id="selected-section" class="section-label">SYSTEM</span></div>
           <div class="selected-key"><span class="selected-key-icon" id="selected-icon" aria-hidden="true">⏻</span><div><span class="field-label">SELECTED BUTTON</span><h3 id="selected-label">Power</h3><code id="selected-id">power</code></div><button id="rename-button" class="icon-button" aria-label="Rename selected button" title="Rename button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg></button></div>
