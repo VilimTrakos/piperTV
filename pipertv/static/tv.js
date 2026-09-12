@@ -144,8 +144,9 @@
 
   function clock() {
     const now = new Date();
-    $("home-clock").textContent =
-      `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    $("home-clock").textContent = time;
+    $("boot-meta").textContent = `raspberry pi · ${time}`;
   }
 
   function move(step) {
@@ -217,13 +218,21 @@
     clock();
     setInterval(clock, 20000);
 
+    // A kiosk that reloads should not replay the splash every time, and it is
+    // the only way to look at the dial in a renderer that cannot wait.
+    const skipBoot = new URLSearchParams(window.location.search).get("boot") === "0";
     $("boot-fill").style.width = "62%";
     $("boot-status").textContent = "starting · reading the remote";
-    setTimeout(() => {
-      $("boot-fill").style.width = "100%";
+    if (skipBoot) {
       showScreen("home");
       layoutRing();
-    }, 1400);
+    } else {
+      setTimeout(() => {
+        $("boot-fill").style.width = "100%";
+        showScreen("home");
+        layoutRing();
+      }, 1400);
+    }
 
     poll();
   }
