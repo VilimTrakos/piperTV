@@ -52,7 +52,7 @@ class ControlSessionTests(unittest.TestCase):
 
     # 3. Choose a mode: only the current session becomes eligible.
     def test_choosing_a_mode_turns_control_on(self):
-        for mode in ("pointer", "snapping"):
+        for mode in ("pointer", "snapping", "piper"):
             with self.subTest(mode=mode):
                 session = ControlSession()
                 state = session.update(cec("active"))
@@ -61,6 +61,17 @@ class ControlSessionTests(unittest.TestCase):
                 self.assertEqual(chosen["control"], "on")
                 self.assertFalse(chosen["needs_mode"])
                 self.assertTrue(session.enabled())
+
+    def test_the_piper_interface_is_gated_like_any_other_mode(self):
+        # Driving Piper's own interface is still driving the Pi, so it needs
+        # the same evidence and the same per-visit choice.
+        state = self.session.update(cec("active"))
+        self.assertTrue(state["needs_mode"])
+        chosen = self.session.choose("piper", state["session"]["id"])
+        self.assertEqual(chosen["mode"], "piper")
+        self.assertTrue(self.session.enabled())
+        self.session.update(cec("inactive"))
+        self.assertFalse(self.session.enabled())
 
     def test_an_unknown_mode_is_refused(self):
         state = self.session.update(cec("active"))

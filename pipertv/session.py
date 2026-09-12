@@ -22,7 +22,10 @@ import threading
 import uuid
 
 SOURCES = ("active", "inactive", "unknown")
-MODES = ("pointer", "snapping")
+# "piper" drives the interface on the TV itself; the other two move the Pi's
+# desktop cursor. All three are gated identically.
+MODES = ("pointer", "snapping", "piper")
+DESKTOP_MODES = ("pointer", "snapping")
 ORIGINS = ("cec", "manual")
 
 
@@ -128,7 +131,7 @@ class ControlSession:
     def choose(self, mode: str, session_id: str) -> dict:
         """Bind a mode to the visit the browser was actually looking at."""
         if mode not in MODES:
-            raise ValueError("Choose either pointer or snapping mode.")
+            raise ValueError("Choose the piper interface, pointer, or snapping mode.")
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("A mode choice must name the session it belongs to.")
         with self._lock:
