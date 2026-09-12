@@ -133,6 +133,20 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
     def stylesheet():
         return app.send_static_file("style.css")
 
+    # The Piper interface, shown full screen on the Pi's own HDMI output.
+    @app.get("/tv")
+    @app.get("/tv.html")
+    def tv_interface():
+        return app.send_static_file("tv.html")
+
+    @app.get("/tv.js")
+    def tv_javascript():
+        return app.send_static_file("tv.js")
+
+    @app.get("/tv.css")
+    def tv_stylesheet():
+        return app.send_static_file("tv.css")
+
     @app.get("/api/state")
     def state():
         return jsonify(workbench.state())
@@ -212,6 +226,14 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
     def stop_control():
         body()
         return jsonify(desktop().stop())
+
+    @app.get("/api/tv/events")
+    def tv_events():
+        # The page reports the last press it saw and receives what followed.
+        after = request.args.get("after", "0")
+        if not after.isdigit():
+            raise ValueError("The last seen press must be a whole number, zero or more.")
+        return jsonify(desktop().events(int(after)))
 
     return app
 
