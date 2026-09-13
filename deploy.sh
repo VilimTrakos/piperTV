@@ -9,6 +9,7 @@
 #   ./deploy.sh --ref f6c361a   deploy any commit -- this is the way back
 #   ./deploy.sh --dirty         deploy the working tree as it stands
 #   ./deploy.sh --no-kiosk      leave the browser on the TV alone
+#   ./deploy.sh --no-session    do not open a control session afterwards
 #   ./deploy.sh --skip-tests    do not run the suite first
 #
 # The password is asked for once (one multiplexed SSH connection carries every
@@ -20,13 +21,14 @@ LOGIN=${PIPER_USER:-rpi}
 DIR=${PIPER_DIR:-/home/rpi/piperTV}
 PORT=${PIPER_PORT:-8765}
 PROFILE=${PIPER_KIOSK_PROFILE:-/tmp/kiosk-gpu-off}
-REF=HEAD; DIRTY=0; KIOSK=1; TESTS=1
+REF=HEAD; DIRTY=0; KIOSK=1; TESTS=1; SESSION=1
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF=${2:?--ref needs a commit}; shift 2 ;;
     --dirty) DIRTY=1; shift ;;
     --no-kiosk) KIOSK=0; shift ;;
+    --no-session) SESSION=0; shift ;;
     --skip-tests) TESTS=0; shift ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "deploy.sh: unknown option $1" >&2; exit 2 ;;
@@ -176,5 +178,24 @@ else:
 print('detection:', (control.get('detection') or {}).get('state'))
 PY
 echo \"interface windows: \$(ps -eo args | grep -c \"[c]hromium --type=renderer\")\""
+
+if [ "$SESSION" = 1 ]; then
+  say "Opening a Piper session"
+  # A restart forgets the visit, and this television never reports its selected
+  # input over CEC -- it answers "switch away and back" forever -- so the gate
+  # cannot open by itself and the remote is inert until someone says the Pi is
+  # what the screen is showing. Deploying is that someone: it is a manual
+  # confirmation, recorded as manual, not evidence pretending to be CEC.
+  ID=$(curl -s -m 5 -X POST -H 'Content-Type: application/json' -d '{"confirmed":true}' \
+        "http://$HOST:$PORT/api/control/manual" \
+       | python3 -c "import json,sys; print((json.load(sys.stdin).get('session') or {}).get('id',''))")
+  if [ -z "$ID" ]; then
+    echo "could not open a session; the remote will do nothing but leave" >&2
+  else
+    curl -s -m 5 -X POST -H 'Content-Type: application/json' \
+      -d "{\"mode\":\"piper\",\"session_id\":\"$ID\"}" "http://$HOST:$PORT/api/control/mode" \
+      | python3 -c "import json,sys; d=json.load(sys.stdin); print('control:', d['control'], '| mode:', d['mode'], '| origin:', d['origin'])"
+  fi
+fi
 
 say "Done: $VERSION"
