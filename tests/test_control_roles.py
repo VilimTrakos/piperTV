@@ -5,7 +5,7 @@ import unittest
 
 from pipertv.control import RemoteControl
 
-from tests.test_control import (FakeController, FakeDesktop, FakeInterface,
+from tests.test_control import (FakeController, FakeDesktop, FakeInterface, FakeKeys,
                                 FakeLauncher, FakeMonitor, FakeTargets, select)
 
 SCREEN = (1920, 1080)
@@ -28,7 +28,8 @@ def build(roles=None, state="active"):
     control = RemoteControl(RoleStore(roles), screen=SCREEN,
                             monitor=FakeMonitor(state), controller=FakeController(),
                             targets=FakeTargets(), desktop=FakeDesktop(),
-                            launcher=FakeLauncher(), interface=FakeInterface())
+                            launcher=FakeLauncher(), interface=FakeInterface(),
+                            keys=FakeKeys())
     return control
 
 
@@ -120,22 +121,29 @@ class LoadingTests(unittest.TestCase):
         control._press("play")
         self.assertEqual(control.desktop.presses, ["up"])
 
-    def test_the_rebound_key_is_also_the_way_back_from_a_service(self):
-        # Back lives on the rewind key here, so closing YouTube has to follow
-        # the role rather than the key the remote actually sent.
-        control = build({"back": "rewind"})
+    def test_the_rebound_key_is_also_the_way_out_of_a_service(self):
+        # Exit lives on the stop key here, so closing YouTube has to follow the
+        # role rather than the key the remote actually sent.
+        control = build({"exit": "stop"})
         select(control, "piper")
         control.launch("youtube", control.session.snapshot()["session"]["id"])
-        control._press("rewind")
+        control._press("stop")
         self.assertEqual(control.launcher.stopped, 1)
         self.assertIsNone(control.launcher.running())
 
-    def test_the_key_back_left_behind_does_not_close_a_service(self):
-        control = build({"back": "rewind"})
+    def test_the_key_exit_left_behind_does_not_close_a_service(self):
+        control = build({"exit": "stop"})
         select(control, "piper")
         control.launch("youtube", control.session.snapshot()["session"]["id"])
-        control._press("back")
+        control._press("exit")
         self.assertEqual(control.launcher.stopped, 0)
+
+    def test_a_rebound_key_types_into_the_service_as_its_role(self):
+        control = build({"up": "play"})
+        select(control, "piper")
+        control.launch("youtube", control.session.snapshot()["session"]["id"])
+        control._press("play")
+        self.assertEqual(control.keys.sent, ["up"])
 
     def test_leaving_piper_follows_the_key_exit_was_moved_to(self):
         control = build({"exit": "stop"})

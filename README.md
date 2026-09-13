@@ -112,9 +112,10 @@ is full screen with no keyboard in front of it, so leaving has to work even when
 control is off — losing the TV's report happens on its own, and it must not
 trap whoever is watching:
 
-- **Back**, **Exit** or **Home** closes an open service and returns to the
-  interface. The Pi acts on that press itself, because the interface is behind
-  the service's window by then.
+- **Exit** or **Home** closes an open service and returns to the interface. The
+  Pi acts on that press itself, because the interface is behind the service's
+  window by then. **Back** is not one of them: it belongs to the service, whose
+  own back button is how you leave a video.
 - **Exit twice**, within six seconds and with nothing open, closes the Piper
   interface and leaves the Pi's desktop. The first press only asks; the TV shows
   the question, and any other key takes it back. One press can never do it: the
@@ -138,8 +139,10 @@ Two limits are worth knowing before you try it:
   says it cannot open that yet. YouTube opens its ten-foot app, which it serves
   only to a browser identifying itself as a television; Prime Video has no such
   app published, so it opens the ordinary site, laid out for a pointer.
-- **The remote does not reach inside what it opens.** Piper does not synthesise
-  key presses, so YouTube's own interface answers only to a keyboard, or to the
-  mouse in **Pointer** mode. Back returns to Piper at any time. Launch history
-  on the home screen is what Piper really started, and it is kept in memory
-  only: restarting the app empties it.
+- **The remote drives what it opens**, by presenting a virtual keyboard to the
+  Pi through the same kernel interface as the virtual mouse: directions, OK and
+  Back arrive at YouTube's television app as arrow keys, Enter and Escape. That
+  keyboard has no letters or digits — it can press only what a remote has — and
+  it exists only while a service is open. Typing a search term still needs a
+  keyboard, or the mouse in **Pointer** mode.
+- **Launch history is kept in memory only**: restarting the app empties it.

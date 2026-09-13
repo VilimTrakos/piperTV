@@ -238,8 +238,9 @@
   function press(button) {
     if (state.screen !== "home") return;
     if (state.open) {
-      // Something owns the screen; the ring must not move behind it.
-      if (button === "back" || button === "exit" || button === "home") closeService();
+      // Something owns the screen; the ring must not move behind it, and back
+      // belongs to that service. Only exit and home come back here.
+      if (button === "exit" || button === "home") closeService();
       return;
     }
     switch (button) {
@@ -288,7 +289,7 @@
     state.services = services || null;
     const running = (services && services.running) || null;
     if (running && state.open !== running.id) {
-      notify(`${running.name} is open · back returns to piper`, true, "open");
+      notify(`${running.name} is open · exit returns to piper`, true, "open");
     } else if (!running && (state.notice === "open"
                || (state.notice === "opening" && !state.opening))) {
       // Either it closed, or it never came up: neither leaves a notice standing.
