@@ -17,6 +17,7 @@ import threading
 from .cec import CecMonitor
 from .desktop import DesktopControl
 from .ir_control import DIRECTIONS, IRController
+from .launcher import ServiceLauncher
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
 from .roles import RoleMap
@@ -28,6 +29,9 @@ LOG = logging.getLogger(__name__)
 DEFAULT_SCREEN = (1920, 1080)
 POLL_S = 0.4
 RECORDING = "Recording a remote button, so the remote is not controlling the desktop."
+# The way back from whatever Piper opened. Any of the three, in any mode: the
+# interface is behind that window and cannot be relied on to see the press.
+RETURN_TO_PIPER = ("back", "exit", "home")
 
 
 class RemoteControl:
@@ -35,7 +39,7 @@ class RemoteControl:
 
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
-                 buttons=None):
+                 buttons=None, launcher=None, browser=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -45,6 +49,7 @@ class RemoteControl:
                                        enabled=self._enabled)
                         if desktop is None else desktop)
         self.buttons = ButtonLog() if buttons is None else buttons
+        self.launcher = ServiceLauncher(browser=browser) if launcher is None else launcher
         self._input_context = None
         self.roles = self._load_roles()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
@@ -142,8 +147,22 @@ class RemoteControl:
             # They differ once a role has been moved to a key the TV ignores.
             action = self.roles.action(button)
             self.buttons.append(button, mode, state["session"]["id"], action=action)
+        if action is not None and self._returned_to_piper(action):
+            return
         if action is not None and mode in DESKTOP_MODES:
             self.desktop.press(action)
+
+    def _returned_to_piper(self, action: str) -> bool:
+        """Close whatever Piper opened, in whichever mode the visit chose.
+
+        The service owns the screen while it runs, so this is the only press
+        the remote can still be sure of; the interface is behind that window,
+        where a browser may throttle or hide it, and cannot be the one to act.
+        """
+        if action not in RETURN_TO_PIPER or self.launcher.running() is None:
+            return False
+        self.launcher.stop()
+        return True
 
     def _tick(self) -> None:
         """One supervisor pass: refresh the judgement, act on a lost visit."""
@@ -171,7 +190,7 @@ class RemoteControl:
             self._thread = None
         if thread is not None and threading.current_thread() is not thread:
             thread.join(timeout=3)
-        for part in (self.controller, self.monitor, self.desktop):
+        for part in (self.controller, self.monitor, self.desktop, self.launcher):
             try:
                 part.close()
             except Exception as exc:  # noqa: BLE001 - shutdown must finish
@@ -191,6 +210,34 @@ class RemoteControl:
         if hasattr(self.targets, "invalidate"):
             self.targets.invalidate()
         return result
+
+    def launch(self, service, session_id) -> dict:
+        """Open a service for the visit the interface was actually looking at.
+
+        The press that chose the icon was only allowed because the TV is
+        showing this Pi; the launch it leads to answers to the same gate, so a
+        page left open on a PC cannot start something on a TV showing anything
+        else.
+        """
+        with self._source_lock:
+            self._refresh_source()
+            state = self._sync_input_context()
+            if state["hold"]:
+                raise RuntimeError(state["hold"])
+            if state["control"] != "on":
+                raise RuntimeError("The TV is not showing the Pi, so Piper cannot open "
+                                   "anything on it.")
+            if state["mode"] != "piper":
+                raise RuntimeError("Choose the Piper interface for this visit before opening "
+                                   "a service.")
+            if session_id != state["session"]["id"]:
+                raise RuntimeError("That belongs to an earlier visit to the Pi's input. "
+                                   "Reload the interface on the TV.")
+        return self.launcher.launch(service)
+
+    def stop_service(self) -> dict:
+        """Give the screen back to the interface. Always allowed: it is the way out."""
+        return self.launcher.stop()
 
     def manual(self, confirmed) -> dict:
         with self._source_lock:
@@ -250,6 +297,7 @@ class RemoteControl:
         result["mode"] = state["mode"]
         result["control"] = state["control"]
         result["session_id"] = state["session"]["id"] if state["session"] else None
+        result["services"] = self.launcher.snapshot()
         return result
 
     # --- reporting -------------------------------------------------------
@@ -259,6 +307,7 @@ class RemoteControl:
         state = self.session.snapshot()
         state["detection"] = detection
         state["roles"] = self.roles.describe()
+        state["services"] = self.launcher.snapshot()
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
                             "desktop": self.desktop.health(),
@@ -269,4 +318,5 @@ class RemoteControl:
         targets = self.targets.health() if hasattr(self.targets, "health") else None
         return {"screen": list(self.screen), "pointer": pointer_health(),
                 "receiver": self.controller.health(), "desktop": self.desktop.health(),
-                "targets": targets, "detection": self.monitor.snapshot()}
+                "targets": targets, "detection": self.monitor.snapshot(),
+                "services": self.launcher.snapshot()}

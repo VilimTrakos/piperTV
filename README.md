@@ -94,3 +94,34 @@ Pointer mode nudges the cursor and speeds up while a direction is held. Snapping
 If your TV cannot report its input, the interface offers an explicit manual confirmation with a visible stop action. A manual session is your assertion, not evidence, and it is shown as such. What a TV can and cannot report is covered in [the detection notes](docs/hdmi-detection.md), including why desktop icons are not snapping targets on a Wayland session.
 
 Start with `--no-control` to learn buttons without ever driving the desktop.
+
+## Open a service from the interface on the TV
+
+The Piper interface is a page served at `http://PI_ADDRESS:8765/tv`, meant to be
+shown full screen on the Pi's own HDMI output. Choose **Piper interface** for the
+visit and the learned remote moves the dial on the TV instead of the cursor.
+
+**OK on YouTube opens it.** PiperTV starts chromium full screen on the Pi's
+screen at YouTube's television interface, in a profile of its own so a sign-in
+survives and so the window is a process PiperTV can actually close. **Back**,
+**Exit** or **Home** closes it and returns to the interface; the Pi acts on that
+press itself, because the interface is behind the service's window by then.
+Stopping PiperTV closes an open service too, rather than leaving a full-screen
+window nothing can dismiss.
+
+Opening a service needs two things that the interface reports rather than
+assumes: chromium installed on the Pi (`sudo apt install chromium`, or name a
+different browser with `--browser`), and PiperTV running **inside the Pi's
+desktop session**, since it has to put a window on that screen. Where either is
+missing, the interface says so on the TV instead of appearing to open something.
+
+Two limits are worth knowing before you try it:
+
+- **Only YouTube is wired up.** The other tiles come from the design reference.
+  Piper does not know what is installed on this Pi, so selecting one says it
+  cannot open that yet.
+- **The remote does not reach inside what it opens.** Piper does not synthesise
+  key presses, so YouTube's own interface answers only to a keyboard, or to the
+  mouse in **Pointer** mode. Back returns to Piper at any time. Launch history
+  on the home screen is what Piper really started, and it is kept in memory
+  only: restarting the app empties it.

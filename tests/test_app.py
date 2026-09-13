@@ -9,6 +9,8 @@ from pipertv.app import create_app, main
 from pipertv.session import ControlSession
 from pipertv.tv import ButtonLog
 
+from tests.test_control import FakeLauncher
+
 
 class AppTests(unittest.TestCase):
     def setUp(self):
@@ -149,6 +151,7 @@ class FakeRemote:
     def __init__(self):
         self.session = ControlSession()
         self.buttons = ButtonLog()
+        self.launcher = FakeLauncher()
         self.started = self.closed = self.held = self.released = 0
         self.reloaded = 0
 
@@ -157,7 +160,20 @@ class FakeRemote:
         state = self.session.snapshot()
         result["mode"] = state["mode"]
         result["control"] = state["control"]
+        result["session_id"] = state["session"]["id"] if state["session"] else None
+        result["services"] = self.launcher.snapshot()
         return result
+
+    def launch(self, service, session_id):
+        state = self.session.snapshot()
+        if state["control"] != "on" or state["mode"] != "piper":
+            raise RuntimeError("The TV is not showing the Pi, so Piper cannot open anything on it.")
+        if not state["session"] or session_id != state["session"]["id"]:
+            raise RuntimeError("That belongs to an earlier visit to the Pi's input.")
+        return self.launcher.launch(service)
+
+    def stop_service(self):
+        return self.launcher.stop()
 
     def reload_recordings(self):
         self.reloaded += 1
@@ -341,6 +357,39 @@ class TvInterfaceTests(unittest.TestCase):
         feed = self.client.get("/api/tv/events").get_json()
         self.assertEqual((feed["control"], feed["mode"]), ("on", "piper"))
 
+    def test_a_service_opens_for_the_visit_the_interface_is_showing(self):
+        state = self.client.post("/api/control/manual", json={"confirmed": True}).get_json()
+        visit = state["session"]["id"]
+        self.client.post("/api/control/mode", json={"mode": "piper", "session_id": visit})
+
+        response = self.client.post("/api/tv/launch",
+                                    json={"service": "youtube", "session_id": visit})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["running"]["id"], "youtube")
+        self.assertEqual(self.remote.launcher.launched, ["youtube"])
+        self.assertEqual(self.client.get("/api/tv/events").get_json()["services"]["running"]["id"],
+                         "youtube")
+
+        closed = self.client.post("/api/tv/close", json={})
+        self.assertEqual(closed.status_code, 200)
+        self.assertIsNone(closed.get_json()["running"])
+
+    def test_a_service_piper_cannot_open_is_not_found(self):
+        state = self.client.post("/api/control/manual", json={"confirmed": True}).get_json()
+        visit = state["session"]["id"]
+        self.client.post("/api/control/mode", json={"mode": "piper", "session_id": visit})
+        response = self.client.post("/api/tv/launch",
+                                    json={"service": "netflix", "session_id": visit})
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("netflix", response.get_json()["error"])
+
+    def test_opening_is_refused_while_the_tv_shows_another_input(self):
+        response = self.client.post("/api/tv/launch",
+                                    json={"service": "youtube", "session_id": "whatever"})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("not showing the Pi", response.get_json()["error"])
+        self.assertEqual(self.remote.launcher.launched, [])
+
     def test_a_nonsense_position_is_rejected(self):
         for after in ("-1", "abc", "1.5", ""):
             with self.subTest(after=after):
@@ -375,7 +424,9 @@ class ControlDisabledTests(unittest.TestCase):
                  self.client.post("/api/control/mode", json={"mode": "pointer", "session_id": "x"}),
                  self.client.post("/api/control/manual", json={"confirmed": True}),
                  self.client.post("/api/control/stop", json={}),
-                 self.client.get("/api/tv/events")]
+                 self.client.get("/api/tv/events"),
+                 self.client.post("/api/tv/launch", json={"service": "youtube", "session_id": "x"}),
+                 self.client.post("/api/tv/close", json={})]
         for response in cases:
             with self.subTest(path=response.request.path):
                 self.assertEqual(response.status_code, 404)
