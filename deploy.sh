@@ -156,7 +156,9 @@ if [ "$KIOSK" = 1 ]; then
       --no-default-browser-check --force-renderer-accessibility \
       --user-data-dir=$PROFILE 'http://127.0.0.1:$PORT/tv?boot=0' \
       > /tmp/kiosk.log 2>&1 < /dev/null & disown; exit 0" || true
-  sleep 6
+  # Chromium needs longer than this feels like on a 3B+; checking too early
+  # reports no interface when one is on its way up.
+  sleep 12
 fi
 
 # --- prove it ---------------------------------------------------------------
