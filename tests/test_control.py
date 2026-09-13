@@ -65,9 +65,11 @@ class FakeDesktop:
         self.released = self.closed = 0
         self.active = False
         self.presses = []
+        self.modes = []
 
-    def press(self, button):
+    def press(self, button, mode=None):
         self.presses.append(button)
+        self.modes.append(mode)
         self.active = True  # pressing opens the virtual pointer
 
     def release(self):
@@ -84,7 +86,8 @@ class FakeDesktop:
 class FakeLauncher:
     """Stands in for the layer that puts a service on the Pi's screen."""
 
-    KNOWN = {"youtube": "YouTube"}
+    KNOWN = {"youtube": "YouTube", "prime": "Prime Video"}
+    POLICY = {"youtube": "keys", "prime": "snap"}
 
     def __init__(self):
         self.launched = []
@@ -113,9 +116,13 @@ class FakeLauncher:
     def running(self):
         return dict(self.open) if self.open else None
 
+    def policy(self, service_id):
+        return self.POLICY.get(service_id, "keys")
+
     def snapshot(self):
         return {"available": self.available, "reason": None, "browser": "/usr/bin/chromium",
-                "services": [{"id": key, "name": name} for key, name in self.KNOWN.items()],
+                "services": [{"id": key, "name": name, "control": self.policy(key)}
+                             for key, name in self.KNOWN.items()],
                 "running": self.running(), "error": None, "history": list(self.history)}
 
     def close(self):
@@ -543,6 +550,36 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.keys.sent, ["down", "right", "ok"])
         self.assertEqual(control.desktop.presses, [])
 
+    def test_a_site_built_for_a_mouse_is_driven_by_snapping(self):
+        # Arrow keys do nothing on such a page: a cookie dialog's Accept cannot
+        # be reached with them, which is the whole reason this exists.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        for button in ("down", "right", "ok"):
+            control._press(button)
+        self.assertEqual(control.desktop.presses, ["down", "right", "ok"])
+        self.assertEqual(control.desktop.modes, ["snapping"] * 3,
+                         "the visit chose piper; the service asks for snapping")
+        self.assertEqual(control.keys.sent, [])
+
+    def test_back_is_typed_even_to_a_snapped_service(self):
+        # Escape closes an overlay on a page as much as in an app.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        control._press("back")
+        self.assertEqual(control.keys.sent, ["back"])
+        self.assertEqual(control.desktop.presses, [])
+
+    def test_a_television_app_is_typed_at_rather_than_snapped(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        control._press("down")
+        self.assertEqual(control.keys.sent, ["down"])
+        self.assertEqual(control.desktop.presses, [])
+
     def test_closing_a_service_takes_the_keyboard_away(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
@@ -598,7 +635,8 @@ class ServiceTests(unittest.TestCase):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         feed = control.events(0)
-        self.assertEqual([service["id"] for service in feed["services"]["services"]], ["youtube"])
+        self.assertEqual([service["id"] for service in feed["services"]["services"]],
+                         ["youtube", "prime"])
         self.assertIsNone(feed["services"]["running"])
         control.launch("youtube", self.session_id(control))
         self.assertEqual(control.events(0)["services"]["running"]["id"], "youtube")

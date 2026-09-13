@@ -20,7 +20,7 @@ from .desktop import DesktopControl
 from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
 from .keyboard import ServiceKeys
-from .launcher import ServiceLauncher
+from .launcher import SNAP, ServiceLauncher
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
 from .roles import RoleMap
@@ -213,14 +213,30 @@ class RemoteControl:
         if action is not None and self._way_out(action):
             return
         if self.launcher.running() is not None:
-            # Something is on the screen and it is not Piper. The remote drives
-            # that, by typing what a television remote would send, and the
-            # cursor stays out of it.
+            # Something is on the screen and it is not Piper, so the remote
+            # drives that instead of the ring.
             if allowed and action is not None:
-                self.keys.send(action)
+                self._drive_service(action)
             return
         if allowed and action is not None and mode in DESKTOP_MODES:
             self.desktop.press(action)
+
+    def _drive_service(self, action: str) -> None:
+        """Send one press to the open service in the language it understands.
+
+        A television app is typed at. A site built for a mouse is snapped
+        through: its arrow keys do nothing, so the cursor jumps between the
+        controls the page reports and OK clicks the one it landed on. Back is
+        typed either way, because escape closes an overlay in both.
+        """
+        running = self.launcher.running()
+        if running is None:
+            return
+        if (self.launcher.policy(running["id"]) == SNAP
+                and (action in DIRECTIONS or action == "ok")):
+            self.desktop.press(action, mode="snapping")
+            return
+        self.keys.send(action)
 
     def _way_out(self, action: str) -> bool:
         """Leave whatever is on the screen. The one thing the gate cannot veto.
