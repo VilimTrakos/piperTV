@@ -5,8 +5,8 @@ import unittest
 
 from pipertv.control import RemoteControl
 
-from tests.test_control import (FakeController, FakeDesktop, FakeLauncher,
-                                FakeMonitor, FakeTargets, select)
+from tests.test_control import (FakeController, FakeDesktop, FakeInterface,
+                                FakeLauncher, FakeMonitor, FakeTargets, select)
 
 SCREEN = (1920, 1080)
 
@@ -28,7 +28,7 @@ def build(roles=None, state="active"):
     control = RemoteControl(RoleStore(roles), screen=SCREEN,
                             monitor=FakeMonitor(state), controller=FakeController(),
                             targets=FakeTargets(), desktop=FakeDesktop(),
-                            launcher=FakeLauncher())
+                            launcher=FakeLauncher(), interface=FakeInterface())
     return control
 
 
@@ -136,6 +136,20 @@ class LoadingTests(unittest.TestCase):
         control.launch("youtube", control.session.snapshot()["session"]["id"])
         control._press("back")
         self.assertEqual(control.launcher.stopped, 0)
+
+    def test_leaving_piper_follows_the_key_exit_was_moved_to(self):
+        control = build({"exit": "stop"})
+        select(control, "piper")
+        control._press("stop")
+        control._press("stop")
+        self.assertEqual(control.interface.closed, 1)
+
+    def test_the_key_exit_left_behind_cannot_close_piper(self):
+        control = build({"exit": "stop"})
+        select(control, "piper")
+        control._press("exit")
+        control._press("exit")
+        self.assertEqual(control.interface.closed, 0)
 
     def test_the_snapshot_reports_every_role_and_its_key(self):
         control = build({"up": "play"})

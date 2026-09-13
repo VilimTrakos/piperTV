@@ -117,6 +117,11 @@ let browser;
   await expect(tv.locator('#history-list')).toContainText('YouTube');
   await send('right');
   await expect(tv.locator('#focus-name')).toHaveText('Prime Video');
+  // Leaving Piper itself asks first, and the question is taken back by anything else.
+  await send('exit');
+  await expect(tv.locator('#tv-notice')).toContainText('press exit again');
+  await send('right');
+  await expect(tv.locator('#tv-notice')).toBeHidden();
   await tv.keyboard.press('ArrowLeft');
   await expect(tv.locator('#focus-note')).toContainText('cannot open');
   if (errors.length) throw Error(errors.join('\n'));
