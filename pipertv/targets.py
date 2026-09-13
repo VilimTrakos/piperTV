@@ -48,6 +48,8 @@ ACTIONABLE = frozenset({
     "entry", "text box", "search box", "image map",
 })
 WINDOW_ROLES = frozenset({"frame", "window", "dialog", "alert", "desktop frame"})
+# How far to look for the active window itself, not for what is inside it.
+WINDOW_DEPTH = 3
 
 
 def valid_extent(box, screen) -> bool:
@@ -187,6 +189,46 @@ class AtspiTargets:
             registry = self._registry = pyatspi.Registry
         return registry.getDesktop(0)
 
+    def _active_windows(self, applications):
+        """The windows on top, found without walking anything underneath them.
+
+        Only an active window is eligible anyway, and looking for it first is
+        what makes a browser usable: a page puts its controls twenty levels
+        down, and a walk that starts at the desktop spends its whole time
+        budget on panels, file managers and background windows before it ever
+        reaches them.
+        """
+        windows = []
+
+        def consider(node, depth):
+            if depth > WINDOW_DEPTH:
+                return
+            try:
+                role = node.getRoleName()
+            except Exception:
+                return
+            if role not in WINDOW_ROLES:
+                return
+            if "active" in state_names(node):
+                windows.append(node)
+                return
+            # A dialog can be the active thing inside a frame that is not.
+            try:
+                children = itertools.islice(iter(node), 16)
+            except Exception:
+                return
+            for child in children:
+                consider(child, depth + 1)
+
+        for application in applications:
+            try:
+                children = itertools.islice(iter(application), 32)
+            except Exception:
+                continue
+            for window in children:
+                consider(window, 1)
+        return windows
+
     def targets(self):
         with self._lock:
             now = self.clock()
@@ -197,10 +239,10 @@ class AtspiTargets:
                 applications = list(itertools.islice(iter(desktop), 64))
                 found = []
                 deadline = time.monotonic() + SCAN_S
-                for application in applications:
+                for window in self._active_windows(applications):
                     if time.monotonic() >= deadline:
                         break
-                    found.extend(collect_targets(application, self.screen, self.roles,
+                    found.extend(collect_targets(window, self.screen, self.roles,
                                                  deadline=deadline, active_windows_only=True))
                 self._applications = len(applications)
                 self._error = None
