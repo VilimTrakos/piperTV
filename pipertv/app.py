@@ -24,7 +24,7 @@ STATIC = Path(__file__).parent / "static"
 def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
                demo: bool = False, workbench: Workbench | None = None,
                control: bool = False, remote: RemoteControl | None = None,
-               browser: str | None = None) -> Flask:
+               browser: str | None = None, port: int = 8765) -> Flask:
     """Build one application and one capture manager, shared by all browsers.
 
     Desktop control is opt-in: it opens real devices and runs a detector thread,
@@ -34,7 +34,9 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         path = data or Path("data/demo-recordings.json" if demo else "data/recordings.json")
         store = RecordingStore(path)
         if remote is None and control and not demo:
-            remote = RemoteControl(store, device=device, browser=browser)
+            # The port identifies this app's own interface window, which the
+            # remote can ask to close.
+            remote = RemoteControl(store, device=device, browser=browser, port=port)
         # The gate stands the desktop down while a button is being learned.
         workbench = Workbench(store, device=device, demo=demo, gate=remote)
     app = Flask(__name__, static_folder=str(STATIC), static_url_path="/static")
@@ -289,7 +291,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         app = create_app(args.data, args.device, args.demo,
                          control=not args.demo and not args.no_control,
-                         browser=args.browser)
+                         browser=args.browser, port=args.port)
     except (ValueError, OSError) as exc:
         parser.exit(1, f"PiperTV: {exc}\n")
     workbench = app.extensions["pipertv"]

@@ -89,7 +89,7 @@ Control is deliberately hard to switch on by accident. It runs only while all th
 2. You chose **Pointer** or **Snapping** in the browser **for that visit**.
 3. No recording is in progress.
 
-Pointer mode nudges the cursor and speeds up while a direction is held. Snapping jumps it to the next target in that direction. Switching the TV to another source turns control off and forgets the mode, so coming back asks again instead of silently resuming.
+Pointer mode nudges the cursor and speeds up while a direction is held. Snapping jumps it to the next target in that direction. Switching the TV to another source turns control off and forgets the mode, so coming back asks again instead of silently resuming. The single exception is leaving a full-screen window, which works with control off so the remote is never a dead end; see the section below.
 
 If your TV cannot report its input, the interface offers an explicit manual confirmation with a visible stop action. A manual session is your assertion, not evidence, and it is shown as such. What a TV can and cannot report is covered in [the detection notes](docs/hdmi-detection.md), including why desktop icons are not snapping targets on a Wayland session.
 
@@ -103,11 +103,27 @@ visit and the learned remote moves the dial on the TV instead of the cursor.
 
 **OK on YouTube opens it.** PiperTV starts chromium full screen on the Pi's
 screen at YouTube's television interface, in a profile of its own so a sign-in
-survives and so the window is a process PiperTV can actually close. **Back**,
-**Exit** or **Home** closes it and returns to the interface; the Pi acts on that
-press itself, because the interface is behind the service's window by then.
-Stopping PiperTV closes an open service too, rather than leaving a full-screen
-window nothing can dismiss.
+survives and so the window is a process PiperTV can actually close. Stopping
+PiperTV closes an open service too, rather than leaving a full-screen window
+nothing can dismiss.
+
+**The way out is the one thing the gate cannot veto.** Everything on that screen
+is full screen with no keyboard in front of it, so leaving has to work even when
+control is off — losing the TV's report happens on its own, and it must not
+trap whoever is watching:
+
+- **Back**, **Exit** or **Home** closes an open service and returns to the
+  interface. The Pi acts on that press itself, because the interface is behind
+  the service's window by then.
+- **Exit twice**, within six seconds and with nothing open, closes the Piper
+  interface and leaves the Pi's desktop. The first press only asks; the TV shows
+  the question, and any other key takes it back. One press can never do it: the
+  television obeys the same remote, so exit gets pressed for other reasons.
+
+To make this possible the receiver now listens whenever PiperTV runs, instead of
+only while control is on. **Listening is not acting**: with the gate shut a
+press moves no cursor, drives no interface, and is not even recorded — only the
+way out is honoured. Recording a button still takes the receiver away as before.
 
 Opening a service needs two things that the interface reports rather than
 assumes: chromium installed on the Pi (`sudo apt install chromium`, or name a

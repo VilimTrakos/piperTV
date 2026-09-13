@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 from .cec import CecMonitor
 from .desktop import DesktopControl
+from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
 from .launcher import ServiceLauncher
 from .pointer import health as pointer_health
@@ -29,9 +31,51 @@ LOG = logging.getLogger(__name__)
 DEFAULT_SCREEN = (1920, 1080)
 POLL_S = 0.4
 RECORDING = "Recording a remote button, so the remote is not controlling the desktop."
-# The way back from whatever Piper opened. Any of the three, in any mode: the
-# interface is behind that window and cannot be relied on to see the press.
+# The way out, which is the one thing that must work when nothing else does.
+# Any of the three returns from an opened service; exit alone, pressed twice,
+# also closes the interface, because that is the door out of Piper itself.
 RETURN_TO_PIPER = ("back", "exit", "home")
+LEAVE = "exit"
+# Long enough to be a decision, short enough that a stray press expires.
+LEAVE_CONFIRM_S = 6.0
+
+
+class LeaveRequest:
+    """One press of exit asks to leave Piper; a second one within the window acts.
+
+    A single press cannot close the interface: on this remote the TV obeys the
+    same code, so exit is pressed for other reasons all the time. Asking first
+    also gives the screen somewhere to say what is about to happen.
+    """
+
+    def __init__(self, clock=time.monotonic, window_s: float = LEAVE_CONFIRM_S):
+        self.clock = clock
+        self.window_s = float(window_s)
+        self._asked_at = -float("inf")
+        self._lock = threading.RLock()
+
+    def press(self) -> bool:
+        """Record a press. True when it completes the confirmation."""
+        with self._lock:
+            now = self.clock()
+            if now - self._asked_at <= self.window_s:
+                self._asked_at = -float("inf")
+                return True
+            self._asked_at = now
+            return False
+
+    def armed(self) -> bool:
+        with self._lock:
+            return self.clock() - self._asked_at <= self.window_s
+
+    def remaining(self) -> float:
+        with self._lock:
+            left = self.window_s - (self.clock() - self._asked_at)
+            return round(left, 1) if left > 0 else 0.0
+
+    def disarm(self) -> None:
+        with self._lock:
+            self._asked_at = -float("inf")
 
 
 class RemoteControl:
@@ -39,7 +83,7 @@ class RemoteControl:
 
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
-                 buttons=None, launcher=None, browser=None):
+                 buttons=None, launcher=None, browser=None, interface=None, port=8765):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -50,10 +94,12 @@ class RemoteControl:
                         if desktop is None else desktop)
         self.buttons = ButtonLog() if buttons is None else buttons
         self.launcher = ServiceLauncher(browser=browser) if launcher is None else launcher
+        self.interface = Interface(port=port) if interface is None else interface
+        self.leaving = LeaveRequest()
         self._input_context = None
         self.roles = self._load_roles()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
-        self.controller = (IRController(store, self._press, self._enabled,
+        self.controller = (IRController(store, self._press, self._listening,
                                         device=device,
                                         is_direction=self._is_direction)
                            if controller is None else controller)
@@ -131,6 +177,18 @@ class RemoteControl:
         self._refresh_source()
         return self.session.enabled()
 
+    def _listening(self) -> bool:
+        """Whether to read the receiver at all, which is not permission to act.
+
+        The gate decides what a press may do; it must not decide whether a
+        press is heard. While the receiver was opened only under an open gate,
+        the way out of a full-screen service could never arrive -- the one
+        press that has to work when everything else is refused. Reading is not
+        acting: a press heard with the gate shut moves no cursor, drives no
+        interface, and is not even recorded. Only the way out is honoured.
+        """
+        return not self._stop.is_set()
+
     def _press(self, button: str) -> None:
         """Route one recognised press to whatever the chosen mode drives.
 
@@ -138,30 +196,42 @@ class RemoteControl:
         them by number. The cursor moves only under a desktop mode, so the
         Piper interface never drags the mouse around behind itself.
         """
+        # What the remote sent is recorded; what it performs is acted on. They
+        # differ once a role has been moved to a key the TV ignores.
+        action = self.roles.action(button)
         with self._source_lock:
-            if not self._enabled():
-                return
+            allowed = self._enabled()
             state = self.session.snapshot()
-            mode = state["mode"]
-            # What the remote sent is recorded; what it performs is acted on.
-            # They differ once a role has been moved to a key the TV ignores.
-            action = self.roles.action(button)
-            self.buttons.append(button, mode, state["session"]["id"], action=action)
-        if action is not None and self._returned_to_piper(action):
+            mode = state["mode"] if allowed else None
+            if allowed:
+                self.buttons.append(button, mode, state["session"]["id"], action=action)
+        if action is not None and self._way_out(action):
             return
-        if action is not None and mode in DESKTOP_MODES:
+        if allowed and action is not None and mode in DESKTOP_MODES:
             self.desktop.press(action)
 
-    def _returned_to_piper(self, action: str) -> bool:
-        """Close whatever Piper opened, in whichever mode the visit chose.
+    def _way_out(self, action: str) -> bool:
+        """Leave whatever is on the screen. The one thing the gate cannot veto.
 
-        The service owns the screen while it runs, so this is the only press
-        the remote can still be sure of; the interface is behind that window,
-        where a browser may throttle or hide it, and cannot be the one to act.
+        A service owns the screen while it runs, and the interface owns it the
+        rest of the time; both are full screen with no keyboard in front of
+        them. If this needed the gate, then losing the TV's report -- which
+        happens on its own -- would trap whoever is watching, with nothing left
+        to press. Ending something on the Pi's own screen is safe to allow
+        either way: it moves no cursor and starts nothing.
         """
-        if action not in RETURN_TO_PIPER or self.launcher.running() is None:
+        if action not in RETURN_TO_PIPER:
+            self.leaving.disarm()
             return False
-        self.launcher.stop()
+        if self.launcher.running() is not None:
+            self.leaving.disarm()
+            self.launcher.stop()
+            return True
+        if action != LEAVE:
+            return False
+        # Nothing is open, so this is about Piper itself. Ask, then act.
+        if self.leaving.press():
+            self.interface.close()
         return True
 
     def _tick(self) -> None:
@@ -298,6 +368,8 @@ class RemoteControl:
         result["control"] = state["control"]
         result["session_id"] = state["session"]["id"] if state["session"] else None
         result["services"] = self.launcher.snapshot()
+        result["leaving"] = {"armed": self.leaving.armed(),
+                             "seconds": self.leaving.remaining()}
         return result
 
     # --- reporting -------------------------------------------------------
@@ -308,6 +380,7 @@ class RemoteControl:
         state["detection"] = detection
         state["roles"] = self.roles.describe()
         state["services"] = self.launcher.snapshot()
+        state["interface"] = self.interface.snapshot()
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
                             "desktop": self.desktop.health(),
@@ -319,4 +392,5 @@ class RemoteControl:
         return {"screen": list(self.screen), "pointer": pointer_health(),
                 "receiver": self.controller.health(), "desktop": self.desktop.health(),
                 "targets": targets, "detection": self.monitor.snapshot(),
-                "services": self.launcher.snapshot()}
+                "services": self.launcher.snapshot(),
+                "interface": self.interface.snapshot()}
