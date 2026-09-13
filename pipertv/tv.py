@@ -23,6 +23,10 @@ from .ir_control import DIRECTIONS
 
 MAX_EVENTS = 200
 
+# "no action" is a real outcome -- a key whose role moved elsewhere performs
+# nothing -- so it cannot share a value with "caller said nothing".
+_UNSET = object()
+
 # What the TV interface itself acts on. Other buttons are still recorded, so
 # the page can show them, but they are not navigation.
 NAVIGATION = frozenset(set(DIRECTIONS) | {"ok", "back", "home", "menu", "exit"})
@@ -41,14 +45,20 @@ class ButtonLog:
         self._clock = clock
 
     def append(self, button: str, mode: str | None = None,
-               session_id: str | None = None) -> dict:
-        """Record one press and return it, numbered."""
+               session_id: str | None = None, action=_UNSET) -> dict:
+        """Record one press and return it, numbered.
+
+        `button` is what the remote sent; `action` is what it now performs,
+        which differs once a role has been bound to another key. The press is
+        recorded either way, so the page can show keys that do nothing.
+        """
+        performed = button if action is _UNSET else action
         with self._lock:
             self._sequence += 1
             event = {"sequence": self._sequence, "button": button, "mode": mode,
-                     "session_id": session_id,
+                     "session_id": session_id, "action": performed,
                      "at": round(self._clock(), 3),
-                     "navigation": button in NAVIGATION}
+                     "navigation": performed in NAVIGATION}
             self._events.append(event)
             return dict(event)
 

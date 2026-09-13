@@ -16,9 +16,10 @@ import threading
 
 from .cec import CecMonitor
 from .desktop import DesktopControl
-from .ir_control import IRController
+from .ir_control import DIRECTIONS, IRController
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
+from .roles import RoleMap
 from .session import DESKTOP_MODES, ControlSession
 from .targets import AtspiTargets
 from .tv import ButtonLog
@@ -45,14 +46,39 @@ class RemoteControl:
                         if desktop is None else desktop)
         self.buttons = ButtonLog() if buttons is None else buttons
         self._input_context = None
+        self.roles = self._load_roles()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
         self.controller = (IRController(store, self._press, self._enabled,
-                                        device=device)
+                                        device=device,
+                                        is_direction=self._is_direction)
                            if controller is None else controller)
         self.poll_s = poll_s
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
+
+    # --- roles -----------------------------------------------------------
+
+    def _load_roles(self) -> RoleMap:
+        """Read the saved bindings, falling back to plain keys if they are bad.
+
+        A hand-edited library must not stop the remote working altogether; an
+        unusable map means every key simply acts as itself again.
+        """
+        try:
+            return RoleMap(self.store.snapshot().get("roles"))
+        except Exception as exc:  # noqa: BLE001 - the remote must still start
+            LOG.warning("Ignoring saved role bindings: %s", exc)
+            return RoleMap()
+
+    def _is_direction(self, button_id) -> bool:
+        """Whether holding this key should repeat, judged by what it performs."""
+        return self.roles.action(button_id) in DIRECTIONS
+
+    def reload_roles(self) -> dict:
+        with self._source_lock:
+            self.roles = self._load_roles()
+            return self.roles.bindings()
 
     # --- lifecycle -------------------------------------------------------
 
@@ -112,9 +138,12 @@ class RemoteControl:
                 return
             state = self.session.snapshot()
             mode = state["mode"]
-            self.buttons.append(button, mode, state["session"]["id"])
-        if mode in DESKTOP_MODES:
-            self.desktop.press(button)
+            # What the remote sent is recorded; what it performs is acted on.
+            # They differ once a role has been moved to a key the TV ignores.
+            action = self.roles.action(button)
+            self.buttons.append(button, mode, state["session"]["id"], action=action)
+        if action is not None and mode in DESKTOP_MODES:
+            self.desktop.press(action)
 
     def _tick(self) -> None:
         """One supervisor pass: refresh the judgement, act on a lost visit."""
@@ -207,6 +236,8 @@ class RemoteControl:
 
     def reload_recordings(self) -> None:
         self.controller.reload_recordings()
+        # A saved binding travels in the same file as the signals.
+        self.reload_roles()
 
     # --- the interface on the TV -----------------------------------------
 
@@ -227,6 +258,7 @@ class RemoteControl:
         detection = self._refresh_source()
         state = self.session.snapshot()
         state["detection"] = detection
+        state["roles"] = self.roles.describe()
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
                             "desktop": self.desktop.health(),
