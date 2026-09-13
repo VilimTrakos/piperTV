@@ -29,16 +29,23 @@ LOG = logging.getLogger(__name__)
 # AT-SPI reports this for anything that is not placed on screen.
 UNPLACED = -2147483648
 DESKTOP_COORDS = 0
-MAX_NODES = 600
-MAX_DEPTH = 12
+# A web page is a deep tree: a browser puts its controls twelve to twenty
+# levels down, below the window, the tab and the document. Stopping at a
+# desktop-sized depth found the browser and nothing inside it.
+MAX_NODES = 2000
+MAX_DEPTH = 25
 CACHE_S = 1.5
-SCAN_S = .45
+SCAN_S = .9
 
-# Roles worth moving a cursor to: things a person would click.
+# Roles worth moving a cursor to: things a person would click. Browsers report
+# their page controls with the short names -- "button", not "push button", and
+# "entry" for a search box -- so both spellings belong here or a page offers
+# nothing to snap to.
 ACTIONABLE = frozenset({
-    "push button", "toggle button", "check box", "radio button", "link",
-    "icon", "list item", "menu item", "check menu item", "radio menu item",
-    "page tab", "table cell", "tree item", "combo box",
+    "push button", "button", "toggle button", "check box", "radio button",
+    "link", "icon", "list item", "menu item", "check menu item",
+    "radio menu item", "page tab", "table cell", "tree item", "combo box",
+    "entry", "text box", "search box", "image map",
 })
 WINDOW_ROLES = frozenset({"frame", "window", "dialog", "alert", "desktop frame"})
 

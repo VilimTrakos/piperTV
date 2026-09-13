@@ -133,8 +133,14 @@ class DesktopControl:
             return None
         return pointer.move_to(int(found["x"]), int(found["y"]))
 
-    def press(self, button):
-        """Act on one recognised button. Returns the cursor position, or None."""
+    def press(self, button, mode=None):
+        """Act on one recognised button. Returns the cursor position, or None.
+
+        `mode` overrides the visit's choice, for a service that Piper opened:
+        a page built for a mouse is driven by snapping whatever the browser was
+        asked to do with the desktop. The gate is unchanged -- an override
+        decides how the cursor moves, never whether it may.
+        """
         with self._lock:
             try:
                 if not self.enabled():
@@ -144,7 +150,7 @@ class DesktopControl:
                 if button not in DIRECTIONS and button not in CLICKS:
                     return None  # TV volume/power/source must not even open a pointer.
                 original = self.session.snapshot()
-                mode = original.get("mode")
+                mode = mode or original.get("mode")
                 if mode not in ("pointer", "snapping"):
                     self.release()
                     return None

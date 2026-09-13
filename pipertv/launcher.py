@@ -46,12 +46,18 @@ BROWSERS = ("chromium-browser", "chromium")
 TV_USER_AGENT = ("Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/537.36 "
                  "(KHTML, like Gecko) 76.0.3809.146/6.0 TV Safari/537.36")
 
+# How a service answers a remote. A television app expects the four-way pad and
+# an OK button, so its keys are typed at it. A site built for a mouse ignores
+# arrow keys entirely -- there is no way to reach a cookie dialog's Accept with
+# them -- so the cursor is snapped from one of its controls to the next instead.
+KEYS, SNAP = "keys", "snap"
+
 SERVICES = {
     "youtube": {"name": "YouTube", "url": "https://www.youtube.com/tv",
-                "user_agent": TV_USER_AGENT},
-    # Amazon publishes no ten-foot web app, so this is the ordinary site: it
-    # loads and plays on the Pi, but it is laid out for a pointer.
-    "prime": {"name": "Prime Video", "url": "https://www.primevideo.com"},
+                "user_agent": TV_USER_AGENT, "control": KEYS},
+    # Amazon publishes no ten-foot web app, so this is the ordinary site.
+    "prime": {"name": "Prime Video", "url": "https://www.primevideo.com",
+              "control": SNAP},
 }
 
 # Full screen, and nothing that opens a dialog: no one can dismiss a dialog
@@ -60,6 +66,9 @@ SERVICES = {
 # renders, and without --password-store=basic it blocks on the desktop keyring
 # prompt. Both were established with the kiosk that shows the interface itself.
 KIOSK_ARGS = ("--disable-gpu", "--password-store=basic",
+              # Without this the page is a blank box to the accessibility bus,
+              # and snapping has nothing in it to move the cursor to.
+              "--force-renderer-accessibility",
               "--kiosk", "--start-fullscreen", "--noerrdialogs", "--disable-infobars",
               "--no-first-run", "--no-default-browser-check",
               "--disable-session-crashed-bubble", "--disable-features=Translate",
@@ -127,7 +136,13 @@ class ServiceLauncher:
 
     def catalogue(self) -> list[dict]:
         """Everything Piper can open, for an interface that lists more than that."""
-        return [{"id": key, "name": service["name"]} for key, service in self.services.items()]
+        return [{"id": key, "name": service["name"], "control": self.policy(key)}
+                for key, service in self.services.items()]
+
+    def policy(self, service_id) -> str:
+        """How the remote drives this service: by typing at it, or by snapping."""
+        service = self.services.get(service_id) or {}
+        return SNAP if service.get("control") == SNAP else KEYS
 
     def command(self, service: dict) -> list[str]:
         profile = self.profiles / service["id"]
