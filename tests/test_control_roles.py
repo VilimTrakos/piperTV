@@ -5,8 +5,8 @@ import unittest
 
 from pipertv.control import RemoteControl
 
-from tests.test_control import (FakeController, FakeDesktop, FakeMonitor,
-                                FakeTargets, select)
+from tests.test_control import (FakeController, FakeDesktop, FakeLauncher,
+                                FakeMonitor, FakeTargets, select)
 
 SCREEN = (1920, 1080)
 
@@ -27,7 +27,8 @@ class RoleStore:
 def build(roles=None, state="active"):
     control = RemoteControl(RoleStore(roles), screen=SCREEN,
                             monitor=FakeMonitor(state), controller=FakeController(),
-                            targets=FakeTargets(), desktop=FakeDesktop())
+                            targets=FakeTargets(), desktop=FakeDesktop(),
+                            launcher=FakeLauncher())
     return control
 
 
@@ -118,6 +119,23 @@ class LoadingTests(unittest.TestCase):
         self.assertEqual(control.reload_roles(), {"up": "play"})
         control._press("play")
         self.assertEqual(control.desktop.presses, ["up"])
+
+    def test_the_rebound_key_is_also_the_way_back_from_a_service(self):
+        # Back lives on the rewind key here, so closing YouTube has to follow
+        # the role rather than the key the remote actually sent.
+        control = build({"back": "rewind"})
+        select(control, "piper")
+        control.launch("youtube", control.session.snapshot()["session"]["id"])
+        control._press("rewind")
+        self.assertEqual(control.launcher.stopped, 1)
+        self.assertIsNone(control.launcher.running())
+
+    def test_the_key_back_left_behind_does_not_close_a_service(self):
+        control = build({"back": "rewind"})
+        select(control, "piper")
+        control.launch("youtube", control.session.snapshot()["session"]["id"])
+        control._press("back")
+        self.assertEqual(control.launcher.stopped, 0)
 
     def test_the_snapshot_reports_every_role_and_its_key(self):
         control = build({"up": "play"})

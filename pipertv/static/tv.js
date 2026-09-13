@@ -6,10 +6,11 @@
  * synthesised keystrokes, so this page can be developed and judged with a
  * keyboard and behaves the same either way.
  *
- * The service list and launch history below are placeholders carried over from
- * the design references. Piper does not yet know what is installed on this Pi,
- * and opening a service is not implemented, so OK says so rather than
- * pretending. Replacing these two arrays with real data is the next step.
+ * The service list below is still the one from the design references: Piper
+ * does not yet know what is installed on this Pi. Which of them it can actually
+ * open comes from the server, and OK asks the server to open it, so a tile that
+ * leads nowhere says so rather than pretending. The launch history underneath
+ * is whatever Piper really started, not an illustration.
  */
 
 (() => {
@@ -27,13 +28,7 @@
     { id: "browser", name: "Web browser", letter: "L", colour: "#5A6570" },
   ];
 
-  const HISTORY = [
-    { name: "Netflix", letter: "N", colour: "#A8382F", when: "40 min ago · 1h 12m" },
-    { name: "YouTube", letter: "Y", colour: "#C4552F", when: "yesterday · 26m" },
-    { name: "Plex", letter: "J", colour: "#C39A22", when: "2 days ago · 2h 04m" },
-    { name: "Kodi", letter: "K", colour: "#3B7A57", when: "4 days ago · 48m" },
-    { name: "Prime Video", letter: "P", colour: "#1E8496", when: "last week · 1h 36m" },
-  ];
+  const BY_ID = new Map(SERVICES.map((service) => [service.id, service]));
 
   // Design coordinates; the stylesheet scales them through --u.
   const CENTRE = { x: 960, y: 560 };
@@ -47,7 +42,8 @@
   };
 
   const state = { screen: "boot", focus: 1, seen: 0, stream: null,
-    primed: false, control: "off", tiles: [] };
+    primed: false, control: "off", tiles: [], session: null, services: null,
+    open: null, opening: false, notice: "", serviceError: null };
   let noticeTimer = null;
 
   const unit = () => Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
@@ -97,34 +93,72 @@
     });
   }
 
+  function ago(seconds) {
+    if (!(seconds >= 0)) return "";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 2) return "just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    return days <= 1 ? "yesterday" : `${days} days ago`;
+  }
+
+  function lasted(seconds) {
+    const minutes = Math.round((seconds || 0) / 60);
+    if (minutes < 1) return "under a minute";
+    if (minutes < 60) return `${minutes}m`;
+    return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+  }
+
   function renderHistory() {
     const list = $("history-list");
+    const entries = (state.services && state.services.history) || [];
     list.replaceChildren();
-    for (const entry of HISTORY) {
+    if (!entries.length) {
+      const empty = document.createElement("li");
+      empty.className = "history-item";
+      const when = document.createElement("div");
+      when.className = "history-when";
+      when.textContent = "nothing opened yet";
+      empty.append(when);
+      list.append(empty);
+      return;
+    }
+    for (const entry of entries) {
+      const service = BY_ID.get(entry.id);
       const item = document.createElement("li");
       item.className = "history-item";
       const badge = document.createElement("span");
       badge.className = "history-badge";
-      badge.textContent = entry.letter;
-      badge.style.background = entry.colour;
+      badge.textContent = service ? service.letter : "·";
+      if (service && service.colour) badge.style.background = service.colour;
       const text = document.createElement("div");
       const name = document.createElement("div");
       name.className = "history-name";
       name.textContent = entry.name;
       const when = document.createElement("div");
       when.className = "history-when";
-      when.textContent = entry.when;
+      when.textContent = `${ago(entry.age_s)} · ${lasted(entry.seconds)}`;
       text.append(name, when);
       item.append(badge, text);
       list.append(item);
     }
   }
 
+  function openable(id) {
+    const known = (state.services && state.services.services) || [];
+    return known.some((service) => service.id === id);
+  }
+
   function renderFocus() {
     const service = SERVICES[state.focus];
     $("focus-name").textContent = service.name;
+    // The ring is the design's list of services; only some of them are ones
+    // Piper can actually start, and the caption is where that is admitted.
     $("focus-note").textContent = service.kind === "search"
-      ? "OK to search" : "OK to open";
+      ? "search is not implemented yet"
+      : openable(service.id) ? "OK to open" : `piper cannot open ${service.name} yet`;
     $("ring-hint").textContent =
       `◀ ▶ choose · OK opens · ${state.focus + 1} of ${SERVICES.length}`;
   }
@@ -135,12 +169,16 @@
     $("screen-home").classList.toggle("is-shown", name === "home");
   }
 
-  function notify(message, persist = false) {
+  function notify(message, persist = false, kind = "") {
     clearTimeout(noticeTimer);
     const notice = $("tv-notice");
     notice.textContent = message || "";
     notice.hidden = !message;
-    if (message && !persist) noticeTimer = setTimeout(() => { notice.hidden = true; }, 4000);
+    state.notice = message ? kind : "";
+    if (message && !persist) noticeTimer = setTimeout(() => {
+      notice.hidden = true;
+      state.notice = "";
+    }, 4000);
   }
 
   function clock() {
@@ -148,6 +186,8 @@
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     $("home-clock").textContent = time;
     $("boot-meta").textContent = `raspberry pi · ${time}`;
+    // "just now" becomes "20 min ago" without anything else having changed.
+    if (state.screen === "home") renderHistory();
   }
 
   function move(step) {
@@ -157,8 +197,51 @@
     renderFocus();
   }
 
+  async function ask(path, payload, whenItFails) {
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        // The server knows why -- no browser, wrong input, an earlier visit --
+        // so its sentence is shown instead of a guess made here.
+        notify(result.error || whenItFails);
+        return null;
+      }
+      applyServices(result);
+      return result;
+    } catch {
+      notify(`${whenItFails} The Pi did not answer.`);
+      return null;
+    }
+  }
+
+  async function openService(service) {
+    if (state.opening) return;
+    state.opening = true;
+    notify(`Opening ${service.name}…`, true, "opening");
+    try {
+      await ask("/api/tv/launch", { service: service.id, session_id: state.session },
+                `Could not open ${service.name}.`);
+    } finally {
+      state.opening = false;
+    }
+  }
+
+  // The remote's own way back is handled on the Pi, because this page is behind
+  // the service's window. This covers a keyboard, and a second press does no harm.
+  const closeService = () => ask("/api/tv/close", {}, "Could not close the open service.");
+
   function press(button) {
     if (state.screen !== "home") return;
+    if (state.open) {
+      // Something owns the screen; the ring must not move behind it.
+      if (button === "back" || button === "exit" || button === "home") closeService();
+      return;
+    }
     switch (button) {
       case "right": move(1); break;
       case "left": move(-1); break;
@@ -166,13 +249,47 @@
       case "up": move(-1); break;
       case "ok": {
         const service = SERVICES[state.focus];
-        // Opening a service is not implemented. The design references mock it;
-        // saying so is better than a screen that pretends something launched.
-        notify(`${service.name} — opening services is not implemented yet.`);
+        if (service.kind === "search") {
+          notify("Search is not implemented yet.");
+          break;
+        }
+        openService(service);
         break;
       }
       case "home": move(-state.focus); break;
       default: break;
+    }
+  }
+
+  function signature(services) {
+    // Everything except the clocks: ages and uptimes change on every poll and
+    // must not redraw the page four times a second.
+    if (!services) return "";
+    const known = (services.services || []).map((service) => service.id).join(",");
+    const history = (services.history || [])
+      .map((entry) => `${entry.id}@${entry.ended_at}`).join(",");
+    return [services.running ? services.running.id : "", known, history,
+            services.error || "", services.available].join("|");
+  }
+
+  function applyServices(services) {
+    const changed = signature(services) !== signature(state.services);
+    state.services = services || null;
+    const running = (services && services.running) || null;
+    if (running && state.open !== running.id) {
+      notify(`${running.name} is open · back returns to piper`, true, "open");
+    } else if (!running && (state.notice === "open"
+               || (state.notice === "opening" && !state.opening))) {
+      // Either it closed, or it never came up: neither leaves a notice standing.
+      notify("");
+    }
+    state.open = running ? running.id : null;
+    const failure = (services && services.error) || null;
+    if (failure && failure !== state.serviceError) notify(failure);
+    state.serviceError = failure;
+    if (changed) {
+      renderHistory();
+      renderFocus();
     }
   }
 
@@ -211,6 +328,8 @@
         if (feed.missed) notify("Some presses were missed.");
         state.seen = feed.sequence;
         state.stream = feed.stream_id;
+        state.session = feed.session_id || null;
+        applyServices(feed.services);
         state.primed = state.screen === "home" && !document.hidden;
         state.control = feed.control;
         $("home-source").textContent = feed.control === "on"
@@ -219,7 +338,9 @@
         if (continuous && state.primed && feed.control === "on" && feed.mode === "piper") {
           for (const event of feed.events || []) {
             if (event.mode === "piper" && event.session_id === feed.session_id && event.navigation) {
-              press(event.button);
+              // What the key performs, not which key it was: a role bound to a
+              // button the TV ignores arrives under that button's name.
+              press(event.action || event.button);
             }
           }
         }

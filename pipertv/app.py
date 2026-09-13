@@ -23,7 +23,8 @@ STATIC = Path(__file__).parent / "static"
 
 def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
                demo: bool = False, workbench: Workbench | None = None,
-               control: bool = False, remote: RemoteControl | None = None) -> Flask:
+               control: bool = False, remote: RemoteControl | None = None,
+               browser: str | None = None) -> Flask:
     """Build one application and one capture manager, shared by all browsers.
 
     Desktop control is opt-in: it opens real devices and runs a detector thread,
@@ -33,7 +34,7 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         path = data or Path("data/demo-recordings.json" if demo else "data/recordings.json")
         store = RecordingStore(path)
         if remote is None and control and not demo:
-            remote = RemoteControl(store, device=device)
+            remote = RemoteControl(store, device=device, browser=browser)
         # The gate stands the desktop down while a button is being learned.
         workbench = Workbench(store, device=device, demo=demo, gate=remote)
     app = Flask(__name__, static_folder=str(STATIC), static_url_path="/static")
@@ -247,6 +248,19 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         body()
         return jsonify(desktop().stop())
 
+    @app.post("/api/tv/launch")
+    def tv_launch():
+        # The interface names the visit it is showing, exactly as the mode
+        # choice does, so a stale page cannot open something on a TV that has
+        # since been switched to another input.
+        values = body()
+        return jsonify(desktop().launch(values.get("service"), values.get("session_id")))
+
+    @app.post("/api/tv/close")
+    def tv_close():
+        body()
+        return jsonify(desktop().stop_service())
+
     @app.get("/api/tv/events")
     def tv_events():
         # The page reports the last press it saw and receives what followed.
@@ -265,6 +279,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--device", default="/dev/lirc0")
     parser.add_argument("--demo", action="store_true", help="Test the UI without GPIO hardware")
     parser.add_argument("--data", type=Path, help="Recordings JSON path (demo uses a separate default file)")
+    parser.add_argument("--browser", help="Browser command used to open a service on the TV "
+                        "(default: chromium)")
     parser.add_argument("--no-control", action="store_true",
                         help="Learn remote buttons only; do not let the remote drive this desktop")
     args = parser.parse_args(argv)
@@ -272,7 +288,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--port must be between 1 and 65535")
     try:
         app = create_app(args.data, args.device, args.demo,
-                         control=not args.demo and not args.no_control)
+                         control=not args.demo and not args.no_control,
+                         browser=args.browser)
     except (ValueError, OSError) as exc:
         parser.exit(1, f"PiperTV: {exc}\n")
     workbench = app.extensions["pipertv"]

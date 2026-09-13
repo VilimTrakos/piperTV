@@ -81,6 +81,48 @@ class FakeDesktop:
         self.closed += 1
 
 
+class FakeLauncher:
+    """Stands in for the layer that puts a service on the Pi's screen."""
+
+    KNOWN = {"youtube": "YouTube"}
+
+    def __init__(self):
+        self.launched = []
+        self.history = []
+        self.stopped = self.closed = 0
+        self.open = None
+        self.available = True
+
+    def launch(self, service):
+        if service not in self.KNOWN:
+            raise KeyError(f"Piper cannot open {service} yet.")
+        if not self.available:
+            raise RuntimeError("No chromium browser was found on this Pi.")
+        self.launched.append(service)
+        self.open = {"id": service, "name": self.KNOWN[service], "started_at": 0}
+        return self.snapshot()
+
+    def stop(self):
+        self.stopped += 1
+        if self.open:
+            self.history.insert(0, dict(self.open, ended_at=0, exit_code=0,
+                                        seconds=0.0, age_s=0.0))
+        self.open = None
+        return self.snapshot()
+
+    def running(self):
+        return dict(self.open) if self.open else None
+
+    def snapshot(self):
+        return {"available": self.available, "reason": None, "browser": "/usr/bin/chromium",
+                "services": [{"id": key, "name": name} for key, name in self.KNOWN.items()],
+                "running": self.running(), "error": None, "history": list(self.history)}
+
+    def close(self):
+        self.closed += 1
+        self.open = None
+
+
 class FakeStore:
     def snapshot(self):
         return {"recordings": {}}
@@ -90,6 +132,7 @@ def build(state="unknown", **kwargs):
     monitor = FakeMonitor(state)
     controller = FakeController()
     targets = FakeTargets()
+    kwargs.setdefault("launcher", FakeLauncher())
     control = RemoteControl(FakeStore(), screen=SCREEN, monitor=monitor,
                             controller=controller, targets=targets,
                             desktop=FakeDesktop(), **kwargs)
@@ -366,6 +409,124 @@ class ButtonRoutingTests(unittest.TestCase):
         self.assertEqual([event["button"] for event in control.events(seen)["events"]], ["ok"])
 
 
+class ServiceTests(unittest.TestCase):
+    """Opening something on the TV answers to the same gate as the cursor."""
+
+    def session_id(self, control):
+        return control.session.snapshot()["session"]["id"]
+
+    def test_the_interface_opens_a_service_for_the_visit_it_is_showing(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        state = control.launch("youtube", self.session_id(control))
+        self.assertEqual(control.launcher.launched, ["youtube"])
+        self.assertEqual(state["running"]["id"], "youtube")
+
+    def test_nothing_opens_while_the_tv_is_showing_something_else(self):
+        control, monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        visit = self.session_id(control)
+        monitor.state = "inactive"
+        with self.assertRaises(RuntimeError) as refused:
+            control.launch("youtube", visit)
+        self.assertIn("not showing the Pi", str(refused.exception))
+        self.assertEqual(control.launcher.launched, [])
+
+    def test_a_desktop_mode_is_not_the_interface_and_cannot_launch(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "pointer")
+        with self.assertRaises(RuntimeError):
+            control.launch("youtube", self.session_id(control))
+
+    def test_a_page_from_an_earlier_visit_cannot_open_anything(self):
+        control, monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        stale = self.session_id(control)
+        monitor.state = "inactive"
+        control._tick()
+        monitor.state = "active"
+        select(control, "piper")
+        with self.assertRaises(RuntimeError) as refused:
+            control.launch("youtube", stale)
+        self.assertIn("earlier visit", str(refused.exception))
+
+    def test_recording_a_button_refuses_a_launch_and_says_why(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        visit = self.session_id(control)
+        control.hold()
+        with self.assertRaises(RuntimeError) as refused:
+            control.launch("youtube", visit)
+        self.assertIn("Recording", str(refused.exception))
+
+    def test_an_unknown_service_is_refused_by_the_launcher(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        with self.assertRaises(KeyError):
+            control.launch("netflix", self.session_id(control))
+
+    def test_back_closes_the_open_service_instead_of_navigating(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        control._press("back")
+        self.assertEqual(control.launcher.stopped, 1)
+        self.assertIsNone(control.launcher.running())
+        # The press is still recorded, so the interface can show what happened.
+        self.assertEqual([event["button"] for event in control.events(0)["events"]][-1], "back")
+
+    def test_exit_and_home_are_ways_back_as_well(self):
+        for button in ("exit", "home"):
+            with self.subTest(button=button):
+                control, _monitor, _controller, _targets = build("active")
+                select(control, "piper")
+                control.launch("youtube", self.session_id(control))
+                control._press(button)
+                self.assertEqual(control.launcher.stopped, 1)
+
+    def test_the_way_back_works_in_a_desktop_mode_too(self):
+        # A service opened from the interface is Piper's to close whatever mode
+        # the visit later chose; otherwise its window owns the TV for good.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        control.choose("pointer", self.session_id(control))
+        control._press("back")
+        self.assertEqual(control.launcher.stopped, 1)
+        self.assertEqual(control.desktop.presses, [])
+
+    def test_back_navigates_normally_when_nothing_is_open(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "pointer")
+        control._press("back")
+        self.assertEqual(control.launcher.stopped, 0)
+
+    def test_the_interface_can_close_a_service_without_the_remote(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        self.assertIsNone(control.stop_service()["running"])
+
+    def test_the_feed_carries_what_can_be_opened_and_what_is_open(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        feed = control.events(0)
+        self.assertEqual([service["id"] for service in feed["services"]["services"]], ["youtube"])
+        self.assertIsNone(feed["services"]["running"])
+        control.launch("youtube", self.session_id(control))
+        self.assertEqual(control.events(0)["services"]["running"]["id"], "youtube")
+
+    def test_a_service_the_tv_switched_away_from_keeps_running(self):
+        # Piper stops controlling, but it does not close what someone opened:
+        # the TV coming back should find it where they left it.
+        control, monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        monitor.state = "inactive"
+        control._tick()
+        self.assertEqual(control.launcher.running()["id"], "youtube")
+
+
 class ReportingTests(unittest.TestCase):
     def test_the_snapshot_carries_the_detector_reason(self):
         control, _monitor, _controller, _targets = build("inactive")
@@ -379,7 +540,7 @@ class ReportingTests(unittest.TestCase):
         control, _monitor, _controller, _targets = build("active")
         health = control.health()
         self.assertEqual(health["screen"], [1920, 1080])
-        for key in ("pointer", "receiver", "desktop", "targets", "detection"):
+        for key in ("pointer", "receiver", "desktop", "targets", "detection", "services"):
             with self.subTest(key=key):
                 self.assertIn(key, health)
         self.assertEqual(health["targets"]["source"], "fake")
@@ -401,6 +562,8 @@ class ShutdownTests(unittest.TestCase):
         control.close()
         self.assertEqual(controller.closed, 1)
         self.assertEqual(monitor.closed, 1)
+        self.assertEqual(control.launcher.closed, 1,
+                         "a kiosk window must not outlive the app that opened it")
         self.assertFalse(control.session.enabled())
         self.assertIsNone(control.session.snapshot()["session"])
 
