@@ -82,6 +82,7 @@ let browser;
   await tv.goto(base+'/tv?boot=0');
   await expect(tv.locator('#home-source')).toHaveText('remote connected');
   await expect(tv.locator('#focus-name')).toHaveText('Netflix');
+  await expect(tv.locator('#history-list')).toContainText('nothing opened yet');
   await send('right');
   await expect(tv.locator('#focus-name')).toHaveText('YouTube');
   await tv.reload();
@@ -99,9 +100,27 @@ let browser;
   await tv.keyboard.press('ArrowRight');
   await expect(tv.locator('#focus-name')).toHaveText('YouTube');
   await tv.keyboard.press('Enter');
-  await expect(tv.locator('#tv-notice')).toContainText('not implemented yet');
+  await expect(tv.locator('#tv-notice')).toContainText('not showing the Pi');
+
+  // Opening YouTube starts something real, and the remote is the way back.
+  await source('active');
+  state=await (await page.request.get(base+'/api/control')).json();
+  await page.request.post(base+'/api/control/mode',{data:{mode:'piper',session_id:state.session.id}});
+  await expect(tv.locator('#home-source')).toHaveText('remote connected');
+  await expect(tv.locator('#focus-note')).toHaveText('OK to open');
+  await send('ok');
+  await expect(tv.locator('#tv-notice')).toContainText('YouTube is open');
+  await send('right'); // the ring must not move behind the open service
+  await expect(tv.locator('#focus-name')).toHaveText('YouTube');
+  await send('back');
+  await expect(tv.locator('#tv-notice')).toBeHidden();
+  await expect(tv.locator('#history-list')).toContainText('YouTube');
+  await send('right');
+  await expect(tv.locator('#focus-name')).toHaveText('Prime Video');
+  await tv.keyboard.press('ArrowLeft');
+  await expect(tv.locator('#focus-note')).toContainText('cannot open');
   if (errors.length) throw Error(errors.join('\n'));
-  console.log('Browser checks passed: recording/exports, per-visit modes, manual/stop, visible errors, mobile layout, and TV event gating/reload/keyboard navigation.');
+  console.log('Browser checks passed: recording/exports, per-visit modes, manual/stop, visible errors, mobile layout, TV event gating/reload/keyboard navigation, and opening and closing a service.');
 })().catch(e=>{console.error(e); console.error(log); process.exitCode=1;}).finally(async()=>{
   if(browser) await browser.close();
   server.kill('SIGTERM');
