@@ -120,9 +120,11 @@ rsync -az --delete --exclude=__pycache__ -e "ssh -S $CONTROL -o BatchMode=yes" \
 rsync -az -e "ssh -S $CONTROL -o BatchMode=yes" \
   "$STAGE/main.py" "$STAGE/requirements.txt" "$LOGIN@$HOST:$DIR/"
 
-HERE=$(cd "$STAGE" && find pipertv -name '*.py' -o -name '*.js' -o -name '*.css' -o -name '*.html' \
-  | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
-THERE=$(pi "cd $DIR && find pipertv -name '*.py' -o -name '*.js' -o -name '*.css' -o -name '*.html' | sort | xargs sha256sum | sha256sum | cut -d' ' -f1")
+# LC_ALL=C on both sides: the two machines collate '/' differently, which
+# reorders the list and would fail this check on identical files.
+SUMS="find pipertv \\( -name '*.py' -o -name '*.js' -o -name '*.css' -o -name '*.html' \\) | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1"
+HERE=$(cd "$STAGE" && eval "$SUMS")
+THERE=$(pi "cd $DIR && $SUMS")
 [ "$HERE" = "$THERE" ] || { echo "deploy.sh: what arrived does not match what was sent." >&2; exit 1; }
 echo "checksum matches: ${HERE:0:16}"
 
