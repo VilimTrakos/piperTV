@@ -162,6 +162,10 @@ class FakeRemote:
     def reload_recordings(self):
         self.reloaded += 1
 
+    def reload_roles(self):
+        self.rebound = getattr(self, "rebound", 0) + 1
+        return {}
+
     def start(self):
         self.started += 1
 

@@ -15,6 +15,7 @@ from werkzeug.exceptions import HTTPException
 
 from .control import RemoteControl
 from .learner import Workbench
+from .roles import SUGGESTED, RoleMap
 from .storage import RecordingStore
 
 STATIC = Path(__file__).parent / "static"
@@ -201,6 +202,25 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         response = Response(text, content_type="text/plain; charset=utf-8")
         response.headers["Content-Disposition"] = f'attachment; filename="{button_id}.ir"'
         return response
+
+    def role_state() -> dict:
+        bindings = workbench.store.roles()
+        return {"bindings": bindings, "roles": RoleMap(bindings).describe(),
+                "suggested": dict(SUGGESTED)}
+
+    @app.get("/api/roles")
+    def get_roles():
+        return jsonify(role_state())
+
+    @app.put("/api/roles/<role>")
+    def bind_role(role):
+        # Bindings belong to the recordings library, not to the control gate,
+        # so the studio can arrange them whether or not the remote is driving
+        # this desktop. Sending no button releases the role back to its own key.
+        workbench.store.set_role(role, body().get("button"))
+        if remote is not None:
+            remote.reload_roles()
+        return jsonify(role_state())
 
     def desktop() -> RemoteControl:
         if remote is None:

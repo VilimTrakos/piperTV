@@ -1,6 +1,6 @@
 import unittest
 
-from pipertv.roles import ROLES, RoleMap, validate_roles
+from pipertv.roles import ROLES, SUGGESTED, RoleMap, validate_roles
 from pipertv.tv import NAVIGATION
 
 
@@ -8,6 +8,24 @@ class RoleCatalogueTests(unittest.TestCase):
     def test_roles_are_exactly_what_the_interface_acts_on(self):
         # Otherwise a role could be bound that nothing downstream performs.
         self.assertEqual(set(ROLES), set(NAVIGATION))
+
+
+class SuggestionTests(unittest.TestCase):
+    def test_the_offered_arrangement_is_itself_a_legal_map(self):
+        # It is offered for one-click application, so it must never be
+        # something the store would then refuse to save.
+        self.assertEqual(validate_roles(SUGGESTED), dict(SUGGESTED))
+
+    def test_the_suggestion_moves_every_key_it_touches_off_the_tv_keys(self):
+        for role, button in SUGGESTED.items():
+            with self.subTest(role=role):
+                self.assertNotEqual(role, button)
+
+    def test_the_suggested_cross_can_be_applied_and_translates(self):
+        roles = RoleMap(SUGGESTED)
+        self.assertEqual(roles.action("play"), "up")
+        self.assertEqual(roles.action("pause"), "ok")
+        self.assertIsNone(roles.action("up"), "the TV's own cursor key goes quiet")
 
 
 class ValidationTests(unittest.TestCase):
