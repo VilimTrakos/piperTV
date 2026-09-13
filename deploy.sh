@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Put a version of PiperTV on the Raspberry Pi and restart what runs there.
+#
+# One command, and the Pi ends up running exactly one app and one kiosk. What
+# is deployed is a git commit, not whatever happens to be in the working tree,
+# so going back is "./deploy.sh --ref <commit>" rather than an archaeology dig.
+#
+#   ./deploy.sh                 deploy HEAD (refuses a dirty tree)
+#   ./deploy.sh --ref f6c361a   deploy any commit -- this is the way back
+#   ./deploy.sh --dirty         deploy the working tree as it stands
+#   ./deploy.sh --no-kiosk      leave the browser on the TV alone
+#   ./deploy.sh --skip-tests    do not run the suite first
+#
+# The password is asked for once (one multiplexed SSH connection carries every
+# step) or taken from PIPER_PW for an unattended run. It is never written down.
+set -euo pipefail
+
+HOST=${PIPER_HOST:-192.168.1.108}
+LOGIN=${PIPER_USER:-rpi}
+DIR=${PIPER_DIR:-/home/rpi/piperTV}
+PORT=${PIPER_PORT:-8765}
+PROFILE=${PIPER_KIOSK_PROFILE:-/tmp/kiosk-gpu-off}
+REF=HEAD; DIRTY=0; KIOSK=1; TESTS=1
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ref) REF=${2:?--ref needs a commit}; shift 2 ;;
+    --dirty) DIRTY=1; shift ;;
+    --no-kiosk) KIOSK=0; shift ;;
+    --skip-tests) TESTS=0; shift ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    *) echo "deploy.sh: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+cd "$(dirname "$0")"
+say() { printf '\n== %s\n' "$*"; }
+
+# pkill matches the shell running it, so every pattern goes over as [m]ain.py.
+# Nothing else in a remote command may spell the same string out, which is why
+# stopping and starting are separate connections.
+bracket() { printf '[%s]%s' "${1:0:1}" "${1:1}"; }
+APP_PATTERN=$(bracket "main.py")
+KIOSK_PATTERN=$(bracket "$(basename "$PROFILE")")
+
+# --- what to send -----------------------------------------------------------
+
+if [ "$DIRTY" = 1 ]; then
+  SOURCE=.
+  VERSION="working tree$(git diff --quiet && git diff --cached --quiet || echo ' (uncommitted)')"
+else
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "deploy.sh: the working tree has uncommitted changes." >&2
+    echo "           Commit them, or use --dirty to send them anyway." >&2
+    exit 1
+  fi
+  VERSION="$(git rev-parse --short "$REF") $(git log -1 --format=%s "$REF")"
+fi
+
+if [ "$TESTS" = 1 ]; then
+  say "Tests"
+  ./.venv/bin/python3 -m unittest discover -s tests -t . 2>&1 | tail -3
+fi
+
+STAGE=$(mktemp -d /tmp/pipertv-deploy-XXXXXX)
+CONTROL=$(mktemp -u /tmp/pipertv-ssh-XXXXXX)
+cleanup() {
+  ssh -S "$CONTROL" -O exit "$LOGIN@$HOST" 2>/dev/null || true
+  rm -rf "$STAGE"
+}
+trap cleanup EXIT
+
+if [ "$DIRTY" = 1 ]; then
+  rsync -a --exclude=__pycache__ pipertv main.py requirements.txt "$STAGE/"
+else
+  git archive "$REF" pipertv main.py requirements.txt | tar -x -C "$STAGE"
+fi
+
+# --- one connection, one password -------------------------------------------
+
+say "Connecting to $LOGIN@$HOST"
+if [ -n "${PIPER_PW:-}" ]; then
+  # Unattended: answer the one prompt on a pty, so the password never reaches
+  # a file, an argument list, or the shell history.
+  PIPER_PW="$PIPER_PW" python3 - "$CONTROL" "$LOGIN@$HOST" <<'PY'
+import os, pty, select, sys
+control, target = sys.argv[1], sys.argv[2]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("ssh", ["ssh", "-M", "-S", control, "-o", "ControlPersist=600",
+                      "-o", "StrictHostKeyChecking=accept-new", "-fN", target])
+sent, tail = False, b""
+while True:
+    ready, _, _ = select.select([fd], [], [], 60)
+    if not ready:
+        break
+    try:
+        chunk = os.read(fd, 1024)
+    except OSError:
+        break
+    if not chunk:
+        break
+    tail = (tail + chunk)[-200:]
+    if not sent and b"assword" in tail:
+        os.write(fd, os.environ["PIPER_PW"].encode() + b"\n")
+        sent = True
+os.waitpid(pid, 0)
+PY
+else
+  ssh -M -S "$CONTROL" -o ControlPersist=600 -o StrictHostKeyChecking=accept-new -fN "$LOGIN@$HOST"
+fi
+ssh -S "$CONTROL" -O check "$LOGIN@$HOST" >/dev/null 2>&1 || { echo "deploy.sh: could not connect." >&2; exit 1; }
+pi() { ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" "$@"; }
+
+# --- send it ----------------------------------------------------------------
+
+say "Sending $VERSION"
+rsync -az --delete --exclude=__pycache__ -e "ssh -S $CONTROL -o BatchMode=yes" \
+  "$STAGE/pipertv/" "$LOGIN@$HOST:$DIR/pipertv/"
+rsync -az -e "ssh -S $CONTROL -o BatchMode=yes" \
+  "$STAGE/main.py" "$STAGE/requirements.txt" "$LOGIN@$HOST:$DIR/"
+
+HERE=$(cd "$STAGE" && find pipertv -name '*.py' -o -name '*.js' -o -name '*.css' -o -name '*.html' \
+  | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+THERE=$(pi "cd $DIR && find pipertv -name '*.py' -o -name '*.js' -o -name '*.css' -o -name '*.html' | sort | xargs sha256sum | sha256sum | cut -d' ' -f1")
+[ "$HERE" = "$THERE" ] || { echo "deploy.sh: what arrived does not match what was sent." >&2; exit 1; }
+echo "checksum matches: ${HERE:0:16}"
+
+# --- stop, then start (separate connections: see bracket() above) ------------
+
+say "Stopping the old app and interface"
+pi "pkill -f '$APP_PATTERN' || true; pkill -f '$KIOSK_PATTERN' || true; sleep 2; echo stopped"
+
+# The launcher needs the desktop session's own variables to put a window on the
+# TV; started over SSH it inherits none of them.
+WAYLAND_ENV='export XDG_RUNTIME_DIR=/run/user/$(id -u); export WAYLAND_DISPLAY=$(ls "$XDG_RUNTIME_DIR" | grep -m1 "^wayland-[0-9]$")'
+
+say "Starting the app"
+# The channel can outlive the command when a child holds it; the app is already
+# running by then, so a bounded wait is enough and the health check is the proof.
+timeout 25 ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" \
+  "$WAYLAND_ENV; cd $DIR && setsid nohup ./.venv/bin/python3 main.py >> pipertv.log 2>&1 < /dev/null & disown; exit 0" || true
+sleep 4
+
+if [ "$KIOSK" = 1 ]; then
+  say "Starting the interface on the TV"
+  # --disable-gpu and --password-store=basic are not tidiness: without them the
+  # Pi 3B+ fails EGL and chromium blocks on the keyring prompt.
+  timeout 30 ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" \
+    "$WAYLAND_ENV; setsid nohup chromium --ozone-platform=wayland --kiosk --start-fullscreen \
+      --disable-gpu --password-store=basic --no-first-run --noerrdialogs \
+      --no-default-browser-check --force-renderer-accessibility \
+      --user-data-dir=$PROFILE 'http://127.0.0.1:$PORT/tv?boot=0' \
+      > /tmp/kiosk.log 2>&1 < /dev/null & disown; exit 0" || true
+  sleep 6
+fi
+
+# --- prove it ---------------------------------------------------------------
+
+say "Checking"
+pi "curl -s -m 5 http://127.0.0.1:$PORT/api/health > /tmp/pipertv-health.json && echo 'app: UP' || { echo 'app: DOWN'; tail -15 $DIR/pipertv.log; exit 1; }
+python3 - <<'PY'
+import json
+health = json.load(open('/tmp/pipertv-health.json'))
+control = health.get('control') or {}
+services = control.get('services')
+receiver = control.get('receiver') or {}
+print('receiver:', receiver.get('learned_buttons'), 'buttons, error:', receiver.get('error'))
+if services is None:
+    print('services: this version cannot open anything on the TV')
+else:
+    print('services:', 'ready' if services['available'] else services['reason'],
+          '| browser:', services.get('browser'))
+print('detection:', (control.get('detection') or {}).get('state'))
+PY
+echo \"interface windows: \$(ps -eo args | grep -c \"[c]hromium --type=renderer\")\""
+
+say "Done: $VERSION"
