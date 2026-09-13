@@ -123,6 +123,25 @@ class FakeLauncher:
         self.open = None
 
 
+class FakeInterface:
+    """Stands in for the browser window showing the interface on the TV."""
+
+    def __init__(self):
+        self.closed = 0
+        self.visible = True
+
+    def close(self):
+        self.closed += 1
+        self.visible = False
+        return {"closed": [4242], "showing": False, "error": None}
+
+    def showing(self):
+        return self.visible
+
+    def snapshot(self):
+        return {"port": 8765, "showing": self.visible, "error": None}
+
+
 class FakeStore:
     def snapshot(self):
         return {"recordings": {}}
@@ -133,6 +152,7 @@ def build(state="unknown", **kwargs):
     controller = FakeController()
     targets = FakeTargets()
     kwargs.setdefault("launcher", FakeLauncher())
+    kwargs.setdefault("interface", FakeInterface())
     control = RemoteControl(FakeStore(), screen=SCREEN, monitor=monitor,
                             controller=controller, targets=targets,
                             desktop=FakeDesktop(), **kwargs)
@@ -527,6 +547,102 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.launcher.running()["id"], "youtube")
 
 
+class WayOutTests(unittest.TestCase):
+    """Leaving must work when everything else is refused."""
+
+    def visit(self, control, mode="piper"):
+        return select(control, mode)["session"]["id"]
+
+    def test_a_service_is_closed_even_with_the_gate_shut(self):
+        # How someone gets trapped: the TV stops reporting, control goes off,
+        # and a full-screen YouTube is left with nothing that can close it.
+        control, monitor, _controller, _targets = build("active")
+        control.launch("youtube", self.visit(control))
+        monitor.state = "unknown"
+        control._tick()
+        self.assertFalse(control.session.enabled())
+
+        control._press("back")
+        self.assertEqual(control.launcher.stopped, 1)
+        self.assertIsNone(control.launcher.running())
+
+    def test_a_press_with_the_gate_shut_is_still_not_recorded_or_acted_on(self):
+        control, monitor, _controller, _targets = build("active")
+        select(control, "pointer")
+        monitor.state = "inactive"
+        control._press("right")
+        control._press("ok")
+        self.assertEqual(control.desktop.presses, [])
+        self.assertEqual(control.events(0)["events"], [])
+
+    def test_the_receiver_keeps_listening_when_the_gate_shuts(self):
+        # The reason the gate no longer decides whether a press is heard.
+        control, monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        monitor.state = "inactive"
+        control._tick()
+        self.assertFalse(control.session.enabled())
+        self.assertTrue(control._listening())
+
+    def test_exit_asks_before_closing_the_interface(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control._press("exit")
+        self.assertEqual(control.interface.closed, 0, "one press must never close Piper")
+        self.assertTrue(control.events(0)["leaving"]["armed"])
+
+        control._press("exit")
+        self.assertEqual(control.interface.closed, 1)
+        self.assertFalse(control.events(0)["leaving"]["armed"])
+
+    def test_the_question_expires_on_its_own(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        now = [100.0]
+        control.leaving.clock = lambda: now[0]
+        control._press("exit")
+        now[0] += control.leaving.window_s + 0.1
+        self.assertFalse(control.leaving.armed())
+        control._press("exit")
+        self.assertEqual(control.interface.closed, 0, "the second press asks again")
+
+    def test_any_other_press_takes_the_question_back(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control._press("exit")
+        control._press("right")
+        self.assertFalse(control.leaving.armed())
+        control._press("exit")
+        self.assertEqual(control.interface.closed, 0)
+
+    def test_exit_closes_the_interface_with_the_gate_shut_too(self):
+        control, monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        monitor.state = "unknown"
+        control._tick()
+        control._press("exit")
+        control._press("exit")
+        self.assertEqual(control.interface.closed, 1)
+
+    def test_exit_leaves_a_service_first_and_keeps_piper(self):
+        # One key, read in context: the service goes, the interface stays.
+        control, _monitor, _controller, _targets = build("active")
+        control.launch("youtube", self.visit(control))
+        control._press("exit")
+        self.assertEqual(control.launcher.stopped, 1)
+        self.assertEqual(control.interface.closed, 0)
+        self.assertFalse(control.leaving.armed())
+
+    def test_back_and_home_never_close_the_interface(self):
+        for button in ("back", "home"):
+            with self.subTest(button=button):
+                control, _monitor, _controller, _targets = build("active")
+                select(control, "piper")
+                control._press(button)
+                control._press(button)
+                self.assertEqual(control.interface.closed, 0)
+
+
 class ReportingTests(unittest.TestCase):
     def test_the_snapshot_carries_the_detector_reason(self):
         control, _monitor, _controller, _targets = build("inactive")
@@ -540,7 +656,8 @@ class ReportingTests(unittest.TestCase):
         control, _monitor, _controller, _targets = build("active")
         health = control.health()
         self.assertEqual(health["screen"], [1920, 1080])
-        for key in ("pointer", "receiver", "desktop", "targets", "detection", "services"):
+        for key in ("pointer", "receiver", "desktop", "targets", "detection",
+                    "services", "interface"):
             with self.subTest(key=key):
                 self.assertIn(key, health)
         self.assertEqual(health["targets"]["source"], "fake")

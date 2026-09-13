@@ -261,6 +261,17 @@
     }
   }
 
+  function applyLeaving(leaving) {
+    // Asked on the Pi, not here: this page may be behind a service's window,
+    // and the question has to survive the gate being shut.
+    const armed = !!(leaving && leaving.armed);
+    if (armed && state.notice !== "leaving") {
+      notify("press exit again to close piper", true, "leaving");
+    } else if (!armed && state.notice === "leaving") {
+      notify("");
+    }
+  }
+
   function signature(services) {
     // Everything except the clocks: ages and uptimes change on every poll and
     // must not redraw the page four times a second.
@@ -330,6 +341,7 @@
         state.stream = feed.stream_id;
         state.session = feed.session_id || null;
         applyServices(feed.services);
+        applyLeaving(feed.leaving);
         state.primed = state.screen === "home" && !document.hidden;
         state.control = feed.control;
         $("home-source").textContent = feed.control === "on"
