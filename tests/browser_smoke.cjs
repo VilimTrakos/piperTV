@@ -112,7 +112,9 @@ let browser;
   await expect(tv.locator('#tv-notice')).toContainText('YouTube is open');
   await send('right'); // the ring must not move behind the open service
   await expect(tv.locator('#focus-name')).toHaveText('YouTube');
-  await send('back');
+  await send('back'); // back belongs to the service, so Piper stays out of the way
+  await expect(tv.locator('#tv-notice')).toContainText('YouTube is open');
+  await send('exit');
   await expect(tv.locator('#tv-notice')).toBeHidden();
   await expect(tv.locator('#history-list')).toContainText('YouTube');
   await send('right');

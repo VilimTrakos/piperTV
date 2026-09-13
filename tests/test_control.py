@@ -123,6 +123,31 @@ class FakeLauncher:
         self.open = None
 
 
+class FakeKeys:
+    """Stands in for the keyboard Piper types into an open service with."""
+
+    def __init__(self):
+        self.sent = []
+        self.released = self.closed = 0
+        self.active = False
+
+    def send(self, key):
+        self.sent.append(key)
+        self.active = True
+        return key
+
+    def release(self):
+        self.released += 1
+        self.active = False
+
+    def health(self):
+        return {"ok": True, "active": self.active, "error": None}
+
+    def close(self):
+        self.closed += 1
+        self.active = False
+
+
 class FakeInterface:
     """Stands in for the browser window showing the interface on the TV."""
 
@@ -153,6 +178,7 @@ def build(state="unknown", **kwargs):
     targets = FakeTargets()
     kwargs.setdefault("launcher", FakeLauncher())
     kwargs.setdefault("interface", FakeInterface())
+    kwargs.setdefault("keys", FakeKeys())
     control = RemoteControl(FakeStore(), screen=SCREEN, monitor=monitor,
                             controller=controller, targets=targets,
                             desktop=FakeDesktop(), **kwargs)
@@ -485,17 +511,7 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             control.launch("netflix", self.session_id(control))
 
-    def test_back_closes_the_open_service_instead_of_navigating(self):
-        control, _monitor, _controller, _targets = build("active")
-        select(control, "piper")
-        control.launch("youtube", self.session_id(control))
-        control._press("back")
-        self.assertEqual(control.launcher.stopped, 1)
-        self.assertIsNone(control.launcher.running())
-        # The press is still recorded, so the interface can show what happened.
-        self.assertEqual([event["button"] for event in control.events(0)["events"]][-1], "back")
-
-    def test_exit_and_home_are_ways_back_as_well(self):
+    def test_exit_and_home_close_the_open_service(self):
         for button in ("exit", "home"):
             with self.subTest(button=button):
                 control, _monitor, _controller, _targets = build("active")
@@ -503,22 +519,73 @@ class ServiceTests(unittest.TestCase):
                 control.launch("youtube", self.session_id(control))
                 control._press(button)
                 self.assertEqual(control.launcher.stopped, 1)
+                self.assertIsNone(control.launcher.running())
+                # The press is recorded, so the interface can show what happened.
+                self.assertEqual([event["button"] for event in control.events(0)["events"]][-1],
+                                 button)
 
-    def test_the_way_back_works_in_a_desktop_mode_too(self):
+    def test_back_belongs_to_the_service_not_to_piper(self):
+        # A television's back button leaves a video, and taking it away would
+        # make the service unusable. Exit and home are the way out instead.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        control._press("back")
+        self.assertEqual(control.launcher.stopped, 0)
+        self.assertEqual(control.keys.sent, ["back"])
+
+    def test_the_remote_drives_the_open_service_instead_of_the_ring(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        for button in ("down", "right", "ok"):
+            control._press(button)
+        self.assertEqual(control.keys.sent, ["down", "right", "ok"])
+        self.assertEqual(control.desktop.presses, [])
+
+    def test_closing_a_service_takes_the_keyboard_away(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        control._press("ok")
+        self.assertTrue(control.keys.active)
+        control._press("exit")
+        self.assertEqual(control.keys.released, 1)
+        self.assertFalse(control.keys.active)
+
+    def test_a_service_that_ends_by_itself_takes_the_keyboard_with_it(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        control._press("ok")
+        control.launcher.open = None  # someone closed the window on the desktop
+        control._tick()
+        self.assertEqual(control.keys.released, 1)
+
+    def test_nothing_is_typed_into_a_service_with_the_gate_shut(self):
+        # The TV is showing something else and those presses are meant for it.
+        control, monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        monitor.state = "inactive"
+        control._press("down")
+        self.assertEqual(control.keys.sent, [])
+
+    def test_the_way_out_works_in_a_desktop_mode_too(self):
         # A service opened from the interface is Piper's to close whatever mode
         # the visit later chose; otherwise its window owns the TV for good.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("youtube", self.session_id(control))
         control.choose("pointer", self.session_id(control))
-        control._press("back")
+        control._press("exit")
         self.assertEqual(control.launcher.stopped, 1)
         self.assertEqual(control.desktop.presses, [])
 
-    def test_back_navigates_normally_when_nothing_is_open(self):
+    def test_the_way_out_does_nothing_when_nothing_is_open(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "pointer")
-        control._press("back")
+        control._press("home")
         self.assertEqual(control.launcher.stopped, 0)
 
     def test_the_interface_can_close_a_service_without_the_remote(self):
@@ -562,7 +629,7 @@ class WayOutTests(unittest.TestCase):
         control._tick()
         self.assertFalse(control.session.enabled())
 
-        control._press("back")
+        control._press("exit")
         self.assertEqual(control.launcher.stopped, 1)
         self.assertIsNone(control.launcher.running())
 
@@ -634,7 +701,7 @@ class WayOutTests(unittest.TestCase):
         self.assertFalse(control.leaving.armed())
 
     def test_back_and_home_never_close_the_interface(self):
-        for button in ("back", "home"):
+        for button in ("back", "home"):  # only exit is the door out of Piper
             with self.subTest(button=button):
                 control, _monitor, _controller, _targets = build("active")
                 select(control, "piper")

@@ -19,6 +19,7 @@ from .cec import CecMonitor
 from .desktop import DesktopControl
 from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
+from .keyboard import ServiceKeys
 from .launcher import ServiceLauncher
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
@@ -32,9 +33,11 @@ DEFAULT_SCREEN = (1920, 1080)
 POLL_S = 0.4
 RECORDING = "Recording a remote button, so the remote is not controlling the desktop."
 # The way out, which is the one thing that must work when nothing else does.
-# Any of the three returns from an opened service; exit alone, pressed twice,
-# also closes the interface, because that is the door out of Piper itself.
-RETURN_TO_PIPER = ("back", "exit", "home")
+# Back is not among them any more: a service has its own back, and taking it
+# away would make the service unusable to get out of a video. Exit and home
+# close the service; exit alone, pressed twice with nothing open, closes the
+# interface, because that is the door out of Piper itself.
+RETURN_TO_PIPER = ("exit", "home")
 LEAVE = "exit"
 # Long enough to be a decision, short enough that a stray press expires.
 LEAVE_CONFIRM_S = 6.0
@@ -83,7 +86,8 @@ class RemoteControl:
 
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
-                 buttons=None, launcher=None, browser=None, interface=None, port=8765):
+                 buttons=None, launcher=None, browser=None, interface=None, port=8765,
+                 keys=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -95,6 +99,7 @@ class RemoteControl:
         self.buttons = ButtonLog() if buttons is None else buttons
         self.launcher = ServiceLauncher(browser=browser) if launcher is None else launcher
         self.interface = Interface(port=port) if interface is None else interface
+        self.keys = ServiceKeys() if keys is None else keys
         self.leaving = LeaveRequest()
         self._input_context = None
         self.roles = self._load_roles()
@@ -207,6 +212,13 @@ class RemoteControl:
                 self.buttons.append(button, mode, state["session"]["id"], action=action)
         if action is not None and self._way_out(action):
             return
+        if self.launcher.running() is not None:
+            # Something is on the screen and it is not Piper. The remote drives
+            # that, by typing what a television remote would send, and the
+            # cursor stays out of it.
+            if allowed and action is not None:
+                self.keys.send(action)
+            return
         if allowed and action is not None and mode in DESKTOP_MODES:
             self.desktop.press(action)
 
@@ -226,6 +238,7 @@ class RemoteControl:
         if self.launcher.running() is not None:
             self.leaving.disarm()
             self.launcher.stop()
+            self.keys.release()
             return True
         if action != LEAVE:
             return False
@@ -245,6 +258,10 @@ class RemoteControl:
             if ((state["control"] != "on" or state["mode"] not in DESKTOP_MODES)
                     and self.desktop.health().get("active")):
                 self.desktop.release()
+            # Someone closed the service from the desktop, or it crashed: the
+            # keyboard must not outlive what it was typing into.
+            if self.launcher.running() is None and self.keys.health().get("active"):
+                self.keys.release()
         except Exception as exc:  # noqa: BLE001 - the gate must keep running
             LOG.warning("Control supervisor: %s", exc)
 
@@ -260,7 +277,7 @@ class RemoteControl:
             self._thread = None
         if thread is not None and threading.current_thread() is not thread:
             thread.join(timeout=3)
-        for part in (self.controller, self.monitor, self.desktop, self.launcher):
+        for part in (self.controller, self.monitor, self.desktop, self.launcher, self.keys):
             try:
                 part.close()
             except Exception as exc:  # noqa: BLE001 - shutdown must finish
@@ -381,6 +398,7 @@ class RemoteControl:
         state["roles"] = self.roles.describe()
         state["services"] = self.launcher.snapshot()
         state["interface"] = self.interface.snapshot()
+        state["keys"] = self.keys.health()
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
                             "desktop": self.desktop.health(),
@@ -393,4 +411,5 @@ class RemoteControl:
                 "receiver": self.controller.health(), "desktop": self.desktop.health(),
                 "targets": targets, "detection": self.monitor.snapshot(),
                 "services": self.launcher.snapshot(),
-                "interface": self.interface.snapshot()}
+                "interface": self.interface.snapshot(),
+                "keys": self.keys.health()}
