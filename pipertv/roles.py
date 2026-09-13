@@ -25,6 +25,14 @@ from .ir_control import DIRECTIONS
 ROLES = tuple(sorted(set(DIRECTIONS) | {"ok", "back", "home", "menu", "exit"}))
 
 
+# The playback block is physically a five-way pad -- play sits above pause,
+# with previous and next either side and 3D below -- and this TV acts on none
+# of it. Offered as a starting point, never applied without being asked for.
+SUGGESTED = {"up": "play", "down": "three_d", "left": "previous",
+             "right": "next", "ok": "pause",
+             "back": "rewind", "home": "fast_forward"}
+
+
 def validate_roles(bindings) -> dict:
     """Check a role->button map, returning a plain copy of it.
 
