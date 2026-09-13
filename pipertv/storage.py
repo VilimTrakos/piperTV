@@ -10,6 +10,7 @@ import threading
 from datetime import datetime, timezone
 
 from .buttons import BUTTONS, BUTTON_IDS
+from .roles import ROLES, validate_roles
 
 
 def utc_now():
@@ -83,6 +84,10 @@ class RecordingStore:
         doc = self.document
         if not isinstance(doc, dict) or doc.get("schema_version") != 1 or not isinstance(doc.get("recordings"), dict):
             raise ValueError("Unsupported recordings format")
+        # Absent in every library recorded before roles existed, which must
+        # keep loading: no bindings simply means each key acts as itself.
+        if "roles" in doc:
+            validate_roles(doc["roles"])
         for key, record in doc["recordings"].items():
             if key not in BUTTON_IDS or not isinstance(record, dict):
                 raise ValueError("Unknown button in recordings")
@@ -152,6 +157,32 @@ class RecordingStore:
             updated = copy.deepcopy(self.document)
             self._record(updated, key)["samples"].append(signal)
             self._commit(updated)
+
+    def roles(self):
+        with self.lock:
+            return dict(self.document.get("roles", {}))
+
+    def set_role(self, role, button):
+        """Bind one navigation role to a button, or release it with None.
+
+        Releasing restores the role to its own key rather than leaving it
+        unreachable, so a mistaken binding can always be undone from the studio.
+        """
+        if role not in ROLES:
+            raise ValueError(f"Unknown role {role!r}. Roles are: {', '.join(ROLES)}.")
+        if button is not None:
+            self._check_button(button)
+        with self.lock:
+            updated = copy.deepcopy(self.document)
+            bindings = dict(updated.get("roles", {}))
+            if button is None:
+                bindings.pop(role, None)
+            else:
+                bindings[role] = button
+            # Validate the whole map: a new binding can collide with an old one.
+            updated["roles"] = validate_roles(bindings)
+            self._commit(updated)
+            return dict(updated["roles"])
 
     def rename(self, key, label):
         self._check_button(key)

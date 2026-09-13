@@ -151,8 +151,12 @@ class SignalMatcher:
 
 
 class RepeatFilter:
-    def __init__(self, release_s=.28, delay_s=.32, interval_s=.09):
+    def __init__(self, release_s=.28, delay_s=.32, interval_s=.09, is_direction=None):
         self.release_s, self.delay_s, self.interval_s = release_s, delay_s, interval_s
+        # Hold-to-repeat follows what a button *does*, not what it is called:
+        # once "up" is bound to the play key, holding play has to repeat.
+        self.is_direction = ((lambda button: button in DIRECTIONS)
+                             if is_direction is None else is_direction)
         self.reset()
 
     def reset(self):
@@ -175,7 +179,7 @@ class RepeatFilter:
         if fresh:
             self.started_at = self.emitted_at = now
             return match.button_id
-        if (match.button_id in DIRECTIONS and now - self.started_at >= self.delay_s
+        if (self.is_direction(match.button_id) and now - self.started_at >= self.delay_s
                 and now - self.emitted_at >= self.interval_s):
             self.emitted_at = now
             return match.button_id
@@ -229,11 +233,11 @@ class IRController:
     No input device is grabbed and all activity stops when the gate closes.
     """
     def __init__(self, recordingstore, on_button, enabled, device="/dev/lirc0",
-                 device_factory=LircDevice, clock=time.monotonic):
+                 device_factory=LircDevice, clock=time.monotonic, is_direction=None):
         self.store, self.on_button, self.enabled = recordingstore, on_button, enabled
         self.device, self.device_factory, self.clock = device, device_factory, clock
         self.matcher = SignalMatcher(self.store.snapshot())
-        self.repeat = RepeatFilter()
+        self.repeat = RepeatFilter(is_direction=is_direction)
         self._stop, self._paused, self._released = threading.Event(), threading.Event(), threading.Event()
         self._paused.set()
         self._released.set()
