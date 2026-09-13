@@ -133,9 +133,11 @@ missing, the interface says so on the TV instead of appearing to open something.
 
 Two limits are worth knowing before you try it:
 
-- **Only YouTube is wired up.** The other tiles come from the design reference.
-  Piper does not know what is installed on this Pi, so selecting one says it
-  cannot open that yet.
+- **YouTube and Prime Video are wired up.** The other tiles come from the design
+  reference; Piper does not know what is installed on this Pi, so selecting one
+  says it cannot open that yet. YouTube opens its ten-foot app, which it serves
+  only to a browser identifying itself as a television; Prime Video has no such
+  app published, so it opens the ordinary site, laid out for a pointer.
 - **The remote does not reach inside what it opens.** Piper does not synthesise
   key presses, so YouTube's own interface answers only to a keyboard, or to the
   mouse in **Pointer** mode. Back returns to Piper at any time. Launch history

@@ -96,6 +96,14 @@ class LauncherTests(unittest.TestCase):
         self.assertIn(f"--user-data-dir={profile}", command)
         self.assertTrue(profile.is_dir(), "the profile directory must exist before chromium needs it")
 
+    def test_prime_video_opens_as_the_site_it_publishes(self):
+        # Amazon has no television web app, so no identity is pretended here.
+        launcher = self.build()
+        launcher.launch("prime")
+        command = self.spawn.started[0].command
+        self.assertEqual(command[-1], "https://www.primevideo.com")
+        self.assertFalse([part for part in command if part.startswith("--user-agent=")])
+
     def test_a_wayland_session_gets_the_wayland_backend(self):
         # Without this chromium chooses X11 and exits with "Missing X server".
         launcher = self.build()
@@ -108,13 +116,15 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn("--ozone-platform=wayland", self.spawn.started[0].command)
 
     def test_the_browser_says_it_is_a_television(self):
-        # Without this YouTube serves the desktop site, which cannot be used
-        # from a sofa. The check is on the fact, not on the exact string.
+        # A Chromecast identity returns the cast receiver and a desktop one the
+        # pointer site; only a television gets the ten-foot app. The check is on
+        # the fact rather than the exact string, except for the one that bit us.
         launcher = self.build()
         launcher.launch("youtube")
         agents = [part for part in self.spawn.started[0].command if part.startswith("--user-agent=")]
         self.assertEqual(len(agents), 1)
-        self.assertIn("CrKey", agents[0])
+        self.assertIn("TV", agents[0])
+        self.assertNotIn("CrKey", agents[0], "a Chromecast is sent the cast receiver")
 
     def test_the_browser_is_started_detached_and_silent(self):
         launcher = self.build()
@@ -158,7 +168,8 @@ class LauncherTests(unittest.TestCase):
         for value in ("", None, 7):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 launcher.launch(value)
-        self.assertEqual([service["id"] for service in launcher.catalogue()], ["youtube"])
+        self.assertEqual([service["id"] for service in launcher.catalogue()],
+                         ["youtube", "prime"])
 
     # --- one service at a time -------------------------------------------
 

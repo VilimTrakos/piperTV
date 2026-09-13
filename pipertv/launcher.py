@@ -36,16 +36,22 @@ LOG = logging.getLogger(__name__)
 # Raspberry Pi OS and Debian ship the same browser under different names.
 BROWSERS = ("chromium-browser", "chromium")
 
-# YouTube serves its ten-foot interface only to something that presents itself
-# as a television; anything else is given the desktop site, which is unusable
-# from across a room. This is a guess about someone else's server, so it is
-# stated in one place: if the TV interface stops appearing, revisit it here.
-TV_USER_AGENT = ("Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                 "Chrome/120.0.0.0 Safari/537.36 CrKey/1.56.500000")
+# YouTube decides which of three interfaces to serve from this string, and the
+# difference is not cosmetic. A Chromecast identity (CrKey) returns the cast
+# receiver -- the "Ready to cast" screen, which waits for a phone and can do
+# nothing by itself. A plain desktop identity returns the pointer-and-keyboard
+# site. A television returns the ten-foot app. All three were tried on the Pi
+# and photographed; this is the one that gives the app. If that screen ever
+# comes back as "Ready to cast", this line is why.
+TV_USER_AGENT = ("Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/537.36 "
+                 "(KHTML, like Gecko) 76.0.3809.146/6.0 TV Safari/537.36")
 
 SERVICES = {
     "youtube": {"name": "YouTube", "url": "https://www.youtube.com/tv",
                 "user_agent": TV_USER_AGENT},
+    # Amazon publishes no ten-foot web app, so this is the ordinary site: it
+    # loads and plays on the Pi, but it is laid out for a pointer.
+    "prime": {"name": "Prime Video", "url": "https://www.primevideo.com"},
 }
 
 # Full screen, and nothing that opens a dialog: no one can dismiss a dialog
