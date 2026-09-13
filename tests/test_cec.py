@@ -139,6 +139,43 @@ class StateTests(unittest.TestCase):
         self.assertEqual(state.snapshot()["state"], "unknown")
         self.assertEqual(state.snapshot()["physical_address"], "2.0.0.0")
 
+    def test_repeated_reports_refresh_evidence_without_starting_another_visit(self):
+        state = CecState(PI)
+        state.observe(frame(0x0F, 0x86, 0x10, 0x00))
+        first = state.snapshot()
+        state.observe(frame(0x0F, 0x81, 0x10, 0x00))
+        again = state.snapshot()
+        self.assertEqual(again["selection_revision"], first["selection_revision"])
+        self.assertGreater(again["evidence_revision"], first["evidence_revision"])
+        state.observe(frame(0x0F, 0x80, 0x10, 0x00, 0x20, 0x00))
+        state.observe(frame(0x0F, 0x86, 0x10, 0x00))
+        self.assertGreater(state.snapshot()["selection_revision"], again["selection_revision"])
+
+    def test_unrelated_traffic_does_not_refresh_selection_evidence(self):
+        now = [0.0]
+        state = CecState(PI, stale_after_s=5, clock=lambda: now[0])
+        state.observe(frame(0x0F, 0x86, 0x10, 0x00))
+        first = state.snapshot()
+        now[0] = 4
+        # A powered-on TV and an OSD name say nothing about the selected input.
+        state.observe(frame(0x04, 0x90, 0x00))
+        state.observe(frame(0x04, 0x47, 0x54, 0x56))
+        self.assertEqual(state.snapshot()["evidence_revision"], first["evidence_revision"])
+        now[0] = 5
+        expired = state.snapshot()
+        self.assertEqual(expired["state"], "unknown")
+        self.assertGreater(expired["selection_revision"], first["selection_revision"])
+        self.assertEqual(state.snapshot()["selection_revision"], expired["selection_revision"])
+
+    def test_address_revision_remembers_a_disconnection_between_polls(self):
+        state = CecState(PI)
+        first = state.snapshot()
+        state.set_physical_address(None)
+        state.set_physical_address(PI)
+        returned = state.snapshot()
+        self.assertEqual(returned["physical_address"], first["physical_address"])
+        self.assertGreater(returned["address_revision"], first["address_revision"])
+
 
 class ParserTests(unittest.TestCase):
     def setUp(self):
@@ -162,6 +199,19 @@ class ParserTests(unittest.TestCase):
                   "Received from TV to all (0 to 15): ACTIVE_SOURCE (0x82):")
         self.assertFalse(self.parser.feed_line("\tRaw: 0x4f 0x82 0x10 0x00"))
         self.assertEqual(self.state.snapshot()["state"], "unknown")
+
+    def test_malformed_raw_tokens_are_ignored_and_the_parser_recovers(self):
+        self.feed("Initial Event: State Change: PA: 1.0.0.0, LA mask: 0x0010")
+        header = "Received from TV to all (0 to 15): ACTIVE_SOURCE (0x82):"
+        for raw in ("Raw: 0x0f0x82 0x10 0x00", "Raw: 0x0f 0x82 0x100 0x00",
+                    "Raw: 0x0f 0x82 0x10 0x00 trailing garbage"):
+            with self.subTest(raw=raw):
+                self.feed(header)
+                self.assertFalse(self.parser.feed_line(raw))
+                self.assertEqual(self.state.snapshot()["state"], "unknown")
+        self.feed(header)
+        self.assertTrue(self.parser.feed_line("\tRaw: 0x0f 0x82 0x10 0x00 (    )"))
+        self.assertEqual(self.state.snapshot()["state"], "active")
 
     def test_transmitted_frames_from_the_log_are_not_evidence(self):
         self.feed("Initial Event: State Change: PA: 1.0.0.0, LA mask: 0x0010",

@@ -85,7 +85,19 @@ class ButtonLogTests(unittest.TestCase):
 
     def test_an_empty_log_answers_without_a_gap(self):
         result = self.log.since(0)
-        self.assertEqual(result, {"sequence": 0, "events": [], "missed": False})
+        self.assertEqual(result["sequence"], 0)
+        self.assertEqual(result["events"], [])
+        self.assertFalse(result["missed"])
+        self.assertTrue(result["stream_id"])
+
+    def test_restart_has_a_new_stream_even_when_sequence_numbers_overlap(self):
+        before = self.log.since(0)["stream_id"]
+        self.assertEqual(self.log.since(0)["stream_id"], before)
+        self.assertNotEqual(ButtonLog().since(0)["stream_id"], before)
+
+    def test_event_belongs_to_the_visit_that_produced_it(self):
+        event = self.log.append("ok", "piper", "first-visit")
+        self.assertEqual(event["session_id"], "first-visit")
 
     def test_the_last_press_can_be_read_directly(self):
         self.assertIsNone(self.log.latest())

@@ -46,7 +46,8 @@
     Enter: "ok", Backspace: "back", Escape: "back", h: "home", m: "menu",
   };
 
-  const state = { screen: "boot", focus: 1, seen: 0, control: "off", tiles: [] };
+  const state = { screen: "boot", focus: 1, seen: 0, stream: null,
+    primed: false, control: "off", tiles: [] };
   let noticeTimer = null;
 
   const unit = () => Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
@@ -186,30 +187,54 @@
 
   async function poll() {
     let delay = 250;
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 3000);
     try {
       const response = await fetch(`/api/tv/events?after=${state.seen}`, {
         headers: { Accept: "application/json" },
+        signal: abort.signal,
       });
       if (response.status === 404) {
         // Started without desktop control: the page still works by keyboard.
         notify("This server is running without remote control. Use a keyboard.", true);
+        state.primed = false;
         delay = 5000;
       } else if (!response.ok) {
+        state.primed = false;
         delay = 2000;
       } else {
         const feed = await response.json();
+        // A new page/reconnection establishes a cursor; it must never replay
+        // retained OK presses. A stream id detects restarts even if the new
+        // server's sequence has already overtaken our previous number.
+        const continuous = state.primed && state.stream === feed.stream_id && !feed.missed;
         if (feed.missed) notify("Some presses were missed.");
         state.seen = feed.sequence;
+        state.stream = feed.stream_id;
+        state.primed = state.screen === "home" && !document.hidden;
         state.control = feed.control;
         $("home-source").textContent = feed.control === "on"
-          ? "remote connected" : "waiting for the TV";
-        for (const event of feed.events || []) press(event.button);
+          ? feed.mode === "piper" ? "remote connected" : "desktop control selected"
+          : "remote control off";
+        if (continuous && state.primed && feed.control === "on" && feed.mode === "piper") {
+          for (const event of feed.events || []) {
+            if (event.mode === "piper" && event.session_id === feed.session_id && event.navigation) {
+              press(event.button);
+            }
+          }
+        }
       }
     } catch {
+      state.primed = false;
+      $("home-source").textContent = "server unavailable";
       delay = 3000;
+    } finally {
+      clearTimeout(timeout);
     }
     setTimeout(poll, delay);
   }
+
+  document.addEventListener("visibilitychange", () => { state.primed = false; });
 
   function initialize() {
     renderHistory();

@@ -485,6 +485,7 @@
 
   $("mode-pointer").addEventListener("click", () => chooseMode("pointer"));
   $("mode-snapping").addEventListener("click", () => chooseMode("snapping"));
+  $("mode-piper").addEventListener("click", () => chooseMode("piper"));
   $("control-confirm").addEventListener("click", () => controlAction("/api/control/manual", { confirmed: true }));
   $("control-stop").addEventListener("click", () => controlAction("/api/control/stop", {}));
 

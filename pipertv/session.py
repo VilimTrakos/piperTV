@@ -100,6 +100,12 @@ class ControlSession:
                 # it stays selected the existing choice must survive.
                 if self._session is None and not self._stopped:
                     self._start("cec")
+                elif self._session is not None and self._session["origin"] == "manual":
+                    # This report corroborates the user's confirmation. Keep
+                    # its revision so a later monitoring failure alone cannot
+                    # be mistaken for unseen contrary evidence.
+                    self._manual_evidence = self._evidence_token
+                    self._manual_revision = self._evidence_revision
             elif state == "inactive":
                 # Explicit confirmation can supersede an old negative report
                 # after a silent TV switch. A fresh report still outranks it.

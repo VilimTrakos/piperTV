@@ -236,19 +236,37 @@ class FakeRegistry:
 class AtspiTargetsTests(unittest.TestCase):
     def setUp(self):
         self.now = [0.0]
+        self.window = Node("frame", "Panel", Box(0, 0, 1920, 36),
+                           children=[button("Menu", 0, 0, 50, 36)],
+                           states=("active", "showing", "visible", "enabled"))
         self.panel = Node("application", "wf-panel-pi",
-                          children=[button("Menu", 0, 0, 50, 36)])
+                          children=[self.window])
 
     def build(self, registry):
         return AtspiTargets(SCREEN, cache_s=1.5, clock=lambda: self.now[0],
                             registry=registry)
 
-    def test_targets_come_from_every_registered_application(self):
+    def test_background_windows_do_not_supply_targets_at_covered_coordinates(self):
         registry = FakeRegistry([self.panel,
                                  Node("application", "other",
-                                      children=[button("Other", 500, 500)])])
+                                      children=[Node("frame", "Background", Box(0, 0, 800, 600),
+                                                     children=[button("Other", 500, 500)])])])
         found = self.build(registry).targets()
-        self.assertEqual(sorted(point["label"] for point in found), ["Menu", "Other"])
+        self.assertEqual([point["label"] for point in found], ["Menu"])
+
+    def test_no_active_window_means_no_assumed_foreground_targets(self):
+        self.window.states = ("showing", "visible", "enabled")
+        targets = self.build(FakeRegistry([self.panel]))
+        self.assertEqual(targets.targets(), [])
+        self.assertEqual(targets.health()["scope"], "active accessible window")
+
+    def test_an_active_child_dialog_is_used_instead_of_its_background_parent(self):
+        self.window.states = ("showing", "visible", "enabled")
+        self.window.children.append(Node("dialog", "Dialog", Box(100, 100, 400, 300),
+                                         children=[button("Confirm", 200, 200)],
+                                         states=("active", "showing", "visible", "enabled")))
+        targets = self.build(FakeRegistry([self.panel])).targets()
+        self.assertEqual([target["label"] for target in targets], ["Confirm"])
 
     def test_repeated_presses_do_not_re_walk_the_desktop(self):
         registry = FakeRegistry([self.panel])
@@ -271,11 +289,18 @@ class AtspiTargetsTests(unittest.TestCase):
 
     def test_a_cached_target_is_rechecked_after_its_window_moves_or_hides(self):
         node = button("Move", 100, 100)
-        targets = self.build(FakeRegistry([Node("application", children=[node])]))
+        self.window.children = [node]
+        targets = self.build(FakeRegistry([self.panel]))
         target = targets.targets()[0]
         node.box.x = 400
         self.assertEqual(targets.resolve(target)["x"], 420)
         node.states = ("visible", "enabled")
+        self.assertIsNone(targets.resolve(target))
+
+    def test_a_cached_target_is_rejected_when_its_window_loses_activation(self):
+        targets = self.build(FakeRegistry([self.panel]))
+        target = targets.targets()[0]
+        self.window.states = ("showing", "visible", "enabled")
         self.assertIsNone(targets.resolve(target))
 
     def test_a_stopped_bus_yields_no_targets_instead_of_raising(self):

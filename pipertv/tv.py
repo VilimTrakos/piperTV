@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections import deque
 
 from .ir_control import DIRECTIONS
@@ -35,14 +36,17 @@ class ButtonLog:
             raise ValueError("The button log must retain between 1 and 10000 presses.")
         self._events: deque = deque(maxlen=limit)
         self._sequence = 0
+        self._stream_id = uuid.uuid4().hex
         self._lock = threading.RLock()
         self._clock = clock
 
-    def append(self, button: str, mode: str | None = None) -> dict:
+    def append(self, button: str, mode: str | None = None,
+               session_id: str | None = None) -> dict:
         """Record one press and return it, numbered."""
         with self._lock:
             self._sequence += 1
             event = {"sequence": self._sequence, "button": button, "mode": mode,
+                     "session_id": session_id,
                      "at": round(self._clock(), 3),
                      "navigation": button in NAVIGATION}
             self._events.append(event)
@@ -58,7 +62,8 @@ class ButtonLog:
             # Behind the retained window, or holding a number from before a
             # restart: either way the page cannot trust its own continuity.
             missed = after > self._sequence or (after + 1 < oldest and after != 0)
-            return {"sequence": self._sequence, "events": events, "missed": missed}
+            return {"sequence": self._sequence, "stream_id": self._stream_id,
+                    "events": events, "missed": missed}
 
     def latest(self) -> dict | None:
         with self._lock:

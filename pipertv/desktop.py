@@ -8,8 +8,8 @@ Targets come from a provider rather than from this module: the desktop exposes
 its icons through accessibility, and a later PiperTV interface can offer its own
 targets to the same gate. A provider only has to return screen positions.
 
-This runs on the IR reader thread, inside its lock, so a press must never raise
-and must never block: a failure here would otherwise stop the receiver.
+This runs on the IR reader thread, so desktop queries must stay bounded and a
+press must not raise into the receiver. The gate is checked after slow queries.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def choose_target(position, targets, direction):
     for target in targets:
         try:
             tx, ty = int(target["x"]), int(target["y"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
         dx, dy = tx - x, ty - y
         if direction == "left":
@@ -70,11 +70,13 @@ class DesktopControl:
     """
 
     def __init__(self, session, screen, pointer_factory=VirtualPointer, targets=None,
-                 step_px=24, max_step_px=180, accelerate_within_s=0.25, clock=time.monotonic):
+                 step_px=24, max_step_px=180, accelerate_within_s=0.25,
+                 clock=time.monotonic, enabled=None):
         width, height = screen
         if not 2 <= step_px <= max_step_px:
             raise ValueError("Pointer step sizes must grow from at least 2 pixels.")
         self.session = session
+        self.enabled = session.enabled if enabled is None else enabled
         self.screen = (int(width), int(height))
         self.pointer_factory = pointer_factory
         self.targets = targets
@@ -106,8 +108,11 @@ class DesktopControl:
 
     def _current(self, original):
         """A slow device/desktop query must not act in a different TV visit."""
+        # The predicate may refresh CEC and replace the visit. Read the session
+        # after it, not before, or an old identity could validate a new visit.
+        allowed = self.enabled()
         current = self.session.snapshot()
-        return (self.session.enabled() and current.get("mode") == original.get("mode")
+        return (allowed and current.get("mode") == original.get("mode")
                 and (current.get("session") or {}).get("id")
                 == (original.get("session") or {}).get("id"))
 
@@ -117,6 +122,10 @@ class DesktopControl:
         found = choose_target(pointer.position, self.targets.targets(), button)
         if found is not None and hasattr(self.targets, "resolve"):
             found = self.targets.resolve(found)
+            # Revalidation can return a moved window. A RIGHT press must never
+            # jump left just because its cached target used to be on the right.
+            if found is not None:
+                found = choose_target(pointer.position, [found], button)
         if found is None:
             return None  # Nothing that way; the cursor stays where the user left it.
         if not self._current(original):
@@ -128,7 +137,7 @@ class DesktopControl:
         """Act on one recognised button. Returns the cursor position, or None."""
         with self._lock:
             try:
-                if not self.session.enabled():
+                if not self.enabled():
                     # The TV switched away, or recording started: remove the device.
                     self.release()
                     return None

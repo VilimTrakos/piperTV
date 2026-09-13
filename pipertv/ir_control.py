@@ -42,9 +42,11 @@ def decode_rc5(frame):
     if not 13 <= len(frame) <= 27 or len(frame) % 2 == 0:
         return None
     short = [value for value in frame if 550 <= value <= 1150]
-    if len(short) < 8:
-        return None
-    unit = statistics.median(short)
+    # Alternating data can merge almost every half-bit into double-length
+    # intervals; valid extended RC5 can even contain no short interval at all.
+    # Manchester validation below, rather than an arbitrary short-edge count,
+    # decides whether the reconstructed message is a valid RC5 frame.
+    unit = statistics.median(short) if short else statistics.median(frame) / 2
     if not 680 <= unit <= 1050:
         return None
     halves = [0]
@@ -242,9 +244,10 @@ class IRController:
         self._last_button = None
 
     def start(self):
-        if self._thread is None:
-            self._thread = threading.Thread(target=self._run, name="piper-ir-control", daemon=True)
-            self._thread.start()
+        with self._lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name="piper-ir-control", daemon=True)
+                self._thread.start()
 
     def resume(self):
         with self._lock:
@@ -254,9 +257,10 @@ class IRController:
 
     def reload_recordings(self):
         """Apply an edited library without reopening a paused recording device."""
-        matcher = SignalMatcher(self.store.snapshot())
         with self._lock:
-            self.matcher = matcher
+            # Serialize the snapshot as well as assignment: otherwise a slow
+            # rebuild can overwrite a newer deletion with its older snapshot.
+            self.matcher = SignalMatcher(self.store.snapshot())
             self.repeat.reset()
 
     def pause(self):
