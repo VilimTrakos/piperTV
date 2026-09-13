@@ -1,6 +1,7 @@
 import struct
 import threading
 import unittest
+from unittest.mock import patch
 
 from pipertv import lirc
 from pipertv.ir_control import (FrameReader, IRController, Match, RepeatFilter,
@@ -75,6 +76,19 @@ class Rc5Tests(unittest.TestCase):
 
     def test_extended_commands_use_the_field_bit(self):
         self.assertEqual(decode_rc5(rc5_frame(0, 100, 0)), ((0, 100), 0))
+
+    def test_alternating_rc5_data_with_few_or_no_short_intervals_still_decodes(self):
+        for address, command, toggle in ((5, 21, 0), (1, 85, 1), (10, 106, 1)):
+            with self.subTest(address=address, command=command, toggle=toggle):
+                self.assertEqual(decode_rc5(rc5_frame(address, command, toggle)),
+                                 ((address, command), toggle))
+
+    def test_all_rc5_addresses_commands_and_toggles_round_trip(self):
+        for address in range(32):
+            for command in range(128):
+                for toggle in (0, 1):
+                    self.assertEqual(decode_rc5(rc5_frame(address, command, toggle)),
+                                     ((address, command), toggle))
 
     def test_a_modestly_different_clock_still_decodes(self):
         self.assertEqual(decode_rc5(rc5_frame(0, 53, 1, unit=920)), ((0, 53), 1))
@@ -264,6 +278,63 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.health()["learned_buttons"], 0)
         self.assertTrue(self.controller.health()["paused"])
         self.assertIsNone(self.controller.matcher.match(self.frame))
+
+    def test_concurrent_reloads_cannot_restore_a_binding_deleted_by_the_newer_snapshot(self):
+        first_read, release_first, second_read = threading.Event(), threading.Event(), threading.Event()
+        old_doc = self.controller.store.doc
+
+        class ChangingStore:
+            reads = 0
+
+            def snapshot(self):
+                self.reads += 1
+                if self.reads == 1:
+                    first_read.set()
+                    release_first.wait(2)
+                    return old_doc
+                second_read.set()
+                return document({})
+
+        self.controller.store = ChangingStore()
+        first = threading.Thread(target=self.controller.reload_recordings)
+        second = threading.Thread(target=self.controller.reload_recordings)
+        self.addCleanup(release_first.set)
+        first.start()
+        self.assertTrue(first_read.wait(1))
+        second.start()
+        self.assertFalse(second_read.wait(.05), "the newer snapshot must not overtake the older rebuild")
+        release_first.set()
+        first.join(1)
+        second.join(1)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        self.assertEqual(self.controller.health()["learned_buttons"], 0)
+
+    def test_simultaneous_starts_create_only_one_reader(self):
+        real_thread = threading.Thread
+        constructing, finish = threading.Event(), threading.Event()
+        made = []
+
+        class ReaderThread:
+            def __init__(self, **_kwargs):
+                made.append(self)
+                constructing.set()
+                finish.wait(2)
+
+            def start(self):
+                pass
+
+        first = real_thread(target=self.controller.start)
+        second = real_thread(target=self.controller.start)
+        self.addCleanup(finish.set)
+        with patch("pipertv.ir_control.threading.Thread", ReaderThread):
+            first.start()
+            self.assertTrue(constructing.wait(1))
+            second.start()
+            finish.set()
+            first.join(1)
+            second.join(1)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        self.assertEqual(len(made), 1)
 
     def test_a_slow_callback_does_not_hold_the_receiver_state_lock(self):
         entered, finish = threading.Event(), threading.Event()

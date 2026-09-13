@@ -40,9 +40,11 @@ class RemoteControl:
         self.session = ControlSession()
         self._source_lock = threading.RLock()
         self.targets = AtspiTargets(self.screen) if targets is None else targets
-        self.desktop = (DesktopControl(self.session, self.screen, targets=self.targets)
+        self.desktop = (DesktopControl(self.session, self.screen, targets=self.targets,
+                                       enabled=self._enabled)
                         if desktop is None else desktop)
         self.buttons = ButtonLog() if buttons is None else buttons
+        self._input_context = None
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
         self.controller = (IRController(store, self._press, self._enabled,
                                         device=device)
@@ -75,7 +77,22 @@ class RemoteControl:
                 LOG.warning("Reading HDMI selection: %s", exc)
                 detection = {"state": "unknown", "reason": "HDMI detection is unavailable."}
                 self.session.update(detection)
+            self._sync_input_context()
             return detection
+
+    def _sync_input_context(self) -> dict:
+        """Discard queued actions whenever their visit, mode, or hold ends.
+
+        Called under _source_lock so an IR callback cannot append an old
+        session's action behind the clear.
+        """
+        state = self.session.snapshot()
+        context = (state["session"]["id"] if state["session"] else None,
+                   state["mode"], state["control"])
+        if context != self._input_context:
+            self.buttons.clear()
+            self._input_context = context
+        return state
 
     def _enabled(self) -> bool:
         # Consult current evidence before every IR action, including switches
@@ -90,8 +107,12 @@ class RemoteControl:
         them by number. The cursor moves only under a desktop mode, so the
         Piper interface never drags the mouse around behind itself.
         """
-        mode = self.session.snapshot()["mode"]
-        self.buttons.append(button, mode)
+        with self._source_lock:
+            if not self._enabled():
+                return
+            state = self.session.snapshot()
+            mode = state["mode"]
+            self.buttons.append(button, mode, state["session"]["id"])
         if mode in DESKTOP_MODES:
             self.desktop.press(button)
 
@@ -102,7 +123,9 @@ class RemoteControl:
             # Keyed off the pointer that actually exists rather than a
             # remembered verdict: a mode can be chosen between two passes, and
             # a visit can end in that same gap.
-            if not self.session.enabled() and self.desktop.health().get("active"):
+            state = self.session.snapshot()
+            if ((state["control"] != "on" or state["mode"] not in DESKTOP_MODES)
+                    and self.desktop.health().get("active")):
                 self.desktop.release()
         except Exception as exc:  # noqa: BLE001 - the gate must keep running
             LOG.warning("Control supervisor: %s", exc)
@@ -129,19 +152,30 @@ class RemoteControl:
     # --- the browser's actions ------------------------------------------
 
     def choose(self, mode, session_id) -> dict:
-        self._refresh_source()
-        result = self.session.choose(mode, session_id)
+        with self._source_lock:
+            self._refresh_source()
+            self.session.choose(mode, session_id)
+            result = self._sync_input_context()
+        if self.desktop.health().get("active"):
+            self.desktop.release()
         # A fresh visit should see the desktop as it is now, not as it was.
         if hasattr(self.targets, "invalidate"):
             self.targets.invalidate()
         return result
 
     def manual(self, confirmed) -> dict:
-        self._refresh_source()
-        return self.session.start_manual(confirmed)
+        with self._source_lock:
+            self._refresh_source()
+            self.session.start_manual(confirmed)
+            result = self._sync_input_context()
+        if self.desktop.health().get("active"):
+            self.desktop.release()
+        return result
 
     def stop(self) -> dict:
-        result = self.session.stop()
+        with self._source_lock:
+            self.session.stop()
+            result = self._sync_input_context()
         self.desktop.release()
         return result
 
@@ -153,14 +187,18 @@ class RemoteControl:
         The gate closes first, then the reader releases the LIRC device; a
         recording must never be answered by the desktop moving as well.
         """
-        result = self.session.hold(reason)
+        with self._source_lock:
+            self.session.hold(reason)
+            result = self._sync_input_context()
         self.desktop.release()
         self.controller.pause()
         return result
 
     def release(self) -> dict:
-        self._refresh_source()
-        result = self.session.release()
+        with self._source_lock:
+            self._refresh_source()
+            self.session.release()
+            result = self._sync_input_context()
         # Resuming makes the reader ready; its predicate still prevents it
         # opening LIRC until a visit has a mode. Otherwise learning before the
         # first visit leaves it paused permanently.
@@ -174,10 +212,13 @@ class RemoteControl:
 
     def events(self, after: int = 0) -> dict:
         """Presses the TV interface has not seen yet, with the gate's verdict."""
-        result = self.buttons.since(after)
-        state = self.session.snapshot()
+        with self._source_lock:
+            self._refresh_source()
+            result = self.buttons.since(after)
+            state = self.session.snapshot()
         result["mode"] = state["mode"]
         result["control"] = state["control"]
+        result["session_id"] = state["session"]["id"] if state["session"] else None
         return result
 
     # --- reporting -------------------------------------------------------

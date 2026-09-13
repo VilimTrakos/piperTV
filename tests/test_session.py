@@ -4,6 +4,7 @@ docs/hdmi-detection.md, so a change in behaviour shows up against that list."""
 import unittest
 
 from pipertv.session import ControlSession
+from pipertv.cec import CecState
 
 
 def cec(state, reason="test"):
@@ -219,6 +220,111 @@ class ControlSessionTests(unittest.TestCase):
         state = self.session.update(cec("unknown", "CEC access was denied."))
         self.assertEqual(state["detail"], "CEC access was denied.")
         self.assertEqual(state["source"], "unknown")
+
+
+class DetectorSessionTests(unittest.TestCase):
+    """Exercise real reducer snapshots, including events between gate polls."""
+
+    def setUp(self):
+        self.now = [0.0]
+        self.detector = CecState("1.0.0.0", stale_after_s=5, clock=lambda: self.now[0])
+        self.session = ControlSession()
+        self.poll()
+
+    def poll(self):
+        return self.session.update(self.detector.snapshot())
+
+    def selected(self, selected=True):
+        self.detector.observe(bytes((0x0F, 0x86, 0x10 if selected else 0x20, 0x00)))
+
+    def choose(self):
+        return self.session.choose("pointer", self.session.snapshot()["session"]["id"])
+
+    def manual(self):
+        self.session.start_manual(True)
+        return self.choose()
+
+    def test_stop_stays_stopped_despite_repeated_selection_reports(self):
+        self.selected()
+        first = self.poll()
+        self.choose()
+        self.session.stop()
+        for _ in range(3):
+            self.selected()
+            self.assertIsNone(self.poll()["session"])
+        self.selected(False)
+        self.selected(True)
+        returned = self.poll()
+        self.assertNotEqual(returned["session"]["id"], first["session"]["id"])
+        self.assertTrue(returned["needs_mode"])
+        self.assertFalse(self.session.enabled())
+
+    def test_away_and_back_between_polls_withdraws_the_previous_mode(self):
+        self.selected()
+        first = self.poll()
+        self.choose()
+        self.selected(False)
+        self.selected(True)
+        returned = self.poll()
+        self.assertNotEqual(returned["session"]["id"], first["session"]["id"])
+        self.assertTrue(returned["needs_mode"])
+        with self.assertRaises(RuntimeError):
+            self.session.choose("pointer", first["session"]["id"])
+
+    def test_refresh_after_expiry_requires_a_new_choice_even_without_a_poll(self):
+        self.selected()
+        first = self.poll()
+        self.choose()
+        self.now[0] = 6
+        self.selected()
+        returned = self.poll()
+        self.assertNotEqual(returned["session"]["id"], first["session"]["id"])
+        self.assertFalse(self.session.enabled())
+
+    def test_manual_overrides_a_cached_negative_but_not_a_new_report(self):
+        self.selected(False)
+        self.poll()
+        first = self.manual()
+        for _ in range(3):
+            self.assertEqual(self.poll()["session"]["id"], first["session"]["id"])
+            self.assertTrue(self.session.enabled())
+        self.selected(False)
+        self.assertIsNone(self.poll()["session"])
+        self.assertFalse(self.session.enabled())
+
+    def test_monitor_failure_alone_preserves_manual_confirmation(self):
+        first = self.manual()
+        self.detector.unavailable("CEC monitor stopped.")
+        self.assertEqual(self.poll()["session"]["id"], first["session"]["id"])
+        self.assertTrue(self.session.enabled())
+
+    def test_positive_confirmation_then_monitor_failure_preserves_manual(self):
+        first = self.manual()
+        self.selected()
+        self.poll()
+        self.detector.unavailable("CEC monitor stopped.")
+        self.assertEqual(self.poll()["session"]["id"], first["session"]["id"])
+        self.assertTrue(self.session.enabled())
+
+    def test_fresh_contrary_report_followed_by_reset_still_ends_manual(self):
+        self.manual()
+        self.selected(False)
+        self.detector.unavailable("CEC messages were lost.")
+        self.assertIsNone(self.poll()["session"])
+        self.assertFalse(self.session.enabled())
+
+    def test_known_hdmi_disconnection_ends_manual(self):
+        self.manual()
+        self.detector.set_physical_address(None)
+        self.assertIsNone(self.poll()["session"])
+        self.assertFalse(self.session.enabled())
+
+    def test_disconnection_and_reconnection_between_polls_ends_manual(self):
+        self.manual()
+        self.detector.set_physical_address(None)
+        self.detector.set_physical_address("1.0.0.0")
+        self.assertIsNone(self.poll()["session"])
+        self.assertFalse(self.session.enabled())
 
 
 if __name__ == "__main__":

@@ -8,11 +8,10 @@ https://www.freedesktop.org/wiki/Accessibility/AT-SPI2/
 Two things decide what is visible here, and both are properties of the desktop
 rather than of this code:
 
-* An application appears only if it registered with the bus. Raspberry Pi OS
-  starts its file manager with NO_AT_BRIDGE=1, which opts that process out
-  entirely, so its desktop icons are absent no matter what this module does.
-* Anything not currently on screen reports its position as INT32_MIN, which is
-  a sentinel and not a coordinate.
+* An application must register with the bus and expose its individual controls.
+  NO_AT_BRIDGE=1 opts a process out. Some desktops expose no per-icon children.
+* Screen extents may be unplaced sentinels. Even SHOWING controls can belong to
+  a covered background window; only an ACTIVE window is eligible for snapping.
 
 Walking the tree costs D-Bus round trips, so results are cached briefly: a held
 direction key must not re-walk the desktop between repeats.
@@ -41,6 +40,7 @@ ACTIONABLE = frozenset({
     "icon", "list item", "menu item", "check menu item", "radio menu item",
     "page tab", "table cell", "tree item", "combo box",
 })
+WINDOW_ROLES = frozenset({"frame", "window", "dialog", "alert", "desktop frame"})
 
 
 def valid_extent(box, screen) -> bool:
@@ -97,7 +97,7 @@ def actionable_state(node):
 
 def collect_targets(root, screen, roles=ACTIONABLE, coords=DESKTOP_COORDS,
                     max_nodes=MAX_NODES, max_depth=MAX_DEPTH,
-                    deadline=None, clock=time.monotonic):
+                    deadline=None, clock=time.monotonic, active_windows_only=False):
     """Flatten an accessibility tree into clickable screen points.
 
     The walk is bounded in both depth and node count: a desktop can present a
@@ -109,7 +109,7 @@ def collect_targets(root, screen, roles=ACTIONABLE, coords=DESKTOP_COORDS,
     budget = [max_nodes]
     deadline = clock() + SCAN_S if deadline is None else deadline
 
-    def visit(node, depth):
+    def visit(node, depth, window=None):
         if depth > max_depth or budget[0] <= 0 or clock() >= deadline:
             return
         try:
@@ -129,13 +129,19 @@ def collect_targets(root, screen, roles=ACTIONABLE, coords=DESKTOP_COORDS,
                 role = child.getRoleName()
             except Exception:
                 continue
-            if role in roles:
+            child_window = child if role in WINDOW_ROLES else window
+            if role in roles and (not active_windows_only or child_window is not None
+                                  and "active" in state_names(child_window)):
                 point = target_point(child, screen, coords)
                 if point is not None:
-                    found.append(dict(point, role=role, _node=child))
-            visit(child, depth + 1)
+                    found.append(dict(point, role=role, _node=child, _window=child_window))
+            visit(child, depth + 1, child_window)
 
-    visit(root, 0)
+    try:
+        root_window = root if root.getRoleName() in WINDOW_ROLES else None
+    except Exception:
+        root_window = None
+    visit(root, 0, root_window)
     return found
 
 
@@ -188,7 +194,7 @@ class AtspiTargets:
                     if time.monotonic() >= deadline:
                         break
                     found.extend(collect_targets(application, self.screen, self.roles,
-                                                 deadline=deadline))
+                                                 deadline=deadline, active_windows_only=True))
                 self._applications = len(applications)
                 self._error = None
             except Exception as exc:
@@ -204,13 +210,15 @@ class AtspiTargets:
     def resolve(self, target):
         """Re-check a cached target before moving to it; windows can move/close."""
         node = target.get("_node")
-        if node is None:
+        window = target.get("_window")
+        if node is None or window is None or "active" not in state_names(window):
+            self.invalidate()
             return None
         point = target_point(node, self.screen)
         if point is None:
             self.invalidate()
             return None
-        return dict(point, role=target.get("role"), _node=node)
+        return dict(point, role=target.get("role"), _node=node, _window=window)
 
     def invalidate(self):
         """Drop the cache, so the next press sees the desktop as it is now."""
@@ -222,13 +230,13 @@ class AtspiTargets:
             count = None if self._cached is None else len(self._cached)
             result = {"ok": self._error is None, "source": self.name,
                       "applications": self._applications, "targets": count,
+                      "scope": "active accessible window",
                       "error": self._error}
             if self._error is None and count == 0:
                 result["error"] = (
-                    "No accessible targets were found. Applications appear here only "
-                    "after registering with the accessibility bus; the Raspberry Pi "
-                    "desktop starts its file manager with NO_AT_BRIDGE=1, which hides "
-                    "its icons. Enable toolkit-accessibility and start the desktop "
-                    "without that setting, or use pointer mode."
+                    "No clickable controls were found in the active accessible window. "
+                    "Background windows are excluded because their controls may be covered. "
+                    "Some apps do not expose icons or usable screen coordinates; use Pointer "
+                    "mode there. NO_AT_BRIDGE=1 also hides an app from accessibility."
                 )
             return result

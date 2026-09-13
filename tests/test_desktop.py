@@ -129,7 +129,8 @@ class ChooseTargetTests(unittest.TestCase):
         self.assertIsNone(choose_target((100, 100), self.icons, "sideways"))
 
     def test_malformed_targets_are_skipped(self):
-        icons = [{"y": 100}, {"x": "far", "y": 100}, None, {"x": 300, "y": 100, "label": "ok"}]
+        icons = [{"y": 100}, {"x": "far", "y": 100}, None,
+                 {"x": float("inf"), "y": 100}, {"x": 300, "y": 100, "label": "ok"}]
         self.assertEqual(choose_target((100, 100), icons, "right")["label"], "ok")
 
 
@@ -192,6 +193,16 @@ class SnappingModeTests(unittest.TestCase):
         self.assertIsNone(desktop.press("right"))
         self.assertEqual(made[0].moves, [])
 
+    def test_a_moved_cached_target_must_still_be_in_the_pressed_direction(self):
+        class MovingTargets(FakeTargets):
+            def resolve(self, target):
+                return {"x": 100, "y": 540, "label": target["label"]}
+
+        targets = MovingTargets([{"x": 1200, "y": 540, "label": "Moved window"}])
+        desktop, _session, made = control("snapping", targets=targets)
+        self.assertIsNone(desktop.press("right"))
+        self.assertEqual(made[0].moves, [])
+
     def test_snapping_without_any_target_source_is_reported_not_raised(self):
         desktop, _session, _made = control("snapping", targets=None)
         self.assertIsNone(desktop.press("right"))
@@ -250,6 +261,38 @@ class ClickAndGateTests(unittest.TestCase):
         self.assertIsNone(desktop.press("right"))
         self.assertEqual(made[0].moves, [])
         self.assertEqual(made[0].closed, 1)
+
+    def test_live_detection_is_rechecked_after_snapping_even_before_supervisor_tick(self):
+        evidence = [True]
+        desktop, session, made = control("snapping")
+        desktop.enabled = lambda: evidence[0]
+
+        class SlowTargets(FakeTargets):
+            def targets(self):
+                evidence[0] = False
+                return [{"x": 1200, "y": 540}]
+
+        desktop.targets = SlowTargets([])
+        # The stored session remains on; fresh detection alone closes the gate.
+        self.assertTrue(session.enabled())
+        self.assertIsNone(desktop.press("right"))
+        self.assertEqual(made[0].moves, [])
+
+    def test_session_identity_is_read_after_the_live_predicate_refreshes_it(self):
+        desktop, session, made = control()
+        visit = ["first"]
+        calls = [0]
+        session.snapshot = lambda: {"mode": "pointer", "session": {"id": visit[0]}}
+
+        def enabled():
+            calls[0] += 1
+            if calls[0] == 2:
+                visit[0] = "second"
+            return True
+
+        desktop.enabled = enabled
+        self.assertIsNone(desktop.press("ok"))
+        self.assertEqual(made[0].clicks, [])
 
     def test_an_input_from_an_earlier_visit_does_not_act_in_a_new_visit(self):
         desktop, session, made = control("snapping")

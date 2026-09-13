@@ -294,6 +294,44 @@ class RecordingInterlockTests(unittest.TestCase):
 
 
 class ButtonRoutingTests(unittest.TestCase):
+    def test_an_input_change_before_callback_prevents_dispatch(self):
+        control, monitor, _controller, _targets = build("active")
+        select(control, "pointer")
+        monitor.state = "inactive"
+        control._press("right")
+        self.assertEqual(control.desktop.presses, [])
+        self.assertEqual(control.events(0)["events"], [])
+
+    def test_queued_buttons_cannot_cross_a_mode_change(self):
+        control, _monitor, _controller, _targets = build("active")
+        state = select(control, "pointer")
+        control._press("ok")
+        control.choose("piper", state["session"]["id"])
+        self.assertEqual(control.events(0)["events"], [])
+        control._press("down")
+        event = control.events(0)["events"][0]
+        self.assertEqual(event["mode"], "piper")
+        self.assertEqual(event["session_id"], state["session"]["id"])
+
+    def test_queued_buttons_cannot_cross_a_recording_hold(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control._press("ok")
+        control.hold()
+        control._press("right")
+        control.release()
+        self.assertEqual(control.events(0)["events"], [])
+
+    def test_feed_checks_new_source_evidence_before_returning_old_presses(self):
+        control, monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control._press("ok")
+        monitor.state = "inactive"
+        feed = control.events(0)
+        self.assertEqual(feed["events"], [])
+        self.assertEqual(feed["control"], "off")
+        self.assertIsNone(feed["session_id"])
+
     def test_a_desktop_mode_moves_the_cursor_and_records_the_press(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "pointer")
