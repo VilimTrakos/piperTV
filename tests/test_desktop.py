@@ -121,6 +121,50 @@ class ChooseTargetTests(unittest.TestCase):
                  {"x": 200, "y": 700, "label": "aside"}]
         self.assertEqual(choose_target((100, 100), icons, "right")["label"], "ahead")
 
+    def test_what_is_directly_below_beats_a_nearer_diagonal(self):
+        # The complaint this answers: pressing down landed somewhere off to the
+        # side because it was a little closer, so a row could not be walked.
+        icons = [{"x": 100, "y": 300, "label": "below"},
+                 {"x": 260, "y": 220, "label": "diagonal"}]
+        self.assertEqual(choose_target((100, 100), icons, "down")["label"], "below")
+
+    def test_a_row_is_walked_one_control_at_a_time(self):
+        row = [{"x": 100 + step, "y": 500, "label": str(step)} for step in (0, 120, 240, 360)]
+        position, order = (100, 500), []
+        for _press in range(3):
+            found = choose_target(position, row, "right")
+            order.append(found["label"])
+            position = (found["x"], found["y"])
+        self.assertEqual(order, ["120", "240", "360"])
+
+    def test_a_wide_control_hands_over_to_whatever_is_under_any_part_of_it(self):
+        # A banner button spans the screen; what is below its far end is still
+        # below it, and judging from the centre alone would miss it.
+        wide = {"left": 0, "top": 90, "right": 900, "bottom": 130, "x": 450, "y": 110}
+        under_the_end = {"left": 800, "top": 300, "right": 880, "bottom": 340,
+                         "x": 840, "y": 320, "label": "under the end"}
+        found = choose_target((450, 110), [under_the_end], "down",
+                              box=(wide["left"], wide["top"], wide["right"], wide["bottom"]))
+        self.assertEqual(found["label"], "under the end")
+
+    def test_without_a_shared_band_a_target_to_the_side_still_answers(self):
+        # Nothing directly below: the only control that way is offset, and a
+        # narrow cone still finds it rather than leaving the cursor stuck.
+        icons = [{"left": 300, "top": 400, "right": 360, "bottom": 440,
+                  "x": 330, "y": 420, "label": "offset"}]
+        self.assertEqual(choose_target((100, 100), icons, "down")["label"], "offset")
+
+    def test_controls_in_the_same_row_are_not_below_each_other(self):
+        beside = [{"left": 300, "top": 90, "right": 380, "bottom": 130,
+                   "x": 340, "y": 110, "label": "beside"}]
+        self.assertIsNone(choose_target((100, 110), beside, "down"))
+
+    def test_the_nearest_of_a_column_comes_first(self):
+        column = [{"x": 100, "y": 700, "label": "far"},
+                  {"x": 100, "y": 300, "label": "near"},
+                  {"x": 100, "y": 500, "label": "middle"}]
+        self.assertEqual(choose_target((100, 100), column, "down")["label"], "near")
+
     def test_a_target_far_off_the_line_is_not_in_that_direction(self):
         self.assertIsNone(choose_target((100, 100), [{"x": 110, "y": 900}], "right"))
 
