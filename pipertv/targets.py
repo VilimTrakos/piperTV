@@ -50,6 +50,8 @@ ACTIONABLE = frozenset({
 WINDOW_ROLES = frozenset({"frame", "window", "dialog", "alert", "desktop frame"})
 # How far to look for the active window itself, not for what is inside it.
 WINDOW_DEPTH = 3
+# Centres closer than this are the same control reported twice.
+SAME_CONTROL_PX = 8
 
 
 def valid_extent(box, screen) -> bool:
@@ -156,6 +158,29 @@ def collect_targets(root, screen, roles=ACTIONABLE, coords=DESKTOP_COORDS,
     return found
 
 
+def distinct_targets(found):
+    """Drop the wrappers a page reports around its own controls.
+
+    A browser exposes a link inside a row inside a panel, each actionable and
+    each covering the same pixels. Snapping through all three feels broken:
+    two presses in a row appear to do nothing, and the third jumps. The
+    innermost is what a person would say they are on, so a larger control is
+    kept only if it holds no smaller one already kept.
+    """
+    kept: list[dict] = []
+    for target in sorted(found, key=lambda t: ((t["right"] - t["left"]) * (t["bottom"] - t["top"])
+                                               if "right" in t else 0)):
+        if any(abs(target["x"] - other["x"]) <= SAME_CONTROL_PX
+               and abs(target["y"] - other["y"]) <= SAME_CONTROL_PX for other in kept):
+            continue
+        if "right" in target and any(
+                target["left"] <= other["x"] <= target["right"]
+                and target["top"] <= other["y"] <= target["bottom"] for other in kept):
+            continue  # a wrapper around something already offered
+        kept.append(target)
+    return kept
+
+
 class AtspiTargets:
     """Snapping targets read from the accessibility bus, cached briefly.
 
@@ -246,6 +271,7 @@ class AtspiTargets:
                         break
                     found.extend(collect_targets(window, self.screen, self.roles,
                                                  deadline=deadline, active_windows_only=True))
+                found = distinct_targets(found)
                 self._applications = len(applications)
                 self._error = None
             except Exception as exc:

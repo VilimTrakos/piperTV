@@ -24,11 +24,13 @@ from .pointer import VirtualPointer
 LOG = logging.getLogger(__name__)
 
 CLICKS = {"ok": "left", "menu": "right"}
-# A target that shares no band with where the cursor is may still be the only
-# thing that way. It is considered, but only inside a narrow cone and always
-# after anything that does share a band.
-SPREAD = 1.0
-MARGIN_PX = 24
+# What a sideways offset costs when nothing shares the cursor's band.
+SIDE_WEIGHT = 1.5
+# How far off the line of travel a target may sit and still be a step that way
+# rather than a jump across the layout. Generous on purpose: the menu at the
+# top of a page is a long way to the side of a cursor halfway down it.
+SPREAD = 3.0
+MARGIN_PX = 200
 # Centres this close along the axis of travel are the same row or column, not
 # a step in that direction.
 SAME_LINE_PX = 4
@@ -70,12 +72,13 @@ def choose_target(position, targets, direction, box=None):
 
     `box` is the rectangle the cursor is currently on, so that a wide element
     hands over to whatever sits under any part of it, not only under its
-    centre.
+    centre. When none is given, the control the cursor is standing in serves
+    as one, so the first press of a session behaves like every later press.
     """
     if direction not in DIRECTIONS:
         return None
     x, y = position
-    origin = box if box is not None else (x, y, x, y)
+    origin = box if box is not None else standing_box(position, targets)
     left, top, right, bottom = origin
     vertical = direction in ("up", "down")
     best = None
@@ -104,14 +107,41 @@ def choose_target(position, targets, direction, box=None):
             # sideways offset only break ties.
             rank = (0, max(edge, 0), aside)
         elif aside <= ahead * SPREAD + MARGIN_PX:
-            # Nothing shares the band; a target off to the side will do, but
-            # only within a narrow cone and never ahead of one that does.
-            rank = (1, ahead + aside * SPREAD, aside)
+            # Nothing shares the band, but this is still recognisably that way:
+            # the menu at the top of the screen, from halfway down it.
+            rank = (1, ahead + aside * SIDE_WEIGHT, aside)
         else:
-            continue
+            # Barely ahead and wildly off to the side. Better than nothing --
+            # a press that does nothing at all leaves the remote stuck -- but
+            # only when the screen offers nothing better.
+            rank = (2, ahead + aside * SIDE_WEIGHT, aside)
         if best is None or rank < best[0]:
             best = (rank, target)
     return best[1] if best else None
+
+
+def standing_box(position, targets):
+    """The smallest control the cursor is inside, as a rectangle.
+
+    Snapping from a bare point treats the cursor as infinitely thin, so a wide
+    control under it offers no band to travel in and the first press of a
+    session behaves unlike all the ones after it. The innermost control wins:
+    a page nests a link inside a row inside a panel, and the link is the thing
+    a person would say they are on.
+    """
+    x, y = position
+    smallest = None
+    for target in targets:
+        extent = _box(target)
+        if extent is None:
+            continue
+        left, top, right, bottom = extent
+        if not (left <= x <= right and top <= y <= bottom):
+            continue
+        area = (right - left) * (bottom - top)
+        if smallest is None or area < smallest[0]:
+            smallest = (area, extent)
+    return smallest[1] if smallest else (x, y, x, y)
 
 
 class DesktopControl:
