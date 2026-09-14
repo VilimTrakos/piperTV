@@ -24,40 +24,93 @@ from .pointer import VirtualPointer
 LOG = logging.getLogger(__name__)
 
 CLICKS = {"ok": "left", "menu": "right"}
-# How far off the straight line a target may sit and still count as "that way".
-SPREAD = 2.0
-MARGIN_PX = 40
+# A target that shares no band with where the cursor is may still be the only
+# thing that way. It is considered, but only inside a narrow cone and always
+# after anything that does share a band.
+SPREAD = 1.0
+MARGIN_PX = 24
+# Centres this close along the axis of travel are the same row or column, not
+# a step in that direction.
+SAME_LINE_PX = 4
 
 
-def choose_target(position, targets, direction):
-    """Pick the nearest target in one direction, preferring aligned ones.
+def _box(target, fallback_point=None):
+    """The target's rectangle, or its point when it reports no extent."""
+    if fallback_point is not None:
+        x, y = fallback_point
+        return (x, y, x, y)
+    try:
+        left, top = int(target["left"]), int(target["top"])
+        right, bottom = int(target["right"]), int(target["bottom"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        try:
+            x, y = int(target["x"]), int(target["y"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return (x, y, x, y)
+    if right < left or bottom < top:
+        return None
+    return (left, top, right, bottom)
 
-    A target directly ahead beats a nearer one far off to the side, which is
-    what makes repeated presses walk a row of icons instead of wandering.
+
+def _overlap(low, high, other_low, other_high) -> int:
+    """How much two spans share along one axis; zero when they merely touch."""
+    return max(0, min(high, other_high) - max(low, other_low))
+
+
+def choose_target(position, targets, direction, box=None):
+    """Pick the control that is really next in one direction.
+
+    Which one a person means by "down" is not the nearest thing in a wide cone
+    from the cursor -- that picks diagonals, and a row of buttons is then
+    walked in an order nobody can predict. It is the nearest control whose
+    extent still lies in the band the cursor occupies: directly below, in the
+    same column of the layout. Only when nothing shares that band does a
+    target off to the side become the answer, and then within a narrow cone.
+
+    `box` is the rectangle the cursor is currently on, so that a wide element
+    hands over to whatever sits under any part of it, not only under its
+    centre.
     """
     if direction not in DIRECTIONS:
         return None
     x, y = position
+    origin = box if box is not None else (x, y, x, y)
+    left, top, right, bottom = origin
+    vertical = direction in ("up", "down")
     best = None
     for target in targets:
-        try:
-            tx, ty = int(target["x"]), int(target["y"])
-        except (KeyError, TypeError, ValueError, OverflowError):
+        extent = _box(target)
+        if extent is None:
             continue
-        dx, dy = tx - x, ty - y
-        if direction == "left":
-            ahead, aside = -dx, abs(dy)
-        elif direction == "right":
-            ahead, aside = dx, abs(dy)
-        elif direction == "up":
-            ahead, aside = -dy, abs(dx)
+        t_left, t_top, t_right, t_bottom = extent
+        t_x, t_y = (t_left + t_right) // 2, (t_top + t_bottom) // 2
+        if vertical:
+            ahead = (t_y - y) if direction == "down" else (y - t_y)
+            aside = abs(t_x - x)
+            # The band is the cursor's own width: anything under any part of a
+            # wide element is "below" it.
+            shared = _overlap(left, right, t_left, t_right)
+            edge = (t_top - bottom) if direction == "down" else (top - t_bottom)
         else:
-            ahead, aside = dy, abs(dx)
-        if ahead <= 0 or aside > ahead * SPREAD + MARGIN_PX:
+            ahead = (t_x - x) if direction == "right" else (x - t_x)
+            aside = abs(t_y - y)
+            shared = _overlap(top, bottom, t_top, t_bottom)
+            edge = (t_left - right) if direction == "right" else (left - t_right)
+        if ahead <= SAME_LINE_PX:
+            continue  # beside the cursor, or behind it: not a step that way
+        if shared > 0:
+            # The same column or row: order by how far along it is, and let the
+            # sideways offset only break ties.
+            rank = (0, max(edge, 0), aside)
+        elif aside <= ahead * SPREAD + MARGIN_PX:
+            # Nothing shares the band; a target off to the side will do, but
+            # only within a narrow cone and never ahead of one that does.
+            rank = (1, ahead + aside * SPREAD, aside)
+        else:
             continue
-        score = ahead + aside * SPREAD
-        if best is None or score < best[0]:
-            best = (score, target)
+        if best is None or rank < best[0]:
+            best = (rank, target)
     return best[1] if best else None
 
 
@@ -90,6 +143,8 @@ class DesktopControl:
         self._last_button = None
         self._last_at = -float("inf")
         self._streak = 0
+        self._standing = None
+        self._standing_at = None
 
     def _step(self, button, now):
         """Grow the step while one direction is held, and reset when released."""
@@ -119,7 +174,12 @@ class DesktopControl:
     def _snap(self, pointer, button, original):
         if self.targets is None:
             raise RuntimeError("Snapping has no source of targets on this desktop.")
-        found = choose_target(pointer.position, self.targets.targets(), button)
+        # Where the cursor stands is a control, not a point, whenever the last
+        # press put it on one: a wide button hands over to whatever sits under
+        # any part of it, which is what makes a row walk in order.
+        standing = self._standing if self._standing_at == pointer.position else None
+        found = choose_target(pointer.position, self.targets.targets(), button,
+                              box=standing)
         if found is not None and hasattr(self.targets, "resolve"):
             found = self.targets.resolve(found)
             # Revalidation can return a moved window. A RIGHT press must never
@@ -131,7 +191,10 @@ class DesktopControl:
         if not self._current(original):
             self.release()
             return None
-        return pointer.move_to(int(found["x"]), int(found["y"]))
+        position = pointer.move_to(int(found["x"]), int(found["y"]))
+        self._standing = _box(found)
+        self._standing_at = position
+        return position
 
     def press(self, button, mode=None):
         """Act on one recognised button. Returns the cursor position, or None.
@@ -189,6 +252,7 @@ class DesktopControl:
         with self._lock:
             pointer, self._pointer = self._pointer, None
             self._last_button, self._streak = None, 0
+            self._standing, self._standing_at = None, None
             if pointer is not None:
                 try:
                     pointer.close()

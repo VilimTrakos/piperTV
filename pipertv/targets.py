@@ -85,7 +85,9 @@ def target_point(node, screen, coords=DESKTOP_COORDS):
     # A partly clipped control is still usable, but its full rectangle's centre
     # may be offscreen. Aim inside the visible intersection instead.
     right, bottom = min(screen[0], box.x + box.width), min(screen[1], box.y + box.height)
-    return {"x": (box.x + right) // 2, "y": (box.y + bottom) // 2,
+    left, top = max(0, box.x), max(0, box.y)
+    return {"x": (left + right) // 2, "y": (top + bottom) // 2,
+            "left": left, "top": top, "right": right, "bottom": bottom,
             "label": str(label)[:80]}
 
 
