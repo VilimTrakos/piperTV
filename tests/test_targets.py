@@ -2,7 +2,7 @@ import logging
 import unittest
 
 from pipertv.targets import (ACTIONABLE, UNPLACED, AtspiTargets, collect_targets,
-                             target_point, valid_extent)
+                             distinct_targets, target_point, valid_extent)
 
 SCREEN = (1920, 1080)
 
@@ -324,6 +324,34 @@ class AtspiTargetsTests(unittest.TestCase):
         self.assertEqual((health["applications"], health["targets"]), (1, 1))
         self.assertEqual(health["source"], "accessibility")
         self.assertIsNone(health["error"])
+
+
+class DistinctTargetTests(unittest.TestCase):
+    """A page reports a control several times over; snapping wants it once."""
+
+    def target(self, left, top, right, bottom, label):
+        return {"x": (left + right) // 2, "y": (top + bottom) // 2, "left": left,
+                "top": top, "right": right, "bottom": bottom, "label": label}
+
+    def test_a_wrapper_around_a_control_is_dropped(self):
+        inner = self.target(100, 100, 180, 140, "link")
+        wrapper = self.target(90, 90, 400, 160, "row")
+        kept = distinct_targets([wrapper, inner])
+        self.assertEqual([t["label"] for t in kept], ["link"])
+
+    def test_the_same_control_reported_twice_is_offered_once(self):
+        first = self.target(100, 100, 180, 140, "link")
+        again = self.target(102, 101, 182, 141, "link again")
+        self.assertEqual(len(distinct_targets([first, again])), 1)
+
+    def test_controls_side_by_side_are_all_kept(self):
+        row = [self.target(100 + step, 100, 180 + step, 140, str(step))
+               for step in (0, 120, 240)]
+        self.assertEqual(len(distinct_targets(row)), 3)
+
+    def test_a_wrapper_is_kept_when_it_wraps_nothing_offered(self):
+        wrapper = self.target(90, 90, 400, 160, "row")
+        self.assertEqual([t["label"] for t in distinct_targets([wrapper])], ["row"])
 
 
 if __name__ == "__main__":
