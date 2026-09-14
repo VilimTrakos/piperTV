@@ -165,8 +165,29 @@ class ChooseTargetTests(unittest.TestCase):
                   {"x": 100, "y": 500, "label": "middle"}]
         self.assertEqual(choose_target((100, 100), column, "down")["label"], "near")
 
-    def test_a_target_far_off_the_line_is_not_in_that_direction(self):
-        self.assertIsNone(choose_target((100, 100), [{"x": 110, "y": 900}], "right"))
+    def test_a_target_far_off_the_line_loses_to_anything_recognisably_that_way(self):
+        far_off = {"x": 110, "y": 900, "label": "far off"}
+        that_way = {"x": 400, "y": 160, "label": "that way"}
+        self.assertEqual(choose_target((100, 100), [far_off, that_way], "right")["label"],
+                         "that way")
+
+    def test_a_target_far_off_the_line_is_still_better_than_being_stuck(self):
+        # A press that does nothing leaves whoever is holding the remote with
+        # no way forward, which is the worse of the two failures.
+        far_off = [{"x": 110, "y": 900, "label": "far off"}]
+        self.assertEqual(choose_target((100, 100), far_off, "right")["label"], "far off")
+
+    def test_the_menu_across_the_screen_is_reachable_from_the_middle(self):
+        # Real coordinates from the Prime Video page on the Pi: the cursor sits
+        # in the middle of the screen and the menu is at the top left. Pressing
+        # up must land there rather than doing nothing.
+        menu = [{"left": 177, "top": 12, "right": 252, "bottom": 54,
+                 "x": 214, "y": 33, "label": "Home"},
+                {"left": 252, "top": 12, "right": 336, "bottom": 54,
+                 "x": 294, "y": 33, "label": "Movies"}]
+        found = choose_target((960, 540), menu, "up")
+        self.assertIsNotNone(found, "up from the middle of the screen must reach the menu")
+        self.assertEqual(found["label"], "Movies", "the nearer of the two, sideways")
 
     def test_nothing_that_way_selects_nothing(self):
         self.assertIsNone(choose_target((100, 100), [], "right"))
