@@ -10,6 +10,7 @@ import threading
 from datetime import datetime, timezone
 
 from .buttons import BUTTONS, BUTTON_IDS
+from .desktop import validate_pointer
 from .roles import ROLES, validate_roles
 
 
@@ -88,6 +89,10 @@ class RecordingStore:
         # keep loading: no bindings simply means each key acts as itself.
         if "roles" in doc:
             validate_roles(doc["roles"])
+        # Likewise absent from every library recorded before the cursor could
+        # be tuned: no preference means the defaults.
+        if "pointer" in doc:
+            validate_pointer(doc["pointer"])
         for key, record in doc["recordings"].items():
             if key not in BUTTON_IDS or not isinstance(record, dict):
                 raise ValueError("Unknown button in recordings")
@@ -183,6 +188,19 @@ class RecordingStore:
             updated["roles"] = validate_roles(bindings)
             self._commit(updated)
             return dict(updated["roles"])
+
+    def pointer(self):
+        with self.lock:
+            return dict(self.document.get("pointer", {}))
+
+    def set_pointer(self, values):
+        """Keep how the cursor behaves beside the signals it is driven by."""
+        checked = validate_pointer(values)
+        with self.lock:
+            updated = copy.deepcopy(self.document)
+            updated["pointer"] = checked
+            self._commit(updated)
+            return dict(checked)
 
     def rename(self, key, label):
         self._check_button(key)

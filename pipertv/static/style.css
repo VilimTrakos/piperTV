@@ -250,3 +250,34 @@ h1{font-size:26px;max-width:235px;line-height:1.22;margin:9px 0}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}
 }
 
+
+/* --- how the cursor moves ---------------------------------------------- */
+
+.pointer-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.pointer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-55, #8a8f98);
+}
+
+.pointer-field input {
+  width: 108px;
+  padding: 8px 10px;
+  border: 1px solid var(--panel-edge, #2a2f38);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}

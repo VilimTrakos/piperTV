@@ -486,12 +486,55 @@
   $("mode-pointer").addEventListener("click", () => chooseMode("pointer"));
   $("mode-snapping").addEventListener("click", () => chooseMode("snapping"));
   $("mode-piper").addEventListener("click", () => chooseMode("piper"));
+  // --- how the cursor moves ------------------------------------------------
+  // A preference rather than a mode: it outlives the visit, so it is saved
+  // with the recordings and read back at startup.
+  let pointer = null;
+
+  function renderPointer() {
+    if (!pointer) return;
+    const settings = pointer.settings;
+    $("drive-snap").className = settings.drive === "nudge" ? "button button-outline" : "button button-primary";
+    $("drive-nudge").className = settings.drive === "nudge" ? "button button-primary" : "button button-outline";
+    $("pointer-step").value = settings.step_px;
+    $("pointer-max").value = settings.max_step_px;
+    $("pointer-accelerate").value = settings.accelerate_within_s;
+  }
+
+  async function savePointer(values, note) {
+    $("pointer-status").textContent = "";
+    try {
+      pointer = await api("/api/pointer", { method: "PUT", body: JSON.stringify(values) });
+      renderPointer();
+      $("pointer-status").textContent = note || "Saved.";
+    } catch (error) {
+      $("pointer-status").textContent = error.message;
+    }
+  }
+
+  const fields = () => ({
+    drive: pointer?.settings.drive ?? "snap",
+    step_px: Number($("pointer-step").value),
+    max_step_px: Number($("pointer-max").value),
+    accelerate_within_s: Number($("pointer-accelerate").value),
+  });
+
+  $("drive-snap").addEventListener("click", () => savePointer({ ...fields(), drive: "snap" },
+    "Snapping between the controls a page reports."));
+  $("drive-nudge").addEventListener("click", () => savePointer({ ...fields(), drive: "nudge" },
+    "Moving the cursor itself, faster the longer a direction is held."));
+  $("pointer-save").addEventListener("click", () => savePointer(fields()));
+  $("pointer-reset").addEventListener("click", () => savePointer(pointer?.defaults ?? {},
+    "Back to the defaults."));
+
   $("control-confirm").addEventListener("click", () => controlAction("/api/control/manual", { confirmed: true }));
   $("control-stop").addEventListener("click", () => controlAction("/api/control/stop", {}));
 
   async function initialize() {
     try {
       state = await api("/api/state");
+      pointer = await api("/api/pointer").catch(() => null);
+      renderPointer();
       if (!state.buttons?.length) throw new Error("No remote buttons are configured in the recording library.");
       if (!state.buttons.some((button) => button.id === selectedId)) selectedId = state.buttons[0].id;
       buildRemote();
