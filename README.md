@@ -144,7 +144,10 @@ Two limits are worth knowing before you try it:
   itself — smoothly, faster the longer a direction is held. Which works better
   is a property of the page, so it is a preference in the studio ("How the
   cursor moves") rather than a decision made here, along with the first step,
-  the fastest step, and how quickly a held key gets there. It is kept with the
+  the fastest step, how quickly a held key gets there, and how far the page
+  scrolls. At the top or bottom of the screen the page scrolls under the cursor
+  instead of the cursor stalling, and a snapping press that finds nothing that
+  way scrolls too, since what it was looking for may be below the fold. It is kept with the
   recordings and survives a restart.
 - **The remote drives what it opens**, by presenting a virtual keyboard to the
   Pi through the same kernel interface as the virtual mouse: directions, OK and

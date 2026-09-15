@@ -31,9 +31,13 @@ CLICKS = {"ok": "left", "menu": "right"}
 # on a page whose controls Piper cannot see cleanly.
 DRIVES = ("snap", "nudge")
 POINTER_DEFAULTS = {"drive": "snap", "step_px": 24, "max_step_px": 180,
-                    "accelerate_within_s": 0.25}
+                    "accelerate_within_s": 0.25, "scroll_clicks": 2}
 POINTER_LIMITS = {"step_px": (2, 200), "max_step_px": (8, 600),
-                  "accelerate_within_s": (0.05, 2.0)}
+                  "accelerate_within_s": (0.05, 2.0), "scroll_clicks": (1, 10)}
+# The cursor is at an edge when a step would not move it any further. A page
+# then scrolls instead, which is what a hand would do with the wheel rather
+# than carry the cursor off to a scrollbar.
+EDGE_PX = 2
 
 
 def validate_pointer(values) -> dict:
@@ -216,6 +220,7 @@ class DesktopControl:
         self._streak = 0
         self._standing = None
         self._standing_at = None
+        self.scroll_clicks = POINTER_DEFAULTS["scroll_clicks"]
 
     def configure(self, settings: dict) -> dict:
         """Apply a checked pointer preference to the live cursor."""
@@ -224,13 +229,28 @@ class DesktopControl:
             self.step_px = checked["step_px"]
             self.max_step_px = checked["max_step_px"]
             self.accelerate_within_s = checked["accelerate_within_s"]
+            self.scroll_clicks = checked["scroll_clicks"]
             self._streak = 0
             return self.settings()
 
     def settings(self) -> dict:
         with self._lock:
             return {"step_px": self.step_px, "max_step_px": self.max_step_px,
-                    "accelerate_within_s": self.accelerate_within_s}
+                    "accelerate_within_s": self.accelerate_within_s,
+                    "scroll_clicks": self.scroll_clicks}
+
+    def _scroll(self, pointer, button) -> tuple:
+        """Turn the wheel in the direction the cursor cannot go any further."""
+        pointer.scroll(self.scroll_clicks if button == "up" else -self.scroll_clicks)
+        return pointer.position
+
+    def _at_edge(self, pointer, button) -> bool:
+        x, y = pointer.position
+        if button == "up":
+            return y <= EDGE_PX
+        if button == "down":
+            return y >= self.screen[1] - 1 - EDGE_PX
+        return False
 
     def _step(self, button, now):
         """Grow the step while one direction is held, and reset when released."""
@@ -273,7 +293,11 @@ class DesktopControl:
             if found is not None:
                 found = choose_target(pointer.position, [found], button)
         if found is None:
-            return None  # Nothing that way; the cursor stays where the user left it.
+            # Nothing that way on this screenful. Below the fold there may be
+            # plenty, so scroll rather than leaving the press to do nothing.
+            if button in ("up", "down"):
+                return self._scroll(pointer, button)
+            return None  # Sideways, the cursor stays where the user left it.
         if not self._current(original):
             self.release()
             return None
@@ -310,6 +334,12 @@ class DesktopControl:
                 if button in DIRECTIONS:
                     if mode == "snapping":
                         position = self._snap(pointer, button, original)
+                        self._error = None
+                        return position
+                    if self._at_edge(pointer, button):
+                        # The cursor has nowhere further to go that way, so the
+                        # page moves under it instead.
+                        position = self._scroll(pointer, button)
                         self._error = None
                         return position
                     step = self._step(button, self.clock())

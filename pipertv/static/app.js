@@ -499,6 +499,7 @@
     $("pointer-step").value = settings.step_px;
     $("pointer-max").value = settings.max_step_px;
     $("pointer-accelerate").value = settings.accelerate_within_s;
+    $("pointer-scroll").value = settings.scroll_clicks;
   }
 
   async function savePointer(values, note) {
@@ -517,6 +518,7 @@
     step_px: Number($("pointer-step").value),
     max_step_px: Number($("pointer-max").value),
     accelerate_within_s: Number($("pointer-accelerate").value),
+    scroll_clicks: Number($("pointer-scroll").value),
   });
 
   $("drive-snap").addEventListener("click", () => savePointer({ ...fields(), drive: "snap" },
