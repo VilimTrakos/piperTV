@@ -59,6 +59,18 @@ let browser;
   await page.waitForTimeout(2800);
   await expect(page.locator('#control-error')).toBeVisible();
   await page.unroute('**/api/control/mode');
+  // How the cursor moves is a saved preference, not a per-visit mode.
+  await page.locator('#drive-nudge').click();
+  await expect(page.locator('#pointer-status')).toContainText('Moving the cursor');
+  await page.locator('#pointer-step').fill('40');
+  await page.locator('#pointer-save').click();
+  await expect(page.locator('#pointer-status')).toContainText('Saved');
+  await page.reload();
+  await expect(page.locator('#pointer-step')).toHaveValue('40');
+  await expect(page.locator('#drive-nudge')).toHaveClass(/button-primary/);
+  await page.locator('#pointer-reset').click();
+  await expect(page.locator('#pointer-step')).toHaveValue('24');
+
   await page.locator('#rename-button').click();
   await page.locator('#button-label').fill('Standby');
   await page.locator('#rename-form button[type=submit]').click();

@@ -24,6 +24,47 @@ from .pointer import VirtualPointer
 LOG = logging.getLogger(__name__)
 
 CLICKS = {"ok": "left", "menu": "right"}
+
+# How a service built for a mouse is driven, and how the cursor behaves while
+# it is. Snapping jumps between the controls a page reports; nudging moves the
+# cursor itself and gathers speed while a direction is held, which is steadier
+# on a page whose controls Piper cannot see cleanly.
+DRIVES = ("snap", "nudge")
+POINTER_DEFAULTS = {"drive": "snap", "step_px": 24, "max_step_px": 180,
+                    "accelerate_within_s": 0.25}
+POINTER_LIMITS = {"step_px": (2, 200), "max_step_px": (8, 600),
+                  "accelerate_within_s": (0.05, 2.0)}
+
+
+def validate_pointer(values) -> dict:
+    """Check a pointer preference, returning a complete, plain copy of it.
+
+    Anything absent keeps its default, so the studio can send one field. A
+    value outside its range is refused rather than clamped: a step of a
+    thousand pixels is a mistake worth seeing, not a preference to honour
+    quietly.
+    """
+    if not isinstance(values, dict):
+        raise ValueError("Pointer settings must be a JSON object.")
+    settings = dict(POINTER_DEFAULTS)
+    for name, value in values.items():
+        if name not in settings:
+            raise ValueError(f"Unknown pointer setting {name!r}. "
+                             f"Settings are: {', '.join(sorted(settings))}.")
+        if name == "drive":
+            if value not in DRIVES:
+                raise ValueError("A service is driven by snapping or by nudging.")
+            settings[name] = value
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a number.")
+        low, high = POINTER_LIMITS[name]
+        if not low <= value <= high:
+            raise ValueError(f"{name} must be between {low} and {high}.")
+        settings[name] = round(float(value), 3) if name == "accelerate_within_s" else int(value)
+    if settings["step_px"] > settings["max_step_px"]:
+        raise ValueError("The first step cannot be larger than the fastest one.")
+    return settings
 # What a sideways offset costs when nothing shares the cursor's band.
 SIDE_WEIGHT = 1.5
 # How far off the line of travel a target may sit and still be a step that way
@@ -176,6 +217,21 @@ class DesktopControl:
         self._standing = None
         self._standing_at = None
 
+    def configure(self, settings: dict) -> dict:
+        """Apply a checked pointer preference to the live cursor."""
+        checked = validate_pointer(settings)
+        with self._lock:
+            self.step_px = checked["step_px"]
+            self.max_step_px = checked["max_step_px"]
+            self.accelerate_within_s = checked["accelerate_within_s"]
+            self._streak = 0
+            return self.settings()
+
+    def settings(self) -> dict:
+        with self._lock:
+            return {"step_px": self.step_px, "max_step_px": self.max_step_px,
+                    "accelerate_within_s": self.accelerate_within_s}
+
     def _step(self, button, now):
         """Grow the step while one direction is held, and reset when released."""
         if button == self._last_button and now - self._last_at <= self.accelerate_within_s:
@@ -293,6 +349,8 @@ class DesktopControl:
         with self._lock:
             return {"ok": self._error is None, "active": self._pointer is not None,
                     "screen": list(self.screen), "step_px": self.step_px,
+                    "max_step_px": self.max_step_px,
+                    "accelerate_within_s": self.accelerate_within_s,
                     "targets": None if self.targets is None else self.targets.name,
                     "error": self._error}
 

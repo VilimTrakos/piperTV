@@ -212,6 +212,45 @@ class FakeRemote:
         return {"screen": [1920, 1080], "pointer": {"ok": True}}
 
 
+class PointerSettingTests(unittest.TestCase):
+    """How the cursor behaves is a preference, kept with the recordings."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.path = Path(self.temporary.name) / "recordings.json"
+        self.app = create_app(data=self.path, demo=True)
+        self.client = self.app.test_client()
+        workbench = self.app.extensions["pipertv"]
+        self.addCleanup(workbench.backend.close)
+        self.addCleanup(workbench.close)
+
+    def test_the_defaults_are_offered_with_their_limits(self):
+        state = self.client.get("/api/pointer").get_json()
+        self.assertEqual(state["settings"], state["defaults"])
+        self.assertIn("step_px", state["limits"])
+        self.assertEqual(state["drives"], ["snap", "nudge"])
+
+    def test_a_preference_is_saved_and_survives_a_restart(self):
+        response = self.client.put("/api/pointer", json={"drive": "nudge", "step_px": 40})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["settings"]["drive"], "nudge")
+
+        reopened = create_app(data=self.path, demo=True)
+        self.addCleanup(reopened.extensions["pipertv"].close)
+        self.addCleanup(reopened.extensions["pipertv"].backend.close)
+        saved = reopened.test_client().get("/api/pointer").get_json()["settings"]
+        self.assertEqual((saved["drive"], saved["step_px"]), ("nudge", 40))
+
+    def test_a_setting_outside_its_range_is_refused_with_a_reason(self):
+        for values in ({"step_px": 5000}, {"drive": "teleport"}, {"nonsense": 1},
+                       {"step_px": 100, "max_step_px": 50}):
+            with self.subTest(values=values):
+                response = self.client.put("/api/pointer", json=values)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("error", response.get_json())
+
+
 class ControlEndpointTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
