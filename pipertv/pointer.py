@@ -31,9 +31,13 @@ UI_DEV_SETUP = 0x405C5503
 UI_ABS_SETUP = 0x401C5504
 UI_SET_EVBIT = 0x40045564
 UI_SET_KEYBIT = 0x40045565
+UI_SET_RELBIT = 0x40045566
 UI_SET_ABSBIT = 0x40045567
 
-EV_SYN, EV_KEY, EV_ABS = 0x00, 0x01, 0x03
+EV_SYN, EV_KEY, EV_REL, EV_ABS = 0x00, 0x01, 0x02, 0x03
+# The wheel, so a page can be scrolled where it sits rather than by dragging a
+# scrollbar with the cursor. Positive is up, as on a real mouse.
+REL_WHEEL = 0x08
 SYN_REPORT = 0
 ABS_X, ABS_Y = 0x00, 0x01
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE = 0x110, 0x111, 0x112
@@ -151,7 +155,9 @@ class VirtualPointer:
             try:
                 self._ioctl(UI_SET_EVBIT, EV_ABS)
                 self._ioctl(UI_SET_EVBIT, EV_KEY)
+                self._ioctl(UI_SET_EVBIT, EV_REL)
                 self._ioctl(UI_SET_EVBIT, EV_SYN)
+                self._ioctl(UI_SET_RELBIT, REL_WHEEL)
                 for axis in (ABS_X, ABS_Y):
                     self._ioctl(UI_SET_ABSBIT, axis)
                     # value, minimum, maximum, fuzz, flat, resolution
@@ -200,6 +206,23 @@ class VirtualPointer:
         with self._lock:
             x, y = self.position
             return self.move_to(x + dx, y + dy)
+
+    def scroll(self, clicks: int) -> int:
+        """Turn the wheel: positive scrolls up, negative down.
+
+        Whatever is under the cursor scrolls, which is the point -- a page
+        scrolls where it sits, without the cursor having to leave it for a
+        scrollbar at the edge of the screen.
+        """
+        if isinstance(clicks, bool) or not isinstance(clicks, int):
+            raise ValueError("A wheel turns in whole clicks.")
+        if not -32 <= clicks <= 32:
+            raise ValueError("A single press must not turn the wheel more than 32 clicks.")
+        if clicks == 0:
+            return 0
+        with self._lock:
+            self._write(((EV_REL, REL_WHEEL, clicks),))
+            return clicks
 
     def click(self, button: str = "left") -> None:
         code = BUTTONS.get(button)
