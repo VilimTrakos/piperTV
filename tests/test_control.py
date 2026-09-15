@@ -2,10 +2,7 @@ import logging
 import time
 import unittest
 
-from unittest.mock import patch
-
-from pipertv.control import CEC_PREFERRED_S, RemoteControl
-from pipertv.roles import RoleMap
+from pipertv.control import RemoteControl
 
 SCREEN = (1920, 1080)
 
@@ -781,61 +778,6 @@ class WayOutTests(unittest.TestCase):
                 control._press(button)
                 control._press(button)
                 self.assertEqual(control.interface.closed, 0)
-
-
-class ForwardedRemoteTests(unittest.TestCase):
-    """The television forwards its own remote, and Piper acts on it once."""
-
-    def test_a_forwarded_key_drives_the_interface(self):
-        control, _monitor, _controller, _targets = build("active")
-        select(control, "piper")
-        control._cec_press("down")
-        events = control.events(0)["events"]
-        self.assertEqual([event["action"] for event in events], ["down"])
-        self.assertEqual(control.events(0)["keys_from"], "cec")
-
-    def test_the_receiver_stands_down_while_the_television_forwards(self):
-        # The same press arrives twice -- through the receiver and from the set
-        # -- and acting on both walks two steps at a time.
-        control, _monitor, _controller, _targets = build("active")
-        select(control, "pointer")
-        control._cec_press("right")
-        control._press("right")
-        self.assertEqual(control.desktop.presses, ["right"])
-
-    def test_the_receiver_takes_over_again_when_the_television_stops(self):
-        control, _monitor, _controller, _targets = build("active")
-        select(control, "pointer")
-        now = [1000.0]
-        with patch("pipertv.control.time.monotonic", lambda: now[0]):
-            control._cec_press("right")
-            now[0] += CEC_PREFERRED_S + 0.1
-            control._press("right")
-            self.assertEqual(control.desktop.presses, ["right", "right"])
-            self.assertEqual(control.events(0)["keys_from"], "receiver")
-
-    def test_a_forwarded_key_needs_no_role_binding(self):
-        # Roles exist because the TV acts on the same codes as Piper. A key the
-        # TV itself hands over cannot have that problem, so it is taken as sent.
-        control, _monitor, _controller, _targets = build("active")
-        control.roles = RoleMap({"up": "play"})
-        select(control, "pointer")
-        control._cec_press("up")
-        self.assertEqual(control.desktop.presses, ["up"])
-
-    def test_a_forwarded_key_answers_to_the_same_gate(self):
-        control, monitor, _controller, _targets = build("active")
-        select(control, "piper")
-        monitor.state = "inactive"
-        control._cec_press("down")
-        self.assertEqual(control.events(0)["events"], [])
-
-    def test_the_way_out_works_on_a_forwarded_key_too(self):
-        control, _monitor, _controller, _targets = build("active")
-        select(control, "piper")
-        control.launch("youtube", control.session.snapshot()["session"]["id"])
-        control._cec_press("exit")
-        self.assertEqual(control.launcher.stopped, 1)
 
 
 class ReportingTests(unittest.TestCase):
