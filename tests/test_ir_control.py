@@ -365,5 +365,33 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNone(health["last_button"])
 
 
+class HoldPaceTests(unittest.TestCase):
+    """How fast a held key repeats depends on what the press moves."""
+
+    def press(self, filter_, button, at):
+        return filter_.accept(Match(button, "rc5", toggle=0), at)
+
+    def test_a_held_direction_repeats_at_the_default_pace(self):
+        repeat = RepeatFilter()
+        self.assertEqual(self.press(repeat, "up", 0.0), "up")
+        self.assertIsNone(self.press(repeat, "up", 0.2))
+        self.assertEqual(self.press(repeat, "up", 0.4), "up")
+
+    def test_a_slower_pace_holds_a_press_to_one_step(self):
+        # Snapping asks for this: at the pixel pace a press a shade too long
+        # steps twice, which reads as the cursor jumping past its target.
+        repeat = RepeatFilter(pace=lambda button: (0.65, 0.3))
+        self.assertEqual(self.press(repeat, "up", 0.0), "up")
+        for at in (0.2, 0.4, 0.6):
+            with self.subTest(at=at):
+                self.assertIsNone(self.press(repeat, "up", at))
+        self.assertEqual(self.press(repeat, "up", 0.7), "up")
+
+    def test_a_pace_of_none_leaves_the_default_alone(self):
+        repeat = RepeatFilter(pace=lambda button: None)
+        self.assertEqual(self.press(repeat, "up", 0.0), "up")
+        self.assertEqual(self.press(repeat, "up", 0.4), "up")
+
+
 if __name__ == "__main__":
     unittest.main()
