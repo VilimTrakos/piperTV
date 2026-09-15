@@ -16,7 +16,7 @@ import threading
 import time
 
 from .cec import CecMonitor
-from .desktop import DesktopControl
+from .desktop import POINTER_DEFAULTS, DesktopControl, validate_pointer
 from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
 from .keyboard import ServiceKeys
@@ -108,6 +108,7 @@ class RemoteControl:
         self.leaving = LeaveRequest()
         self._input_context = None
         self.roles = self._load_roles()
+        self.pointer = self._load_pointer()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
         self.controller = (IRController(store, self._press, self._listening,
                                         device=device,
@@ -133,6 +134,28 @@ class RemoteControl:
             LOG.warning("Ignoring saved role bindings: %s", exc)
             return RoleMap()
 
+    def _load_pointer(self) -> dict:
+        """Read the saved cursor preference, falling back to the defaults.
+
+        A hand-edited library must not stop the remote working; an unusable
+        preference means the cursor behaves as it does out of the box.
+        """
+        try:
+            settings = validate_pointer(self.store.snapshot().get("pointer") or {})
+        except Exception as exc:  # noqa: BLE001 - the remote must still start
+            LOG.warning("Ignoring the saved pointer settings: %s", exc)
+            settings = dict(POINTER_DEFAULTS)
+        try:
+            self.desktop.configure(settings)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("Applying the pointer settings: %s", exc)
+        return settings
+
+    def reload_pointer(self) -> dict:
+        with self._source_lock:
+            self.pointer = self._load_pointer()
+            return dict(self.pointer)
+
     def _is_direction(self, button_id) -> bool:
         """Whether holding this key should repeat, judged by what it performs."""
         return self.roles.action(button_id) in DIRECTIONS
@@ -144,7 +167,10 @@ class RemoteControl:
         nudging a cursor by pixels turns one press a shade too long into two
         steps -- past the magnifying glass and on to the menu behind it.
         """
-        if self._snapped_service() or self.session.snapshot()["mode"] == "snapping":
+        # Only stepping between controls needs the slower hand. Nudging wants
+        # the fast repeat: that is what makes the cursor glide while held.
+        if (self._cursor_service() == "snapping"
+                or self.session.snapshot()["mode"] == "snapping"):
             return (SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S)
         return None
 
@@ -238,10 +264,18 @@ class RemoteControl:
         if allowed and action is not None and mode in DESKTOP_MODES:
             self.desktop.press(action)
 
-    def _snapped_service(self) -> bool:
-        """Whether what is on the screen is driven by moving the cursor."""
+    def _cursor_service(self):
+        """How the open service is driven, when it is driven by the cursor.
+
+        "snap" steps between the controls a page reports; "nudge" moves the
+        cursor itself and gathers speed while a direction is held. Which one
+        is a preference, because which works better is a property of the page
+        rather than of Piper.
+        """
         running = self.launcher.running()
-        return running is not None and self.launcher.policy(running["id"]) == SNAP
+        if running is None or self.launcher.policy(running["id"]) != SNAP:
+            return None
+        return "snapping" if self.pointer.get("drive") != "nudge" else "pointer"
 
     def _drive_service(self, action: str) -> None:
         """Send one press to the open service in the language it understands.
@@ -254,9 +288,9 @@ class RemoteControl:
         running = self.launcher.running()
         if running is None:
             return
-        if (self.launcher.policy(running["id"]) == SNAP
-                and (action in DIRECTIONS or action == "ok")):
-            self.desktop.press(action, mode="snapping")
+        driving = self._cursor_service()
+        if driving is not None and (action in DIRECTIONS or action == "ok"):
+            self.desktop.press(action, mode=driving)
             return
         self.keys.send(action)
 
@@ -299,7 +333,7 @@ class RemoteControl:
             # presses looked like snapping was random: each new device believes
             # it is at the centre of the screen, so every press started from
             # there instead of from the control the cursor was actually on.
-            snapping_service = self._snapped_service()
+            snapping_service = self._cursor_service() is not None
             if ((state["control"] != "on"
                  or (state["mode"] not in DESKTOP_MODES and not snapping_service))
                     and self.desktop.health().get("active")):
@@ -445,6 +479,7 @@ class RemoteControl:
         state["services"] = self.launcher.snapshot()
         state["interface"] = self.interface.snapshot()
         state["keys"] = self.keys.health()
+        state["pointer_settings"] = dict(self.pointer)
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
                             "desktop": self.desktop.health(),

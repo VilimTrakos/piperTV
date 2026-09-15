@@ -56,6 +56,29 @@
             <p class="remote-note">If detection is unavailable or outdated, confirm the TV's input yourself.</p>
             <button id="control-confirm" class="text-button" type="button">The TV is showing the Pi — let me choose a mode</button>
           </div>
+          <div id="pointer-settings">
+            <span class="field-label">HOW THE CURSOR MOVES</span>
+            <div class="capture-actions">
+              <button id="drive-snap" class="button button-primary" type="button">Snap to controls</button>
+              <button id="drive-nudge" class="button button-outline" type="button">Move smoothly</button>
+            </div>
+            <p class="remote-note">Snapping steps between the controls a page reports. Moving smoothly
+              slides the cursor and speeds up while a direction is held — steadier on a page whose
+              controls Piper cannot see cleanly.</p>
+            <div class="pointer-fields">
+              <label class="pointer-field" for="pointer-step">First step
+                <input id="pointer-step" type="number" min="2" max="200" step="1" inputmode="numeric"></label>
+              <label class="pointer-field" for="pointer-max">Fastest step
+                <input id="pointer-max" type="number" min="8" max="600" step="1" inputmode="numeric"></label>
+              <label class="pointer-field" for="pointer-accelerate">Speeds up within
+                <input id="pointer-accelerate" type="number" min="0.05" max="2" step="0.05" inputmode="decimal"></label>
+            </div>
+            <div class="capture-actions">
+              <button id="pointer-save" class="button button-outline" type="button">Save</button>
+              <button id="pointer-reset" class="text-button" type="button">Back to defaults</button>
+            </div>
+            <p id="pointer-status" class="remote-note" role="status"></p>
+          </div>
           <button id="control-stop" class="text-button danger" type="button" hidden>Stop controlling the desktop</button>
           <p id="control-error" class="inline-error" role="alert" hidden></p>
           <p id="control-runtime-error" class="inline-error" role="status" hidden></p>

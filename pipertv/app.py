@@ -14,6 +14,7 @@ from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from .control import RemoteControl
+from .desktop import DRIVES, POINTER_DEFAULTS, POINTER_LIMITS, validate_pointer
 from .learner import Workbench
 from .roles import SUGGESTED, RoleMap
 from .storage import RecordingStore
@@ -224,6 +225,25 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         if remote is not None:
             remote.reload_roles()
         return jsonify(role_state())
+
+    def pointer_state() -> dict:
+        settings = workbench.store.pointer()
+        return {"settings": validate_pointer(settings), "defaults": dict(POINTER_DEFAULTS),
+                "limits": {name: list(bounds) for name, bounds in POINTER_LIMITS.items()},
+                "drives": list(DRIVES)}
+
+    @app.get("/api/pointer")
+    def get_pointer():
+        return jsonify(pointer_state())
+
+    @app.put("/api/pointer")
+    def set_pointer():
+        # Kept with the recordings, like the role bindings: how the cursor
+        # behaves belongs to this remote and this room, not to the process.
+        workbench.store.set_pointer(body())
+        if remote is not None:
+            remote.reload_pointer()
+        return jsonify(pointer_state())
 
     def desktop() -> RemoteControl:
         if remote is None:

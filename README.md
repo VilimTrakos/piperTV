@@ -139,6 +139,13 @@ Two limits are worth knowing before you try it:
   says it cannot open that yet. YouTube opens its ten-foot app, which it serves
   only to a browser identifying itself as a television; Prime Video has no such
   app published, so it opens the ordinary site, laid out for a pointer.
+- **How the cursor moves is yours to set.** A page built for a mouse is driven
+  either by snapping between the controls it reports, or by moving the cursor
+  itself — smoothly, faster the longer a direction is held. Which works better
+  is a property of the page, so it is a preference in the studio ("How the
+  cursor moves") rather than a decision made here, along with the first step,
+  the fastest step, and how quickly a held key gets there. It is kept with the
+  recordings and survives a restart.
 - **The remote drives what it opens**, by presenting a virtual keyboard to the
   Pi through the same kernel interface as the virtual mouse: directions, OK and
   Back arrive at YouTube's television app as arrow keys, Enter and Escape. That
