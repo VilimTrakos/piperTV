@@ -2,7 +2,7 @@ import logging
 import time
 import unittest
 
-from pipertv.control import RemoteControl
+from pipertv.control import SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S, RemoteControl
 
 SCREEN = (1920, 1080)
 
@@ -778,6 +778,32 @@ class WayOutTests(unittest.TestCase):
                 control._press(button)
                 control._press(button)
                 self.assertEqual(control.interface.closed, 0)
+
+
+class HoldPaceTests(unittest.TestCase):
+    """The receiver is told how fast to repeat by what the press moves."""
+
+    def test_snapping_a_service_asks_for_the_slower_pace(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", control.session.snapshot()["session"]["id"])
+        self.assertEqual(control._hold_pace("up"), (SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S))
+
+    def test_snapping_mode_on_the_desktop_asks_for_it_too(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "snapping")
+        self.assertEqual(control._hold_pace("up"), (SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S))
+
+    def test_nudging_a_cursor_keeps_the_pace_it_was_tuned_for(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "pointer")
+        self.assertIsNone(control._hold_pace("up"))
+
+    def test_a_typed_service_keeps_the_default_pace(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", control.session.snapshot()["session"]["id"])
+        self.assertIsNone(control._hold_pace("up"))
 
 
 class ReportingTests(unittest.TestCase):
