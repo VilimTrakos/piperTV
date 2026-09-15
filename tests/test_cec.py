@@ -3,8 +3,8 @@ import unittest
 from unittest.mock import patch
 
 from pipertv import cec
-from pipertv.cec import (CecCtlParser, CecMonitor, CecState, format_address,
-                         physical_address)
+from pipertv.cec import (USER_CONTROL_PRESSED, CecCtlParser, CecMonitor, CecState,
+                         decode_key, format_address, physical_address)
 
 PI = "1.0.0.0"
 
@@ -356,6 +356,64 @@ class MonitorTests(unittest.TestCase):
                 return snapshot
             time.sleep(0.02)
         self.fail(f"CEC state stayed {monitor.snapshot()['state']!r}, expected {state!r}")
+
+
+class ForwardedKeyTests(unittest.TestCase):
+    """A television that forwards its own remote sends the keys by name."""
+
+    def frame(self, source, destination, *payload):
+        return bytes([source << 4 | destination, *payload])
+
+    def test_the_named_keys_are_understood(self):
+        expected = {0x01: "up", 0x02: "down", 0x03: "left", 0x04: "right", 0x00: "ok"}
+        for code, action in expected.items():
+            with self.subTest(code=code):
+                found = decode_key(self.frame(0, 4, USER_CONTROL_PRESSED, code))
+                self.assertEqual(found, (action, code))
+
+    def test_a_key_piper_has_no_use_for_is_reported_not_guessed(self):
+        # Volume, say: the map returns nothing, and the code is kept so the
+        # set's own habits can be read off later rather than assumed.
+        action, code = decode_key(self.frame(0, 4, USER_CONTROL_PRESSED, 0x41))
+        self.assertIsNone(action)
+        self.assertEqual(code, 0x41)
+
+    def test_anything_that_is_not_a_key_press_is_not_a_key(self):
+        for frame in (self.frame(0, 4, 0x45, 0x01),      # released
+                      self.frame(0, 4, 0x82, 0x10, 0x00),  # active source
+                      self.frame(0, 4, USER_CONTROL_PRESSED),  # truncated
+                      b""):
+            with self.subTest(frame=frame):
+                self.assertIsNone(decode_key(frame))
+
+    def test_a_key_the_television_sends_to_itself_is_not_ours(self):
+        self.assertIsNone(decode_key(self.frame(4, 0, USER_CONTROL_PRESSED, 0x01)))
+
+    def test_the_monitor_passes_a_forwarded_key_on(self):
+        seen = []
+        monitor = CecMonitor(command=["true"], on_key=seen.append)
+        parser = CecCtlParser(monitor.state, on_key=monitor._key)
+        parser.feed_line("Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):")
+        parser.feed_line("\tRaw: 0x04 0x44 0x02")
+        self.assertEqual(seen, ["down"])
+        self.assertEqual(monitor.keys()["last"]["action"], "down")
+        self.assertEqual(monitor.keys()["forwarded"], 1)
+
+    def test_what_the_adapter_transmits_is_never_a_key(self):
+        # The rule this module is built on: only received frames are input.
+        seen = []
+        monitor = CecMonitor(command=["true"], on_key=seen.append)
+        parser = CecCtlParser(monitor.state, on_key=monitor._key)
+        parser.feed_line("Transmitted by Playback Device 1 to TV (4 to 0): USER_CONTROL_PRESSED (0x44):")
+        parser.feed_line("\tRaw: 0x40 0x44 0x02")
+        self.assertEqual(seen, [])
+
+    def test_an_unmapped_key_is_counted_where_it_can_be_seen(self):
+        monitor = CecMonitor(command=["true"], on_key=lambda action: None)
+        parser = CecCtlParser(monitor.state, on_key=monitor._key)
+        parser.feed_line("Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):")
+        parser.feed_line("\tRaw: 0x04 0x44 0x41")
+        self.assertEqual(monitor.keys()["unmapped"], {"0x41": 1})
 
 
 if __name__ == "__main__":
