@@ -52,12 +52,25 @@ TV_USER_AGENT = ("Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/537.36 "
 # them -- so the cursor is snapped from one of its controls to the next instead.
 KEYS, SNAP = "keys", "snap"
 
+# Only YouTube publishes a web app built for a television. Everything else
+# here is the ordinary site, driven by the cursor -- which is why the drive
+# preference exists. The keys are the interface's own tile ids, so a tile
+# either opens or says plainly that it cannot.
 SERVICES = {
     "youtube": {"name": "YouTube", "url": "https://www.youtube.com/tv",
                 "user_agent": TV_USER_AGENT, "control": KEYS},
-    # Amazon publishes no ten-foot web app, so this is the ordinary site.
     "prime": {"name": "Prime Video", "url": "https://www.primevideo.com",
               "control": SNAP},
+    "netflix": {"name": "Netflix", "url": "https://www.netflix.com",
+                "control": SNAP},
+    "disney": {"name": "Disney+", "url": "https://www.disneyplus.com",
+               "control": SNAP},
+    "hbo": {"name": "HBO Max", "url": "https://www.max.com", "control": SNAP},
+    # Plex's web app reaches a server on this network as readily as one on the
+    # internet; app.plex.tv is the front door to both.
+    "plex": {"name": "Plex", "url": "https://app.plex.tv/desktop", "control": SNAP},
+    "browser": {"name": "Web browser", "url": "https://duckduckgo.com",
+                "control": SNAP},
 }
 
 # Full screen, and nothing that opens a dialog: no one can dismiss a dialog
