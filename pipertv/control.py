@@ -39,10 +39,6 @@ RECORDING = "Recording a remote button, so the remote is not controlling the des
 # interface, because that is the door out of Piper itself.
 RETURN_TO_PIPER = ("exit", "home")
 LEAVE = "exit"
-# How long a key forwarded over HDMI keeps the receiver quiet. Long enough to
-# cover a held direction, short enough that unplugging the set or leaving its
-# device menu hands the remote back to the receiver within a moment.
-CEC_PREFERRED_S = 8.0
 # Long enough to be a decision, short enough that a stray press expires.
 LEAVE_CONFIRM_S = 6.0
 
@@ -107,9 +103,7 @@ class RemoteControl:
         self.leaving = LeaveRequest()
         self._input_context = None
         self.roles = self._load_roles()
-        self._cec_keys_at = -float("inf")
-        self.monitor = (CecMonitor(device=cec_device, on_key=self._cec_press)
-                        if monitor is None else monitor)
+        self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
         self.controller = (IRController(store, self._press, self._listening,
                                         device=device,
                                         is_direction=self._is_direction)
@@ -201,42 +195,15 @@ class RemoteControl:
         return not self._stop.is_set()
 
     def _press(self, button: str) -> None:
-        """Route one press read from the infrared receiver.
-
-        What the remote sent is recorded; what it performs is acted on. They
-        differ once a role has been moved to a key the TV ignores.
-        """
-        if self._cec_is_driving():
-            # The television is forwarding this same press over HDMI, and it
-            # arrives here twice: once through the receiver and once from the
-            # set. Acting on both moves everything two steps at a time.
-            return
-        self._act(button, self.roles.action(button))
-
-    def _cec_press(self, action: str) -> None:
-        """Route one press the television forwarded over HDMI.
-
-        CEC names the key -- "Up" is up -- so there is nothing to look up and
-        nothing to rebind: the set has already decided this press is ours, and
-        the whole reason roles exist (that the TV acts on the same codes) does
-        not arise.
-        """
-        with self._source_lock:
-            self._cec_keys_at = time.monotonic()
-        self._act(action, action)
-
-    def _cec_is_driving(self) -> bool:
-        """Whether the television is currently delivering the remote itself."""
-        with self._source_lock:
-            return time.monotonic() - self._cec_keys_at <= CEC_PREFERRED_S
-
-    def _act(self, button: str, action) -> None:
-        """Act on one press, wherever it came from.
+        """Route one recognised press to whatever the chosen mode drives.
 
         Every press is recorded for the interface on the TV, which asks for
         them by number. The cursor moves only under a desktop mode, so the
         Piper interface never drags the mouse around behind itself.
         """
+        # What the remote sent is recorded; what it performs is acted on. They
+        # differ once a role has been moved to a key the TV ignores.
+        action = self.roles.action(button)
         with self._source_lock:
             allowed = self._enabled()
             state = self.session.snapshot()
@@ -449,7 +416,6 @@ class RemoteControl:
         result["services"] = self.launcher.snapshot()
         result["leaving"] = {"armed": self.leaving.armed(),
                              "seconds": self.leaving.remaining()}
-        result["keys_from"] = "cec" if self._cec_is_driving() else "receiver"
         return result
 
     # --- reporting -------------------------------------------------------
@@ -462,7 +428,6 @@ class RemoteControl:
         state["services"] = self.launcher.snapshot()
         state["interface"] = self.interface.snapshot()
         state["keys"] = self.keys.health()
-        state["keys_from"] = "cec" if self._cec_is_driving() else "receiver"
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
                             "desktop": self.desktop.health(),

@@ -13,7 +13,6 @@ IR control enabled indefinitely. A manual override belongs above this module.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import logging
 import math
 import os
 import re
@@ -38,9 +37,6 @@ SET_STREAM_PATH = 0x86
 INACTIVE_SOURCE = 0x9D
 STANDBY = 0x36
 REPORT_POWER_STATUS = 0x90
-
-
-LOG = logging.getLogger(__name__)
 
 
 def physical_address(value: str | int | None) -> int | None:
@@ -213,40 +209,6 @@ class CecState:
                     "address_revision": self._address_revision}
 
 
-# A television that forwards its own remote sends this to the device it has
-# selected, one message per press. CEC names the keys, so there is nothing to
-# learn and nothing to rebind: "Up" means up, whatever the remote looks like.
-USER_CONTROL_PRESSED = 0x44
-USER_CONTROL_RELEASED = 0x45
-
-# HDMI CEC 1.4, table "UI Command". Only what Piper can act on is mapped; an
-# unmapped command is remembered so it can be seen and mapped later rather
-# than silently discarded.
-UI_COMMANDS = {
-    0x00: "ok", 0x01: "up", 0x02: "down", 0x03: "left", 0x04: "right",
-    0x09: "home",      # Root Menu
-    0x0A: "menu",      # Setup Menu
-    0x0B: "menu",      # Contents Menu
-    0x0D: "back",      # Exit -- what a remote's back key usually arrives as
-    0x49: "exit",      # Some sets send Cancel/Stop for their exit key
-}
-
-
-def decode_key(frame: bytes):
-    """The key a received frame carries, or None if it carries no key.
-
-    Returns (action, ui_command). A frame the TV sends to itself is its own
-    business; anything it sends to a device is what that device is meant to
-    act on.
-    """
-    if len(frame) < 3 or frame[1] != USER_CONTROL_PRESSED:
-        return None
-    destination = frame[0] & 0x0F
-    if destination == 0:
-        return None  # addressed to the television itself
-    return (UI_COMMANDS.get(frame[2]), frame[2])
-
-
 class CecCtlParser:
     """Parse cec-ctl --monitor --show-raw; never treat transmitted data as input.
 
@@ -258,9 +220,8 @@ class CecCtlParser:
     _raw = re.compile(r"^\s*Raw:\s*(0x[0-9a-fA-F]{2}(?:\s+0x[0-9a-fA-F]{2}){0,15})\s*(?:\([^\r\n]*\))?\s*$")
     _address = re.compile(r"Event: State Change: PA: ([0-9a-fA-F](?:\.[0-9a-fA-F]){3})(?:,|$)")
 
-    def __init__(self, state: CecState, on_key=None):
+    def __init__(self, state: CecState):
         self.state = state
-        self.on_key = on_key
         self.ready = False
         self.failed = False
         self.needs_root = False
@@ -322,15 +283,6 @@ class CecCtlParser:
             if frame[0] != pending[1]:
                 return False
             self.ready = True
-            if pending[0] and self.on_key is not None:
-                # Only a received frame is input. What this adapter transmits is
-                # this app talking to itself.
-                key = decode_key(frame)
-                if key is not None:
-                    try:
-                        self.on_key(*key)
-                    except Exception as exc:  # noqa: BLE001 - monitoring must go on
-                        LOG.warning("Acting on a CEC key: %s", exc)
             return self.state.observe(frame, received=pending[0])
         if stripped.startswith(("Received from", "Transmitted by", "Event:", "Initial Event:")):
             self._pending = None
@@ -364,7 +316,7 @@ class CecMonitor:
     so it fails at once where sudo wants a password.
     """
 
-    def __init__(self, device: str = "/dev/cec0", stale_after_s: float = 120, on_key=None,
+    def __init__(self, device: str = "/dev/cec0", stale_after_s: float = 120,
                  privileged: bool = False, command: list[str] | None = None):
         if not isinstance(device, str) or not re.fullmatch(r"/dev/cec\d+", device):
             raise ValueError("CEC device must look like /dev/cec0.")
@@ -375,35 +327,11 @@ class CecMonitor:
         self.privileged = privileged
         self.command = list(command) if command is not None else None
         self.state = CecState(stale_after_s=stale_after_s)
-        self.on_key = on_key
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
         self._process = None
         self._ready = False
-        self._last_key = None
-        self._keys_seen = 0
-        self._unmapped: dict[int, int] = {}
-
-    def _key(self, action, ui_command: int) -> None:
-        """Note a key the television forwarded, and pass on the ones we act on."""
-        with self._lock:
-            self._keys_seen += 1
-            self._last_key = {"action": action, "ui_command": ui_command,
-                              "at": _utc_now()}
-            if action is None:
-                # Remembered rather than dropped: what a set sends for its own
-                # keys is a fact about that set, and this is where to read it.
-                self._unmapped[ui_command] = self._unmapped.get(ui_command, 0) + 1
-        if action is not None and self.on_key is not None:
-            self.on_key(action)
-
-    def keys(self) -> dict:
-        with self._lock:
-            return {"forwarded": self._keys_seen, "last": dict(self._last_key)
-                    if self._last_key else None,
-                    "unmapped": {f"0x{code:02x}": count
-                                 for code, count in sorted(self._unmapped.items())}}
 
     def _command(self) -> list[str]:
         if self.command is not None:
@@ -421,16 +349,10 @@ class CecMonitor:
             self._thread.start()
 
     def snapshot(self) -> dict:
-        # The keys the television forwards travel with the selection evidence:
-        # both answer "is this set talking to us, and how".
         with self._lock:
             result = self.state.snapshot()
             running = self._process is not None and self._process.poll() is None and self._ready
-            result.update(monitor_running=running, device=self.device,
-                          keys={"forwarded": self._keys_seen,
-                                "last": dict(self._last_key) if self._last_key else None,
-                                "unmapped": {f"0x{code:02x}": count
-                                             for code, count in sorted(self._unmapped.items())}})
+            result.update(monitor_running=running, device=self.device)
             if result["state"] == "active" and not running:
                 result.update(state="unknown", reason="CEC monitoring stopped; HDMI selection is unknown.")
             return result
@@ -472,7 +394,7 @@ class CecMonitor:
     def _run(self) -> None:
         while not self._stop.is_set():
             process = None
-            parser = CecCtlParser(self.state, on_key=self._key)
+            parser = CecCtlParser(self.state)
             try:
                 if self._refresh_address() and self.state.snapshot()["physical_address"] is not None:
                     self.state.unavailable("Waiting for the TV to report a source change; switch away from the Pi and back.")
