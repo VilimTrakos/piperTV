@@ -221,6 +221,11 @@ class RemoteControl:
         if allowed and action is not None and mode in DESKTOP_MODES:
             self.desktop.press(action)
 
+    def _snapped_service(self) -> bool:
+        """Whether what is on the screen is driven by moving the cursor."""
+        running = self.launcher.running()
+        return running is not None and self.launcher.policy(running["id"]) == SNAP
+
     def _drive_service(self, action: str) -> None:
         """Send one press to the open service in the language it understands.
 
@@ -255,6 +260,7 @@ class RemoteControl:
             self.leaving.disarm()
             self.launcher.stop()
             self.keys.release()
+            self.desktop.release()
             return True
         if action != LEAVE:
             return False
@@ -271,7 +277,14 @@ class RemoteControl:
             # remembered verdict: a mode can be chosen between two passes, and
             # a visit can end in that same gap.
             state = self.session.snapshot()
-            if ((state["control"] != "on" or state["mode"] not in DESKTOP_MODES)
+            # A service driven by snapping owns the cursor even though the
+            # visit chose the interface. Taking the pointer away between two
+            # presses looked like snapping was random: each new device believes
+            # it is at the centre of the screen, so every press started from
+            # there instead of from the control the cursor was actually on.
+            snapping_service = self._snapped_service()
+            if ((state["control"] != "on"
+                 or (state["mode"] not in DESKTOP_MODES and not snapping_service))
                     and self.desktop.health().get("active")):
                 self.desktop.release()
             # Someone closed the service from the desktop, or it crashed: the
