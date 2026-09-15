@@ -139,10 +139,11 @@ class SetupTests(unittest.TestCase):
             requests = fake.requests()
         self.assertEqual(requests[-1], pointer.UI_DEV_CREATE)
         self.assertIn(pointer.UI_DEV_SETUP, requests)
-        # Both axes and all three buttons must be declared up front.
+        # Both axes, all three buttons and the wheel must be declared up front.
         self.assertEqual(requests.count(pointer.UI_SET_ABSBIT), 2)
         self.assertEqual(requests.count(pointer.UI_SET_KEYBIT), 3)
-        self.assertEqual(requests.count(pointer.UI_SET_EVBIT), 3)
+        self.assertEqual(requests.count(pointer.UI_SET_RELBIT), 1)
+        self.assertEqual(requests.count(pointer.UI_SET_EVBIT), 4)
 
     def test_the_axes_span_the_whole_screen(self):
         with fake_pointer() as (_device, fake):
@@ -262,6 +263,39 @@ class ShutdownTests(unittest.TestCase):
             device.close()
             self.assertIn(pointer.UI_DEV_DESTROY, fake.requests())
             self.assertEqual(fake.closed, [fake.fd])
+
+
+class WheelTests(unittest.TestCase):
+    """A page scrolls where it sits, without dragging a scrollbar to do it."""
+
+    def test_the_wheel_turns_up_and_down(self):
+        with fake_pointer() as (device, fake):
+            before = len(fake.writes)
+            device.scroll(2)
+            self.assertEqual([(code, value) for kind, code, value in fake.events(before)
+                              if kind == pointer.EV_REL], [(pointer.REL_WHEEL, 2)])
+            before = len(fake.writes)
+            device.scroll(-3)
+            self.assertEqual([(code, value) for kind, code, value in fake.events(before)
+                              if kind == pointer.EV_REL], [(pointer.REL_WHEEL, -3)])
+
+    def test_turning_the_wheel_leaves_the_cursor_where_it_is(self):
+        with fake_pointer() as (device, _fake):
+            before = device.position
+            device.scroll(-2)
+            self.assertEqual(device.position, before)
+
+    def test_nothing_is_written_for_no_turn(self):
+        with fake_pointer() as (device, fake):
+            before = len(fake.writes)
+            self.assertEqual(device.scroll(0), 0)
+            self.assertEqual(len(fake.writes), before)
+
+    def test_an_implausible_turn_is_refused(self):
+        with fake_pointer() as (device, _fake):
+            for clicks in (1000, -99, 1.5, True, "2", None):
+                with self.subTest(clicks=clicks), self.assertRaises(ValueError):
+                    device.scroll(clicks)
 
 
 if __name__ == "__main__":

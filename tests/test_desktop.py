@@ -21,11 +21,17 @@ class FakePointer:
         self.closed = 0
         self.clicks = []
         self.moves = []
+        self.scrolls = []
+        self.position_override = None
         self._x, self._y = screen[0] // 2, screen[1] // 2
 
     @property
     def position(self):
-        return (self._x, self._y)
+        return self.position_override or (self._x, self._y)
+
+    def scroll(self, clicks):
+        self.scrolls.append(clicks)
+        return clicks
 
     def open(self):
         if self.fail_on == "open":
@@ -197,6 +203,58 @@ class ChooseTargetTests(unittest.TestCase):
         icons = [{"y": 100}, {"x": "far", "y": 100}, None,
                  {"x": float("inf"), "y": 100}, {"x": 300, "y": 100, "label": "ok"}]
         self.assertEqual(choose_target((100, 100), icons, "right")["label"], "ok")
+
+
+class ScrollTests(unittest.TestCase):
+    """At an edge the page moves under the cursor instead of the cursor stalling."""
+
+    def build(self, targets=None, mode="pointer"):
+        session = FakeSession(mode=mode)
+        control = DesktopControl(session, SCREEN, pointer_factory=FakePointer,
+                                 targets=targets)
+        return control, session
+
+    def test_pushing_down_at_the_bottom_scrolls_the_page(self):
+        control, _session = self.build()
+        control.press("down")
+        pointer = control._pointer
+        pointer.position_override = (960, SCREEN[1] - 1)
+        control.press("down")
+        self.assertEqual(pointer.scrolls[-1], -control.scroll_clicks)
+
+    def test_pushing_up_at_the_top_scrolls_the_other_way(self):
+        control, _session = self.build()
+        control.press("up")
+        pointer = control._pointer
+        pointer.position_override = (960, 0)
+        control.press("up")
+        self.assertEqual(pointer.scrolls[-1], control.scroll_clicks)
+
+    def test_the_cursor_still_moves_when_it_is_not_at_an_edge(self):
+        control, _session = self.build()
+        control.press("down")
+        self.assertEqual(control._pointer.scrolls, [])
+
+    def test_sideways_at_an_edge_does_not_scroll(self):
+        control, _session = self.build()
+        control.press("right")
+        control._pointer.position_override = (SCREEN[0] - 1, 540)
+        control.press("right")
+        self.assertEqual(control._pointer.scrolls, [])
+
+    def test_snapping_scrolls_when_nothing_is_that_way(self):
+        # A long page has plenty below the fold; the press should reveal it
+        # rather than doing nothing at all.
+        control, _session = self.build(targets=FakeTargets([]), mode="snapping")
+        control.press("down")
+        self.assertEqual(control._pointer.scrolls[-1], -control.scroll_clicks)
+
+    def test_snapping_moves_to_a_target_rather_than_scrolling(self):
+        targets = FakeTargets([{"x": 400, "y": 800, "label": "below"}])
+        control, _session = self.build(targets=targets, mode="snapping")
+        control.press("down")
+        self.assertEqual(control._pointer.scrolls, [])
+        self.assertEqual(control._pointer.position, (400, 800))
 
 
 class PointerModeTests(unittest.TestCase):
