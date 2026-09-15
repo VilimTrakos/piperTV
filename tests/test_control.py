@@ -580,6 +580,38 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.keys.sent, ["down"])
         self.assertEqual(control.desktop.presses, [])
 
+    def test_the_cursor_survives_between_presses_while_snapping_a_service(self):
+        # The bug this answers: the supervisor took the pointer away every pass
+        # because the visit chose "piper", and each new device believes it is
+        # at the centre of the screen. Every press then started from the
+        # centre, which is exactly what made snapping look random.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        control._press("right")
+        self.assertTrue(control.desktop.health()["active"])
+        control._tick()
+        control._tick()
+        self.assertTrue(control.desktop.health()["active"],
+                        "the cursor must stay where the last press left it")
+        self.assertEqual(control.desktop.released, 0)
+
+    def test_the_cursor_is_taken_away_once_the_service_is_gone(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        control._press("right")
+        control._press("exit")
+        self.assertFalse(control.desktop.health()["active"])
+
+    def test_a_typed_service_does_not_keep_the_cursor(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        control.desktop.press("right")  # something opened a pointer
+        control._tick()
+        self.assertEqual(control.desktop.released, 1)
+
     def test_closing_a_service_takes_the_keyboard_away(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
