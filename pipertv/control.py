@@ -39,6 +39,11 @@ RECORDING = "Recording a remote button, so the remote is not controlling the des
 # interface, because that is the door out of Piper itself.
 RETURN_TO_PIPER = ("exit", "home")
 LEAVE = "exit"
+# Holding a direction while the cursor snaps from one control to the next:
+# slow enough that a press a shade too long does not walk past what it was
+# aimed at, and still fast enough to cross a long page.
+SNAP_HOLD_DELAY_S = 0.65
+SNAP_HOLD_INTERVAL_S = 0.3
 # Long enough to be a decision, short enough that a stray press expires.
 LEAVE_CONFIRM_S = 6.0
 
@@ -106,7 +111,8 @@ class RemoteControl:
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
         self.controller = (IRController(store, self._press, self._listening,
                                         device=device,
-                                        is_direction=self._is_direction)
+                                        is_direction=self._is_direction,
+                                        pace=self._hold_pace)
                            if controller is None else controller)
         self.poll_s = poll_s
         self._lock = threading.RLock()
@@ -130,6 +136,17 @@ class RemoteControl:
     def _is_direction(self, button_id) -> bool:
         """Whether holding this key should repeat, judged by what it performs."""
         return self.roles.action(button_id) in DIRECTIONS
+
+    def _hold_pace(self, button_id):
+        """How fast holding this key should repeat, judged by what it moves.
+
+        Snapping steps from one control to the next, so a rate meant for
+        nudging a cursor by pixels turns one press a shade too long into two
+        steps -- past the magnifying glass and on to the menu behind it.
+        """
+        if self._snapped_service() or self.session.snapshot()["mode"] == "snapping":
+            return (SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S)
+        return None
 
     def reload_roles(self) -> dict:
         with self._source_lock:
