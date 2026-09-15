@@ -134,11 +134,17 @@ missing, the interface says so on the TV instead of appearing to open something.
 
 Two limits are worth knowing before you try it:
 
-- **YouTube and Prime Video are wired up.** The other tiles come from the design
-  reference; Piper does not know what is installed on this Pi, so selecting one
-  says it cannot open that yet. YouTube opens its ten-foot app, which it serves
-  only to a browser identifying itself as a television; Prime Video has no such
-  app published, so it opens the ordinary site, laid out for a pointer.
+- **Every tile but Kodi and Search opens something.** YouTube opens its
+  ten-foot app, which it serves only to a browser identifying itself as a
+  television, and the remote types at it. Prime Video, Netflix, Disney+, HBO
+  Max, Plex and a plain web browser open the ordinary sites, laid out for a
+  pointer and driven by the cursor. A tile Piper cannot open says so when it is
+  selected rather than appearing to do nothing.
+- **What plays is a separate question from what opens.** These sites need
+  Widevine for protected video, and a Pi 3B+ is not a strong enough player for
+  it. Expect the pages to load and sign in, and expect playback of protected
+  titles to be poor or refused; a TV stick is the answer there, not a browser
+  flag.
 - **How the cursor moves is yours to set.** A page built for a mouse is driven
   either by snapping between the controls it reports, or by moving the cursor
   itself — smoothly, faster the longer a direction is held. Which works better

@@ -96,6 +96,14 @@ class LauncherTests(unittest.TestCase):
         self.assertIn(f"--user-data-dir={profile}", command)
         self.assertTrue(profile.is_dir(), "the profile directory must exist before chromium needs it")
 
+    def test_every_tile_but_youtube_is_driven_by_the_cursor(self):
+        # None of them publish a television web app, so arrow keys reach
+        # nothing on their pages.
+        launcher = self.build()
+        drives = {service["id"]: service["control"] for service in launcher.catalogue()}
+        self.assertEqual(drives.pop("youtube"), "keys")
+        self.assertEqual(set(drives.values()), {"snap"})
+
     def test_prime_video_opens_as_the_site_it_publishes(self):
         # Amazon has no television web app, so no identity is pretended here.
         launcher = self.build()
@@ -164,12 +172,12 @@ class LauncherTests(unittest.TestCase):
     def test_only_services_piper_knows_can_be_asked_for(self):
         launcher = self.build()
         with self.assertRaises(KeyError):
-            launcher.launch("netflix")
+            launcher.launch("kodi")
         for value in ("", None, 7):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 launcher.launch(value)
         self.assertEqual([service["id"] for service in launcher.catalogue()],
-                         ["youtube", "prime"])
+                         ["youtube", "prime", "netflix", "disney", "hbo", "plex", "browser"])
 
     # --- one service at a time -------------------------------------------
 
