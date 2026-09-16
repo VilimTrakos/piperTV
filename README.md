@@ -154,8 +154,9 @@ Two limits are worth knowing before you try it:
   itself — smoothly, faster the longer a direction is held. Which works better
   is a property of the page, so it is a preference in the studio ("How the
   cursor moves") rather than a decision made here, along with the first step,
-  the fastest step, how quickly a held key gets there, and how far the page
-  scrolls. At the top or bottom of the screen the page scrolls under the cursor
+  the fastest step, how quickly a held key gets there, how far the page scrolls,
+  and how long a key must be down before it counts as held — raise that last one
+  if a single press moves two items. At the top or bottom of the screen the page scrolls under the cursor
   instead of the cursor stalling, and a snapping press that finds nothing that
   way scrolls too, since what it was looking for may be below the fold. It is kept with the
   recordings and survives a restart.
