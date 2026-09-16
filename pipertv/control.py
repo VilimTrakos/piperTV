@@ -19,7 +19,7 @@ from .cec import CecMonitor
 from .desktop import POINTER_DEFAULTS, DesktopControl, validate_pointer
 from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
-from .keyboard import OnScreenKeyboard, ServiceKeys
+from .keyboard import ServiceKeys
 from .launcher import SNAP, ServiceLauncher
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
@@ -93,7 +93,7 @@ class RemoteControl:
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
                  buttons=None, launcher=None, browser=None, interface=None, port=8765,
-                 keys=None, onscreen=None):
+                 keys=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -106,7 +106,6 @@ class RemoteControl:
         self.launcher = ServiceLauncher(browser=browser) if launcher is None else launcher
         self.interface = Interface(port=port) if interface is None else interface
         self.keys = ServiceKeys() if keys is None else keys
-        self.onscreen = OnScreenKeyboard() if onscreen is None else onscreen
         self.leaving = LeaveRequest()
         self._input_context = None
         self.roles = self._load_roles()
@@ -290,59 +289,18 @@ class RemoteControl:
         """Send one press to the open service in the language it understands.
 
         A television app is typed at. A site built for a mouse is snapped
-        through or nudged: its arrow keys do nothing, so the cursor moves and
-        OK clicks what it is on. Back is typed either way, because escape
-        closes an overlay in both.
-
-        While the on-screen keyboard is up, everything drives the cursor: its
-        keys are pressed by clicking them, and that is the only thing worth
-        doing until it goes away again.
+        through: its arrow keys do nothing, so the cursor jumps between the
+        controls the page reports and OK clicks the one it landed on. Back is
+        typed either way, because escape closes an overlay in both.
         """
         running = self.launcher.running()
         if running is None:
-            return
-        if self.onscreen.showing():
-            if action == "back":
-                self.hide_keyboard()
-                return
-            if action in DIRECTIONS or action == "ok":
-                self.desktop.press(action, mode="pointer")
-                return
-            if action == "menu":
-                self.hide_keyboard()
-                return
-            return
-        if action == "menu" and self._cursor_service() is not None:
-            self.show_keyboard()
             return
         driving = self._cursor_service()
         if driving is not None and (action in DIRECTIONS or action == "ok"):
             self.desktop.press(action, mode=driving)
             return
         self.keys.send(action)
-
-    # --- the keyboard on the screen ---------------------------------------
-
-    def show_keyboard(self) -> dict:
-        """Put the keyboard on the screen, making room for it first.
-
-        The service's window is full screen, and a fullscreen window covers the
-        layer the keyboard draws in. F11 is how a browser is asked to give that
-        up; it is handed back when the keyboard goes away.
-        """
-        self.keys.send("fullscreen")
-        time.sleep(0.4)  # the window has to finish leaving full screen
-        shown = self.onscreen.show()
-        if not shown:
-            self.keys.send("fullscreen")
-        return self.onscreen.health()
-
-    def hide_keyboard(self) -> dict:
-        """Take it away and give the window its full screen back."""
-        if self.onscreen.hide():
-            time.sleep(0.2)
-            self.keys.send("fullscreen")
-        return self.onscreen.health()
 
     def _way_out(self, action: str) -> bool:
         """Leave whatever is on the screen. The one thing the gate cannot veto.
@@ -360,7 +318,6 @@ class RemoteControl:
         if self.launcher.running() is not None:
             self.leaving.disarm()
             self.launcher.stop()
-            self.onscreen.hide()
             self.keys.release()
             self.desktop.release()
             return True
@@ -393,8 +350,6 @@ class RemoteControl:
             # keyboard must not outlive what it was typing into.
             if self.launcher.running() is None and self.keys.health().get("active"):
                 self.keys.release()
-            if self.launcher.running() is None and self.onscreen.showing():
-                self.onscreen.hide()
         except Exception as exc:  # noqa: BLE001 - the gate must keep running
             LOG.warning("Control supervisor: %s", exc)
 
@@ -410,8 +365,7 @@ class RemoteControl:
             self._thread = None
         if thread is not None and threading.current_thread() is not thread:
             thread.join(timeout=3)
-        for part in (self.controller, self.monitor, self.desktop, self.launcher,
-                     self.keys, self.onscreen):
+        for part in (self.controller, self.monitor, self.desktop, self.launcher, self.keys):
             try:
                 part.close()
             except Exception as exc:  # noqa: BLE001 - shutdown must finish
@@ -519,7 +473,6 @@ class RemoteControl:
         result["control"] = state["control"]
         result["session_id"] = state["session"]["id"] if state["session"] else None
         result["services"] = self.launcher.snapshot()
-        result["keyboard"] = self.onscreen.health()
         result["leaving"] = {"armed": self.leaving.armed(),
                              "seconds": self.leaving.remaining()}
         return result
@@ -534,7 +487,6 @@ class RemoteControl:
         state["services"] = self.launcher.snapshot()
         state["interface"] = self.interface.snapshot()
         state["keys"] = self.keys.health()
-        state["onscreen_keyboard"] = self.onscreen.health()
         state["pointer_settings"] = dict(self.pointer)
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
