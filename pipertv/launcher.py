@@ -86,10 +86,7 @@ KIOSK_ARGS = ("--disable-gpu", "--password-store=basic",
               # Without this the page is a blank box to the accessibility bus,
               # and snapping has nothing in it to move the cursor to.
               "--force-renderer-accessibility",
-              # Full screen but not kiosk: kiosk refuses to leave full screen,
-              # and a fullscreen window covers the on-screen keyboard, which
-              # then has nowhere to appear when a search box needs it.
-              "--start-fullscreen", "--noerrdialogs", "--disable-infobars",
+              "--kiosk", "--start-fullscreen", "--noerrdialogs", "--disable-infobars",
               "--no-first-run", "--no-default-browser-check",
               "--disable-session-crashed-bubble", "--disable-features=Translate",
               "--autoplay-policy=no-user-gesture-required")
@@ -200,9 +197,7 @@ class ServiceLauncher:
             command.append("--ozone-platform=wayland")
         if service.get("user_agent"):
             command.append(f"--user-agent={service['user_agent']}")
-        # As an app window: no tab strip and no address bar, and it can still
-        # be taken out of full screen, which kiosk mode cannot.
-        command.append(f"--app={service['url']}")
+        command.append(service["url"])
         return command
 
     # --- opening and closing ---------------------------------------------
