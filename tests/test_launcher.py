@@ -86,12 +86,13 @@ class LauncherTests(unittest.TestCase):
         launcher.launch("youtube")
         command = self.spawn.started[0].command
         self.assertEqual(command[0], str(self.browser))
-        self.assertIn("--kiosk", command)
         # Both are required on a Pi 3B+: the GPU context fails, and the keyring
         # prompt cannot be answered from a sofa.
         self.assertIn("--disable-gpu", command)
         self.assertIn("--password-store=basic", command)
-        self.assertEqual(command[-1], "https://www.youtube.com/tv")
+        self.assertEqual(command[-1], "--app=https://www.youtube.com/tv")
+        self.assertNotIn("--kiosk", command, "kiosk mode cannot leave full screen, "
+                         "and the on-screen keyboard needs it to")
         profile = self.root / "profiles" / "youtube"
         self.assertIn(f"--user-data-dir={profile}", command)
         self.assertTrue(profile.is_dir(), "the profile directory must exist before chromium needs it")
@@ -141,7 +142,7 @@ class LauncherTests(unittest.TestCase):
         launcher = self.build()
         launcher.launch("prime")
         command = self.spawn.started[0].command
-        self.assertEqual(command[-1], "https://www.primevideo.com")
+        self.assertEqual(command[-1], "--app=https://www.primevideo.com")
         self.assertFalse([part for part in command if part.startswith("--user-agent=")])
 
     def test_a_wayland_session_gets_the_wayland_backend(self):
