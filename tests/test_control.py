@@ -807,6 +807,14 @@ class HoldPaceTests(unittest.TestCase):
         control.launch("youtube", control.session.snapshot()["session"]["id"])
         self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
 
+    def test_the_hold_threshold_is_a_setting_not_a_constant(self):
+        # How long a press lasts is a habit; the one that suits this room is
+        # saved with the recordings like everything else about the remote.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.pointer = dict(control.pointer, hold_delay_s=1.2, hold_interval_s=0.4)
+        self.assertEqual(control._hold_pace("up"), (1.2, 0.4))
+
     def test_the_ring_itself_steps_as_well(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")

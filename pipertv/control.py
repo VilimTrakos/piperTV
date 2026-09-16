@@ -177,7 +177,10 @@ class RemoteControl:
             return None
         if self.launcher.running() is None and self.session.snapshot()["mode"] == "pointer":
             return None
-        return (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S)
+        # How long counts as "held" is a habit, not a constant: some people
+        # press a television remote for a moment, some lean on it.
+        return (self.pointer.get("hold_delay_s", STEP_HOLD_DELAY_S),
+                self.pointer.get("hold_interval_s", STEP_HOLD_INTERVAL_S))
 
     def reload_roles(self) -> dict:
         with self._source_lock:

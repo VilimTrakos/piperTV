@@ -65,7 +65,9 @@
             <p class="remote-note">Snapping steps between the controls a page reports. Moving smoothly
               slides the cursor and speeds up while a direction is held — steadier on a page whose
               controls Piper cannot see cleanly. At the top or bottom of the screen the page
-              scrolls under the cursor, so a scrollbar never has to be dragged.</p>
+              scrolls under the cursor, so a scrollbar never has to be dragged. "Held after" is how
+              long a key must be down before it counts as held and starts repeating — raise it if a
+              single press moves two items.</p>
             <div class="pointer-fields">
               <label class="pointer-field" for="pointer-step">First step
                 <input id="pointer-step" type="number" min="2" max="200" step="1" inputmode="numeric"></label>
@@ -75,6 +77,10 @@
                 <input id="pointer-accelerate" type="number" min="0.05" max="2" step="0.05" inputmode="decimal"></label>
               <label class="pointer-field" for="pointer-scroll">Scroll at edges
                 <input id="pointer-scroll" type="number" min="1" max="10" step="1" inputmode="numeric"></label>
+              <label class="pointer-field" for="pointer-hold">Held after
+                <input id="pointer-hold" type="number" min="0.2" max="3" step="0.05" inputmode="decimal"></label>
+              <label class="pointer-field" for="pointer-repeat">Then repeats every
+                <input id="pointer-repeat" type="number" min="0.05" max="1" step="0.05" inputmode="decimal"></label>
             </div>
             <div class="capture-actions">
               <button id="pointer-save" class="button button-outline" type="button">Save</button>

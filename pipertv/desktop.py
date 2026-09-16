@@ -30,10 +30,17 @@ CLICKS = {"ok": "left", "menu": "right"}
 # cursor itself and gathers speed while a direction is held, which is steadier
 # on a page whose controls Piper cannot see cleanly.
 DRIVES = ("snap", "nudge")
+# How a press moves things, kept in one place: the cursor's own behaviour, and
+# how long a key must be held before it counts as held. The second is not the
+# cursor's business, but it is the same question -- what one press does -- and
+# it belongs where a person goes to tune it.
 POINTER_DEFAULTS = {"drive": "snap", "step_px": 24, "max_step_px": 180,
-                    "accelerate_within_s": 0.25, "scroll_clicks": 2}
+                    "accelerate_within_s": 0.25, "scroll_clicks": 2,
+                    "hold_delay_s": 0.65, "hold_interval_s": 0.25}
 POINTER_LIMITS = {"step_px": (2, 200), "max_step_px": (8, 600),
-                  "accelerate_within_s": (0.05, 2.0), "scroll_clicks": (1, 10)}
+                  "accelerate_within_s": (0.05, 2.0), "scroll_clicks": (1, 10),
+                  "hold_delay_s": (0.2, 3.0), "hold_interval_s": (0.05, 1.0)}
+SECONDS = ("accelerate_within_s", "hold_delay_s", "hold_interval_s")
 # The cursor is at an edge when a step would not move it any further. A page
 # then scrolls instead, which is what a hand would do with the wheel rather
 # than carry the cursor off to a scrollbar.
@@ -65,7 +72,7 @@ def validate_pointer(values) -> dict:
         low, high = POINTER_LIMITS[name]
         if not low <= value <= high:
             raise ValueError(f"{name} must be between {low} and {high}.")
-        settings[name] = round(float(value), 3) if name == "accelerate_within_s" else int(value)
+        settings[name] = round(float(value), 3) if name in SECONDS else int(value)
     if settings["step_px"] > settings["max_step_px"]:
         raise ValueError("The first step cannot be larger than the fastest one.")
     return settings
