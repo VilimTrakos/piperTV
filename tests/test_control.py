@@ -2,7 +2,7 @@ import logging
 import time
 import unittest
 
-from pipertv.control import SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S, RemoteControl
+from pipertv.control import STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S, RemoteControl
 
 SCREEN = (1920, 1080)
 
@@ -787,22 +787,36 @@ class HoldPaceTests(unittest.TestCase):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", control.session.snapshot()["session"]["id"])
-        self.assertEqual(control._hold_pace("up"), (SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S))
+        self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
 
     def test_snapping_mode_on_the_desktop_asks_for_it_too(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "snapping")
-        self.assertEqual(control._hold_pace("up"), (SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S))
+        self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
 
     def test_nudging_a_cursor_keeps_the_pace_it_was_tuned_for(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "pointer")
         self.assertIsNone(control._hold_pace("up"))
 
-    def test_a_typed_service_keeps_the_default_pace(self):
+    def test_a_typed_service_steps_too_and_asks_for_the_slower_pace(self):
+        # Kodi's menu moves by one item per press. At the pixel pace a press a
+        # shade too long moved two, and the item being aimed at was skipped.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("youtube", control.session.snapshot()["session"]["id"])
+        self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
+
+    def test_the_ring_itself_steps_as_well(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
+
+    def test_a_nudged_service_keeps_the_fast_repeat_that_makes_it_glide(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.pointer = dict(control.pointer, drive="nudge")
+        control.launch("prime", control.session.snapshot()["session"]["id"])
         self.assertIsNone(control._hold_pace("up"))
 
 
