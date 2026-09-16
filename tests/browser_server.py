@@ -8,7 +8,7 @@ from pipertv.app import create_app
 from pipertv.storage import RecordingStore
 from pipertv.control import RemoteControl
 from tests.test_control import (FakeMonitor, FakeController, FakeTargets, FakeDesktop,
-                               FakeLauncher, FakeInterface, FakeKeys, FakeOnScreen)
+                               FakeLauncher, FakeInterface, FakeKeys)
 
 temporary = tempfile.TemporaryDirectory(prefix='pipertv-browser-')
 data = str(Path(temporary.name) / 'recordings.json')
@@ -18,8 +18,7 @@ controller.reload_recordings = lambda: None
 remote = RemoteControl(RecordingStore(Path(data)), screen=(1920, 1080),
                        monitor=monitor, controller=controller,
                        targets=FakeTargets(), desktop=FakeDesktop(),
-                       launcher=FakeLauncher(), interface=FakeInterface(), keys=FakeKeys(),
-                       onscreen=FakeOnScreen())
+                       launcher=FakeLauncher(), interface=FakeInterface(), keys=FakeKeys())
 app = create_app(data=data, demo=True, remote=remote)
 
 @app.post('/test/source')
