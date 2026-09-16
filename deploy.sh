@@ -9,7 +9,14 @@
 #   ./deploy.sh --ref f6c361a   deploy any commit -- this is the way back
 #   ./deploy.sh --dirty         deploy the working tree as it stands
 #   ./deploy.sh --no-kiosk      leave the browser on the TV alone
+#   ./deploy.sh --kiosk         restart it even if no page files changed
 #   ./deploy.sh --no-session    do not open a control session afterwards
+#   ./deploy.sh --force         deploy even while someone is watching something
+#
+# Deploying interrupts whoever is at the television: the app stops, which
+# closes what it had opened, and the screen is black until the interface comes
+# back. So it refuses while a service is open unless --force, and it restarts
+# the interface only when the page itself changed.
 #   ./deploy.sh --skip-tests    do not run the suite first
 #
 # The password is asked for once (one multiplexed SSH connection carries every
@@ -21,13 +28,15 @@ LOGIN=${PIPER_USER:-rpi}
 DIR=${PIPER_DIR:-/home/rpi/piperTV}
 PORT=${PIPER_PORT:-8765}
 PROFILE=${PIPER_KIOSK_PROFILE:-/tmp/kiosk-gpu-off}
-REF=HEAD; DIRTY=0; KIOSK=1; TESTS=1; SESSION=1
+REF=HEAD; DIRTY=0; KIOSK=""; TESTS=1; SESSION=1; FORCE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF=${2:?--ref needs a commit}; shift 2 ;;
     --dirty) DIRTY=1; shift ;;
     --no-kiosk) KIOSK=0; shift ;;
+    --kiosk) KIOSK=1; shift ;;
+    --force) FORCE=1; shift ;;
     --no-session) SESSION=0; shift ;;
     --skip-tests) TESTS=0; shift ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
@@ -116,6 +125,18 @@ pi() { ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" "$@"; }
 
 # --- send it ----------------------------------------------------------------
 
+# Nothing below is worth interrupting a film for.
+WATCHING=$(curl -s -m 5 "http://$HOST:$PORT/api/tv/events?after=0" 2>/dev/null \
+  | python3 -c "import json,sys
+try: running = (json.load(sys.stdin).get('services') or {}).get('running')
+except Exception: running = None
+print(running['name'] if running else '')" 2>/dev/null || echo "")
+if [ -n "$WATCHING" ] && [ "$FORCE" = 0 ]; then
+  echo "deploy.sh: $WATCHING is open on the television right now." >&2
+  echo "           Deploying would close it and blank the screen. Wait, or use --force." >&2
+  exit 1
+fi
+
 say "Sending $VERSION"
 rsync -az --delete --exclude=__pycache__ -e "ssh -S $CONTROL -o BatchMode=yes" \
   "$STAGE/pipertv/" "$LOGIN@$HOST:$DIR/pipertv/"
@@ -132,8 +153,20 @@ echo "checksum matches: ${HERE:0:16}"
 
 # --- stop, then start (separate connections: see bracket() above) ------------
 
+if [ -z "$KIOSK" ]; then
+  # The interface is a page a browser is already showing, so it needs
+  # restarting only when that page changed. A Python change is picked up by
+  # the app restart alone, and the screen never goes black.
+  PAGES="find pipertv/static -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1"
+  if [ "$(cd "$STAGE" && eval "$PAGES")" = "$(pi "cd $DIR && $PAGES")" ]; then KIOSK=0; else KIOSK=1; fi
+fi
+
 say "Stopping the old app and interface"
-pi "pkill -f '$APP_PATTERN' || true; pkill -f '$KIOSK_PATTERN' || true; sleep 2; echo stopped"
+if [ "$KIOSK" = 1 ]; then
+  pi "pkill -f '$APP_PATTERN' || true; pkill -f '$KIOSK_PATTERN' || true; sleep 2; echo 'app and interface stopped'"
+else
+  pi "pkill -f '$APP_PATTERN' || true; sleep 2; echo 'app stopped; the interface was left where it was'"
+fi
 
 # The launcher needs the desktop session's own variables to put a window on the
 # TV; started over SSH it inherits none of them.
