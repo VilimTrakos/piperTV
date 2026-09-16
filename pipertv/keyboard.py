@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import signal
+import subprocess
 import re
 import struct
 import threading
@@ -33,13 +36,17 @@ from .pointer import (BUS_VIRTUAL, DEVICE, EV_KEY, EV_SYN, EVENT, SETUP, SYN_REP
 KEY_ENTER, KEY_ESC, KEY_BACKSPACE = 28, 1, 14
 KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN = 105, 106, 103, 108
 KEY_HOME, KEY_SPACE = 102, 57
+KEY_F11 = 87
 
 LOG = logging.getLogger(__name__)
 
 # What Piper can perform, named after the role rather than the key cap.
 KEYS = {"up": KEY_UP, "down": KEY_DOWN, "left": KEY_LEFT, "right": KEY_RIGHT,
         "ok": KEY_ENTER, "back": KEY_ESC, "home": KEY_HOME, "space": KEY_SPACE,
-        "backspace": KEY_BACKSPACE}
+        "backspace": KEY_BACKSPACE,
+        # Not something a remote has: it takes a window out of full screen so
+        # the on-screen keyboard has somewhere to appear.
+        "fullscreen": KEY_F11}
 
 
 class VirtualKeyboard:
@@ -144,6 +151,105 @@ class VirtualKeyboard:
                     os.close(self._fd)
                     self._fd = None
                     self._created = False
+
+
+class OnScreenKeyboard:
+    """A keyboard drawn over the screen, for the search box on a page.
+
+    It types into whatever holds the keyboard focus rather than taking that
+    focus itself, so a key pressed here lands in the page's own search field.
+    Pressing its keys is the cursor's job: the remote moves the pointer and
+    OK clicks, the same way it works anything else on a page.
+
+    A full-screen window covers it -- that is how this compositor stacks a
+    fullscreen surface against the layer the keyboard draws in -- so whoever
+    shows it takes the window out of full screen first.
+
+    The program runs from the moment it is first asked for and is shown and
+    hidden by signal, because starting it takes a second and a keyboard that
+    appears a second after it was asked for feels broken.
+    """
+
+    def __init__(self, command=("wvkbd-mobintl", "-L", "340", "--fn", "Sans 22", "--hidden"),
+                 spawn=subprocess.Popen, show_signal=signal.SIGUSR2,
+                 hide_signal=signal.SIGUSR1):
+        self.command = list(command)
+        self.spawn = spawn
+        self.show_signal = show_signal
+        self.hide_signal = hide_signal
+        self._lock = threading.RLock()
+        self._process = None
+        self._showing = False
+        self._error: str | None = None
+
+    def available(self) -> bool:
+        return shutil.which(self.command[0]) is not None
+
+    def _running(self):
+        if self._process is not None and self._process.poll() is None:
+            return self._process
+        self._process = None
+        return None
+
+    def show(self) -> bool:
+        with self._lock:
+            if not self.available():
+                self._error = (f"{self.command[0]} is not installed on this Pi. "
+                               f"Install it first: sudo apt install wvkbd")
+                return False
+            try:
+                process = self._running()
+                if process is None:
+                    process = self._process = self.spawn(
+                        self.command, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        start_new_session=True, close_fds=True)
+                    time.sleep(0.6)  # it has to map its surface before it can show it
+                process.send_signal(self.show_signal)
+                self._showing = True
+                self._error = None
+                return True
+            except Exception as exc:  # noqa: BLE001 - the receiver must survive
+                self._error = str(exc) or type(exc).__name__
+                LOG.warning("Showing the on-screen keyboard: %s", exc)
+                return False
+
+    def hide(self) -> bool:
+        with self._lock:
+            self._showing = False
+            process = self._running()
+            if process is None:
+                return False
+            try:
+                process.send_signal(self.hide_signal)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                self._error = str(exc) or type(exc).__name__
+                LOG.warning("Hiding the on-screen keyboard: %s", exc)
+                return False
+
+    def showing(self) -> bool:
+        with self._lock:
+            return self._showing and self._running() is not None
+
+    def health(self) -> dict:
+        with self._lock:
+            return {"ok": self._error is None, "available": self.available(),
+                    "showing": self.showing(), "error": self._error}
+
+    def close(self) -> None:
+        """Take it away with whatever it was helping to type into."""
+        with self._lock:
+            self._showing = False
+            process = self._running()
+            self._process = None
+            if process is None:
+                return
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+            except Exception as exc:  # noqa: BLE001 - shutdown must finish
+                LOG.warning("Closing the on-screen keyboard: %s", exc)
 
 
 class ServiceKeys:

@@ -155,6 +155,37 @@ class FakeKeys:
         self.active = False
 
 
+class FakeOnScreen:
+    """Stands in for the keyboard drawn over the screen."""
+
+    def __init__(self, available=True):
+        self.shown = self.hidden = self.closed = 0
+        self.visible = False
+        self.usable = available
+
+    def show(self):
+        if not self.usable:
+            return False
+        self.shown += 1
+        self.visible = True
+        return True
+
+    def hide(self):
+        was, self.visible = self.visible, False
+        self.hidden += 1
+        return was
+
+    def showing(self):
+        return self.visible
+
+    def health(self):
+        return {"ok": True, "available": self.usable, "showing": self.visible, "error": None}
+
+    def close(self):
+        self.closed += 1
+        self.visible = False
+
+
 class FakeInterface:
     """Stands in for the browser window showing the interface on the TV."""
 
@@ -186,6 +217,7 @@ def build(state="unknown", **kwargs):
     kwargs.setdefault("launcher", FakeLauncher())
     kwargs.setdefault("interface", FakeInterface())
     kwargs.setdefault("keys", FakeKeys())
+    kwargs.setdefault("onscreen", FakeOnScreen())
     control = RemoteControl(FakeStore(), screen=SCREEN, monitor=monitor,
                             controller=controller, targets=targets,
                             desktop=FakeDesktop(), **kwargs)
@@ -778,6 +810,91 @@ class WayOutTests(unittest.TestCase):
                 control._press(button)
                 control._press(button)
                 self.assertEqual(control.interface.closed, 0)
+
+
+class OnScreenKeyboardTests(unittest.TestCase):
+    """Typing into a page's search box, with nothing but a remote."""
+
+    def open_page(self, control):
+        visit = select(control, "piper")["session"]["id"]
+        control.launch("prime", visit)
+        return visit
+
+    def test_menu_puts_the_keyboard_on_the_screen(self):
+        control, _monitor, _controller, _targets = build("active")
+        self.open_page(control)
+        control._press("menu")
+        self.assertTrue(control.onscreen.showing())
+        # The window has to leave full screen or the keyboard is covered by it.
+        self.assertIn("fullscreen", control.keys.sent)
+
+    def test_back_takes_it_away_again(self):
+        control, _monitor, _controller, _targets = build("active")
+        self.open_page(control)
+        control._press("menu")
+        control.keys.sent.clear()
+        control._press("back")
+        self.assertFalse(control.onscreen.showing())
+        self.assertEqual(control.keys.sent, ["fullscreen"], "the window gets its screen back")
+
+    def test_back_is_not_passed_to_the_page_while_it_is_up(self):
+        control, _monitor, _controller, _targets = build("active")
+        self.open_page(control)
+        control._press("menu")
+        control.keys.sent.clear()
+        control._press("back")
+        self.assertNotIn("back", control.keys.sent)
+
+    def test_the_remote_moves_the_cursor_over_its_keys(self):
+        # Its keys are pressed by clicking them, so everything drives the
+        # cursor while it is up -- even on a service that is otherwise typed at.
+        control, _monitor, _controller, _targets = build("active")
+        self.open_page(control)
+        control._press("menu")
+        for button in ("down", "right", "ok"):
+            control._press(button)
+        self.assertEqual(control.desktop.presses, ["down", "right", "ok"])
+        self.assertEqual(control.desktop.modes, ["pointer"] * 3)
+
+    def test_menu_again_takes_it_away(self):
+        control, _monitor, _controller, _targets = build("active")
+        self.open_page(control)
+        control._press("menu")
+        control._press("menu")
+        self.assertFalse(control.onscreen.showing())
+
+    def test_closing_the_service_takes_the_keyboard_with_it(self):
+        control, _monitor, _controller, _targets = build("active")
+        self.open_page(control)
+        control._press("menu")
+        control._press("exit")
+        self.assertFalse(control.onscreen.showing())
+        self.assertEqual(control.launcher.stopped, 1)
+
+    def test_a_service_that_ended_by_itself_takes_it_too(self):
+        control, _monitor, _controller, _targets = build("active")
+        self.open_page(control)
+        control._press("menu")
+        control.launcher.open = None
+        control._tick()
+        self.assertFalse(control.onscreen.showing())
+
+    def test_a_television_app_has_its_own_keyboard_and_is_left_alone(self):
+        # YouTube and Kodi type with their own on-screen keyboards, navigated
+        # by the arrows Piper already sends.
+        control, _monitor, _controller, _targets = build("active")
+        visit = select(control, "piper")["session"]["id"]
+        control.launch("youtube", visit)
+        control._press("menu")
+        self.assertFalse(control.onscreen.showing())
+
+    def test_a_pi_without_the_keyboard_installed_leaves_the_screen_alone(self):
+        control, _monitor, _controller, _targets = build("active", onscreen=FakeOnScreen(available=False))
+        self.open_page(control)
+        control._press("menu")
+        self.assertFalse(control.onscreen.showing())
+        # Full screen was given up and handed straight back.
+        self.assertEqual(control.keys.sent.count("fullscreen"), 2)
 
 
 class HoldPaceTests(unittest.TestCase):

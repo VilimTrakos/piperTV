@@ -149,6 +149,14 @@ Two limits are worth knowing before you try it:
   it. Expect the pages to load and sign in, and expect playback of protected
   titles to be poor or refused; a TV stick is the answer there, not a browser
   flag.
+- **A search box gets a keyboard.** Press **Menu** on a page and a keyboard
+  appears across the bottom of the screen; move the cursor onto a key and press
+  OK to type it, exactly as you work anything else on the page. It types into
+  whatever the page has focused rather than taking focus itself, so the letters
+  land in the search box. **Back** takes it away, and so does Menu again or
+  closing the service. It needs `wvkbd` (`sudo apt install wvkbd`) and says so
+  if it is missing. YouTube and Kodi are left alone: they have keyboards of
+  their own, navigated with the arrows Piper already sends.
 - **How the cursor moves is yours to set.** A page built for a mouse is driven
   either by snapping between the controls it reports, or by moving the cursor
   itself — smoothly, faster the longer a direction is held. Which works better
