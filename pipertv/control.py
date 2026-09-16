@@ -39,11 +39,12 @@ RECORDING = "Recording a remote button, so the remote is not controlling the des
 # interface, because that is the door out of Piper itself.
 RETURN_TO_PIPER = ("exit", "home")
 LEAVE = "exit"
-# Holding a direction while the cursor snaps from one control to the next:
-# slow enough that a press a shade too long does not walk past what it was
-# aimed at, and still fast enough to cross a long page.
-SNAP_HOLD_DELAY_S = 0.65
-SNAP_HOLD_INTERVAL_S = 0.3
+# Holding a direction while what it moves moves in whole steps -- the ring, a
+# menu, the cursor jumping between controls. Slow enough that a press a shade
+# too long does not skip past what it was aimed at, and still fast enough to
+# run down a long list.
+STEP_HOLD_DELAY_S = 0.65
+STEP_HOLD_INTERVAL_S = 0.25
 # Long enough to be a decision, short enough that a stray press expires.
 LEAVE_CONFIRM_S = 6.0
 
@@ -163,16 +164,20 @@ class RemoteControl:
     def _hold_pace(self, button_id):
         """How fast holding this key should repeat, judged by what it moves.
 
-        Snapping steps from one control to the next, so a rate meant for
-        nudging a cursor by pixels turns one press a shade too long into two
-        steps -- past the magnifying glass and on to the menu behind it.
+        Almost everything a press moves here moves in whole steps: the ring
+        turns by one service, a menu in Kodi or YouTube moves by one item,
+        snapping goes from one control to the next. For those, a rate meant
+        for pixels turns a press a shade too long into two steps, and the
+        thing being aimed at is skipped entirely.
+
+        One case is different, and it is the exception rather than the rule:
+        nudging a cursor, where a fast repeat is exactly what makes it glide.
         """
-        # Only stepping between controls needs the slower hand. Nudging wants
-        # the fast repeat: that is what makes the cursor glide while held.
-        if (self._cursor_service() == "snapping"
-                or self.session.snapshot()["mode"] == "snapping"):
-            return (SNAP_HOLD_DELAY_S, SNAP_HOLD_INTERVAL_S)
-        return None
+        if self._cursor_service() == "pointer":
+            return None
+        if self.launcher.running() is None and self.session.snapshot()["mode"] == "pointer":
+            return None
+        return (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S)
 
     def reload_roles(self) -> dict:
         with self._source_lock:
