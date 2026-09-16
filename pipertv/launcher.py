@@ -71,6 +71,10 @@ SERVICES = {
     "plex": {"name": "Plex", "url": "https://app.plex.tv/desktop", "control": SNAP},
     "browser": {"name": "Web browser", "url": "https://duckduckgo.com",
                 "control": SNAP},
+    # Not a page at all: Kodi decodes video in the Pi's own hardware, which is
+    # the difference between watching a film here and watching it stutter. Its
+    # interface is built for a remote, so it is typed at rather than pointed at.
+    "kodi": {"name": "Kodi", "command": ["kodi"], "control": KEYS},
 }
 
 # Full screen, and nothing that opens a dialog: no one can dismiss a dialog
@@ -134,6 +138,17 @@ class ServiceLauncher:
         cache = self.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
         return Path(cache) / "pipertv" / "services"
 
+    def _missing(self, service_id: str) -> str | None:
+        """Why this particular service cannot be opened, if it cannot."""
+        service = self.services.get(service_id) or {}
+        own = service.get("command")
+        if not own:
+            return None  # a page: the browser answers for it
+        if shutil.which(own[0]) is None:
+            return (f"{service.get('name', service_id)} is not installed on this Pi. "
+                    f"Install it first: sudo apt install {own[0]}")
+        return None
+
     def _unavailable(self) -> str | None:
         """Why opening a service would fail here, before anything is attempted."""
         if self.browser is None:
@@ -142,6 +157,10 @@ class ServiceLauncher:
                         "cannot open a service. Check --browser.")
             return ("No chromium browser was found on this Pi, so Piper cannot open a service. "
                     "Install one with: sudo apt install chromium")
+        return self._session_missing()
+
+    def _session_missing(self) -> str | None:
+        """Nothing can be put on the screen from outside the session that owns it."""
         if not (self.environ.get("WAYLAND_DISPLAY") or self.environ.get("DISPLAY")):
             return ("PiperTV is not running inside the Pi's desktop session, so it cannot put "
                     "anything on the TV. Start it from the desktop session on the Pi.")
@@ -158,6 +177,17 @@ class ServiceLauncher:
         return SNAP if service.get("control") == SNAP else KEYS
 
     def command(self, service: dict) -> list[str]:
+        """What to run for this service: its own program, or a browser.
+
+        Some services are applications rather than pages -- Kodi being the one
+        that matters here, because it decodes video in the Pi's own hardware
+        and a browser does not. Such a service names its command and no
+        browser is involved, so it needs no profile, no user agent and no
+        kiosk flags.
+        """
+        own = service.get("command")
+        if own:
+            return list(own)
         profile = self.profiles / service["id"]
         profile.mkdir(parents=True, exist_ok=True)
         command = [self.browser, *KIOSK_ARGS, f"--user-data-dir={profile}"]
@@ -181,7 +211,12 @@ class ServiceLauncher:
         service = dict(self.services[service_id], id=service_id)
         with self._lock:
             self._reap()
-            reason = self._unavailable()
+            missing = self._missing(service_id)
+            if missing:
+                raise RuntimeError(missing)
+            # A service with its own program needs no browser, so the browser's
+            # absence must not stand in its way; the desktop session still must.
+            reason = self._unavailable() if not service.get("command") else self._session_missing()
             if reason:
                 raise RuntimeError(reason)
             if self._running and self._running["id"] == service_id:

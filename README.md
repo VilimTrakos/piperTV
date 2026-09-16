@@ -134,12 +134,16 @@ missing, the interface says so on the TV instead of appearing to open something.
 
 Two limits are worth knowing before you try it:
 
-- **Every tile but Kodi and Search opens something.** YouTube opens its
+- **Every tile but Search opens something.** YouTube opens its
   ten-foot app, which it serves only to a browser identifying itself as a
   television, and the remote types at it. Prime Video, Netflix, Disney+, HBO
   Max, Plex and a plain web browser open the ordinary sites, laid out for a
-  pointer and driven by the cursor. A tile Piper cannot open says so when it is
-  selected rather than appearing to do nothing.
+  pointer and driven by the cursor. Kodi is not a page at all: it is started as
+  itself, it decodes video in the Pi's own hardware rather than in a browser,
+  and its interface is built for a remote, so it is typed at. A tile Piper
+  cannot open says so when it is selected — an application that is not
+  installed says which package to install — rather than appearing to do
+  nothing.
 - **What plays is a separate question from what opens.** These sites need
   Widevine for protected video, and a Pi 3B+ is not a strong enough player for
   it. Expect the pages to load and sign in, and expect playback of protected

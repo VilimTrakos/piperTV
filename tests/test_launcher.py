@@ -96,13 +96,45 @@ class LauncherTests(unittest.TestCase):
         self.assertIn(f"--user-data-dir={profile}", command)
         self.assertTrue(profile.is_dir(), "the profile directory must exist before chromium needs it")
 
-    def test_every_tile_but_youtube_is_driven_by_the_cursor(self):
-        # None of them publish a television web app, so arrow keys reach
-        # nothing on their pages.
+    def test_pages_are_pointed_at_and_applications_are_typed_at(self):
+        # A site built for a mouse ignores arrow keys; an application built for
+        # a remote ignores a cursor. Which is which is a property of the thing.
         launcher = self.build()
         drives = {service["id"]: service["control"] for service in launcher.catalogue()}
-        self.assertEqual(drives.pop("youtube"), "keys")
+        self.assertEqual(drives.pop("youtube"), "keys")   # a television web app
+        self.assertEqual(drives.pop("kodi"), "keys")      # an application
         self.assertEqual(set(drives.values()), {"snap"})
+
+    def test_an_application_is_started_as_itself_not_in_a_browser(self):
+        launcher = self.build(services={"kodi": {"name": "Kodi", "command": ["true"]}})
+        launcher.launch("kodi")
+        command = self.spawn.started[0].command
+        self.assertEqual(command, ["true"])
+        self.assertFalse([part for part in command if part.startswith("--user-data-dir")])
+
+    def test_an_application_that_is_not_installed_says_how_to_install_it(self):
+        launcher = self.build(services={"kodi": {"name": "Kodi",
+                                                 "command": ["not-a-real-program"]}})
+        with self.assertRaises(RuntimeError) as refused:
+            launcher.launch("kodi")
+        self.assertIn("sudo apt install not-a-real-program", str(refused.exception))
+        self.assertEqual(self.spawn.started, [])
+
+    def test_an_application_needs_no_browser(self):
+        # Piper without chromium can still start what it does have.
+        with patch("pipertv.launcher.shutil.which", side_effect=lambda name: None
+                   if "chromium" in name else f"/usr/bin/{name}"):
+            launcher = self.build(browser="auto",
+                                  services={"kodi": {"name": "Kodi", "command": ["kodi"]}})
+            launcher.launch("kodi")
+        self.assertEqual(len(self.spawn.started), 1)
+
+    def test_an_application_outside_the_desktop_session_is_still_refused(self):
+        launcher = self.build(environ={},
+                              services={"kodi": {"name": "Kodi", "command": ["true"]}})
+        with self.assertRaises(RuntimeError) as refused:
+            launcher.launch("kodi")
+        self.assertIn("desktop session", str(refused.exception))
 
     def test_prime_video_opens_as_the_site_it_publishes(self):
         # Amazon has no television web app, so no identity is pretended here.
@@ -172,12 +204,13 @@ class LauncherTests(unittest.TestCase):
     def test_only_services_piper_knows_can_be_asked_for(self):
         launcher = self.build()
         with self.assertRaises(KeyError):
-            launcher.launch("kodi")
+            launcher.launch("spotify")
         for value in ("", None, 7):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 launcher.launch(value)
         self.assertEqual([service["id"] for service in launcher.catalogue()],
-                         ["youtube", "prime", "netflix", "disney", "hbo", "plex", "browser"])
+                         ["youtube", "prime", "netflix", "disney", "hbo", "plex",
+                          "browser", "kodi"])
 
     # --- one service at a time -------------------------------------------
 
