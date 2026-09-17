@@ -92,16 +92,26 @@ class FakeLauncher:
     def __init__(self):
         self.launched = []
         self.pages = []
+        self.page_open = None
+        self.page_closed = 0
         self.history = []
         self.stopped = self.closed = 0
         self.open = None
         self.available = True
 
-    def open_page(self, page_id, name, url, control="self"):
-        self.KNOWN = dict(self.KNOWN, **{page_id: name})
-        self.POLICY = dict(self.POLICY, **{page_id: control})
+    def open_page(self, page_id, name, url):
+        # Beside the service, never instead of it.
         self.pages.append((page_id, url))
-        return self.launch(page_id)
+        self.page_open = {"id": page_id, "name": name, "started_at": 0}
+        return self.snapshot()
+
+    def page(self):
+        return dict(self.page_open) if self.page_open else None
+
+    def close_page(self):
+        self.page_closed += 1
+        self.page_open = None
+        return self.snapshot()
 
     def launch(self, service):
         if service not in self.KNOWN:
@@ -130,11 +140,13 @@ class FakeLauncher:
         return {"available": self.available, "reason": None, "browser": "/usr/bin/chromium",
                 "services": [{"id": key, "name": name, "control": self.policy(key)}
                              for key, name in self.KNOWN.items()],
-                "running": self.running(), "error": None, "history": list(self.history)}
+                "running": self.running(), "page": self.page(), "error": None,
+                "history": list(self.history)}
 
     def close(self):
         self.closed += 1
         self.open = None
+        self.page_open = None
 
 
 class FakeKeys:
@@ -872,17 +884,28 @@ class KeyboardPageTests(unittest.TestCase):
     def test_what_was_composed_is_typed_into_the_page_underneath(self):
         control = self.build_with_page()
         control.watcher.focus()
+        # The page it covers is never closed, so the search box is still there.
+        self.assertEqual(control.launcher.running()["id"], "prime")
         control.close_keyboard("rings of power")
         self.assertFalse(control.typing_page())
         self.assertEqual(control.keys.typed, ["rings of power"])
-        # The page it was covering is back on the screen.
         self.assertEqual(control.launcher.running()["id"], "prime")
+        self.assertEqual(control.launcher.launched.count("prime"), 1,
+                         "the page underneath is never reopened, which would lose the box")
 
     def test_cancelling_types_nothing(self):
         control = self.build_with_page()
         control.watcher.focus()
         control.close_keyboard(None)
         self.assertEqual(control.keys.typed, [])
+        self.assertEqual(control.launcher.running()["id"], "prime")
+
+    def test_back_takes_the_keyboard_away_and_leaves_the_page_open(self):
+        control = self.build_with_page()
+        control.watcher.focus()
+        control._press("exit")
+        self.assertFalse(control.typing_page())
+        self.assertEqual(control.launcher.stopped, 0, "exit closed the keyboard, not the page")
         self.assertEqual(control.launcher.running()["id"], "prime")
 
     def test_the_field_is_let_go_of_so_it_is_not_offered_twice(self):
