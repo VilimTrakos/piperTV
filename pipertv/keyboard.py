@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import signal
+import subprocess
 import re
 import struct
 import threading
@@ -197,6 +200,118 @@ class VirtualKeyboard:
                     os.close(self._fd)
                     self._fd = None
                     self._created = False
+
+
+class OnScreenKeyboard:
+    """A keyboard drawn across the bottom of the screen, for a page's search box.
+
+    It types into whatever holds the keyboard focus rather than taking that
+    focus itself, so its keys land in the page's own field -- no composing, no
+    handing a line back, nothing to lose between one window and the next. Its
+    keys are pressed the way everything else on a page is: the cursor moves
+    onto one and OK clicks it.
+
+    Started the moment a page is opened and kept running, hidden, because a
+    keyboard that takes ten seconds to appear is a keyboard nobody waits for.
+    Showing and hiding it is a signal.
+    """
+
+    def __init__(self, command=("wvkbd-mobintl", "-L", "320", "--fn", "Sans 20", "--hidden"),
+                 spawn=subprocess.Popen, show_signal=signal.SIGUSR2,
+                 hide_signal=signal.SIGUSR1, settle_s: float = 0.5):
+        self.command = list(command)
+        self.spawn = spawn
+        self.show_signal = show_signal
+        self.hide_signal = hide_signal
+        self.settle_s = settle_s
+        self._lock = threading.RLock()
+        self._process = None
+        self._showing = False
+        self._error: str | None = None
+
+    def available(self) -> bool:
+        return shutil.which(self.command[0]) is not None
+
+    def _running(self):
+        if self._process is not None and self._process.poll() is None:
+            return self._process
+        self._process = None
+        self._showing = False
+        return None
+
+    def prepare(self) -> bool:
+        """Have it ready and out of sight, for when a search box is chosen."""
+        with self._lock:
+            if self._running() is not None:
+                return True
+            if not self.available():
+                self._error = (f"{self.command[0]} is not installed on this Pi. "
+                               "Install it with: sudo apt install wvkbd")
+                return False
+            try:
+                self._process = self.spawn(
+                    self.command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+                self._error = None
+                return True
+            except Exception as exc:  # noqa: BLE001 - the receiver must survive
+                self._process = None
+                self._error = str(exc) or type(exc).__name__
+                LOG.warning("Preparing the on-screen keyboard: %s", exc)
+                return False
+
+    def show(self) -> bool:
+        with self._lock:
+            if self._running() is None:
+                if not self.prepare():
+                    return False
+                time.sleep(self.settle_s)  # it must map its surface before showing it
+            try:
+                self._process.send_signal(self.show_signal)
+                self._showing = True
+                self._error = None
+                return True
+            except Exception as exc:  # noqa: BLE001
+                self._error = str(exc) or type(exc).__name__
+                LOG.warning("Showing the on-screen keyboard: %s", exc)
+                return False
+
+    def hide(self) -> bool:
+        with self._lock:
+            process = self._running()
+            self._showing = False
+            if process is None:
+                return False
+            try:
+                process.send_signal(self.hide_signal)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                self._error = str(exc) or type(exc).__name__
+                LOG.warning("Hiding the on-screen keyboard: %s", exc)
+                return False
+
+    def showing(self) -> bool:
+        with self._lock:
+            return self._showing and self._running() is not None
+
+    def health(self) -> dict:
+        with self._lock:
+            return {"ok": self._error is None, "available": self.available(),
+                    "ready": self._running() is not None, "showing": self.showing(),
+                    "error": self._error}
+
+    def close(self) -> None:
+        """Take it away with whatever it was helping to type into."""
+        with self._lock:
+            process, self._process = self._process, None
+            self._showing = False
+            if process is None or process.poll() is not None:
+                return
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+            except Exception as exc:  # noqa: BLE001 - shutdown must finish
+                LOG.warning("Closing the on-screen keyboard: %s", exc)
 
 
 class ServiceKeys:

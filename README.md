@@ -149,14 +149,22 @@ Two limits are worth knowing before you try it:
   it. Expect the pages to load and sign in, and expect playback of protected
   titles to be poor or refused; a TV stick is the answer there, not a browser
   flag.
-- **A search box brings up a keyboard.** Click into one on any page and Piper
-  notices — the page announces it over the accessibility bus, the same bus
-  snapping reads — and puts its own keyboard on the screen over it. The four
-  arrows move between the keys and OK presses one, so a keyboard is never
-  needed to work a keyboard. **Search** hands the line over: the keyboard goes
-  away, the page gets its focus back, and Piper types what was composed into
-  the box. **Back** cancels and types nothing. YouTube and Kodi are left alone;
-  they have keyboards of their own, navigated by the arrows Piper already sends.
+- **A search box brings up a keyboard.** Put the cursor in one on any page and
+  press OK: Piper notices — the page announces it over the accessibility bus,
+  the same bus snapping reads — and a keyboard appears across the bottom of the
+  screen. Its keys are pressed the way everything else on a page is, by moving
+  the cursor onto one and pressing OK, and each one types straight into the
+  page's own box; there is nothing to hand over and nothing to lose in between.
+  **Back** takes it away. It is started, hidden, the moment a page opens, so it
+  appears at once rather than a browser's cold start later, and it needs
+  `wvkbd` (`sudo apt install wvkbd`). YouTube and Kodi are left alone; they have
+  keyboards of their own, navigated by the arrows Piper already sends.
+- **Pages fill the screen without being full screen.** A fullscreen window is
+  placed above every layer a keyboard could be drawn in, so pages Piper opens
+  are windows the size of the screen instead, with their title bars suppressed
+  by a labwc window rule and the desktop panel hidden. They look the same and
+  leave room above them. Kodi, and the interface itself, are full screen as
+  before.
 - **How the cursor moves is yours to set.** A page built for a mouse is driven
   either by snapping between the controls it reports, or by moving the cursor
   itself — smoothly, faster the longer a direction is held. Which works better

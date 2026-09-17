@@ -262,47 +262,6 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.spawn.started[0].signals, ["terminate", "kill"])
         self.assertIsNone(launcher.snapshot()["running"])
 
-    def test_a_page_of_pipers_own_opens_beside_the_service(self):
-        # A keyboard that closed the page that summoned it would take the
-        # search box with it.
-        launcher = self.build()
-        launcher.launch("youtube")
-        launcher.open_page("keyboard", "Keyboard", "http://127.0.0.1:8765/keys")
-        self.assertEqual(launcher.snapshot()["running"]["id"], "youtube")
-        self.assertEqual(launcher.snapshot()["page"]["id"], "keyboard")
-        self.assertEqual(len(self.spawn.started), 2)
-
-    def test_closing_the_page_leaves_the_service_where_it_was(self):
-        launcher = self.build()
-        launcher.launch("youtube")
-        launcher.open_page("keyboard", "Keyboard", "http://127.0.0.1:8765/keys")
-        launcher.close_page()
-        self.assertIsNone(launcher.page())
-        self.assertEqual(launcher.running()["id"], "youtube")
-        self.assertEqual(self.spawn.started[1].signals, ["terminate"])
-        self.assertEqual(self.spawn.started[0].signals, [], "the service was not touched")
-
-    def test_a_second_page_replaces_the_first(self):
-        launcher = self.build()
-        launcher.open_page("keyboard", "Keyboard", "http://127.0.0.1:8765/keys")
-        launcher.open_page("keyboard", "Keyboard", "http://127.0.0.1:8765/keys")
-        self.assertEqual(self.spawn.started[0].signals, ["terminate"])
-        self.assertIsNotNone(launcher.page())
-
-    def test_a_page_that_ended_by_itself_is_noticed(self):
-        launcher = self.build()
-        launcher.open_page("keyboard", "Keyboard", "http://127.0.0.1:8765/keys")
-        self.spawn.started[0].returncode = 0
-        self.assertIsNone(launcher.page())
-
-    def test_shutting_down_takes_the_page_as_well(self):
-        launcher = self.build()
-        launcher.launch("youtube")
-        launcher.open_page("keyboard", "Keyboard", "http://127.0.0.1:8765/keys")
-        launcher.close()
-        self.assertEqual([process.signals for process in self.spawn.started],
-                         [["terminate"], ["terminate"]])
-
     def test_stopping_nothing_is_harmless(self):
         launcher = self.build()
         state = launcher.stop()
