@@ -133,6 +133,10 @@ class FocusWatcher:
             source = event.source
             role = source.getRoleName()
             if role not in self.roles:
+                if getattr(event, "type", "").endswith("focused"):
+                    # Focus moved to a link or a button: whatever was being
+                    # typed into is no longer in hand.
+                    self.forget()
                 return
             if not in_page(source):
                 return  # the browser's own address bar, not the page's search box
