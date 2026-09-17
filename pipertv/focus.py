@@ -31,7 +31,14 @@ TEXT_ROLES = frozenset({"entry", "text", "password text", "combo box",
 # counts, and a page announces itself in the ancestry of everything in it.
 PAGE_ROLES = frozenset({"document web", "document frame", "document",
                         "embedded", "internal frame"})
-PAGE_DEPTH = 10
+# Where the page ends and the browser begins. The walk up stops here rather
+# than after a fixed number of steps: a page nests its search box as deeply as
+# it likes -- DuckDuckGo puts a dozen sections between the box on a page of
+# results and the document -- while the browser's own fields reach a frame in a
+# handful of steps whatever the page does.
+WINDOW_ROLES = frozenset({"frame", "window", "dialog", "application",
+                          "desktop frame"})
+PAGE_DEPTH = 40
 EVENTS = ("object:state-changed:focused", "object:text-caret-moved")
 # How long a field stays in hand without being heard from. Generous, because
 # what really lets go of it is focus moving to something that is not a field --
@@ -44,13 +51,14 @@ FRESH_S = 900.0
 REPORT_EVERY_S = 0.4
 
 
-def in_page(node, depth: int = PAGE_DEPTH, roles=PAGE_ROLES) -> bool:
+def in_page(node, depth: int = PAGE_DEPTH, roles=PAGE_ROLES,
+            outside=WINDOW_ROLES) -> bool:
     """Whether this control belongs to a web page rather than to the browser.
 
     Everything in a page hangs below a document; the address bar and the rest
-    of the browser's own furniture hang below panels and tool bars. Walking up
-    a few levels is enough to tell them apart, and costs nothing next to
-    walking down.
+    of the browser's own furniture hang below panels and tool bars, and reach
+    the window without passing a document. So the walk goes up until one or the
+    other is found, and costs nothing next to walking down.
     """
     for _ in range(depth):
         try:
@@ -60,10 +68,13 @@ def in_page(node, depth: int = PAGE_DEPTH, roles=PAGE_ROLES) -> bool:
         if node is None:
             return False
         try:
-            if node.getRoleName() in roles:
-                return True
+            role = node.getRoleName()
         except Exception:
             return False
+        if role in roles:
+            return True
+        if role in outside:
+            return False  # the window itself, with no page on the way
     return False
 
 
