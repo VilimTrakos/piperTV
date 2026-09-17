@@ -94,7 +94,8 @@ KIOSK_ARGS = ("--disable-gpu", "--password-store=basic",
               # above it.
               "--noerrdialogs", "--disable-infobars",
               "--no-first-run", "--no-default-browser-check",
-              "--disable-session-crashed-bubble", "--disable-features=Translate",
+              "--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
+              "--disable-features=Translate",
               "--autoplay-policy=no-user-gesture-required")
 
 # Closing runs on the IR reader thread, so waiting for the browser to go is
@@ -215,7 +216,9 @@ class ServiceLauncher:
             command.append("--ozone-platform=wayland")
         if service.get("user_agent"):
             command.append(f"--user-agent={service['user_agent']}")
-        command.append(service["url"])
+        # As an app window: no tab strip and no address bar, which is what
+        # made kiosk mode worth having, and it can still be drawn over.
+        command.append(f"--app={service['url']}")
         return command
 
     # --- opening and closing ---------------------------------------------
