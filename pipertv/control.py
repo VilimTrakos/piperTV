@@ -21,7 +21,7 @@ from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
 from .focus import FocusWatcher
 from .keyboard import ServiceKeys
-from .launcher import SELF, SNAP, ServiceLauncher
+from .launcher import SNAP, ServiceLauncher
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
 from .roles import RoleMap
@@ -117,7 +117,6 @@ class RemoteControl:
         self.port = port
         self.leaving = LeaveRequest()
         self._input_context = None
-        self._typing_over = None
         self.roles = self._load_roles()
         self.pointer = self._load_pointer()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
@@ -310,35 +309,33 @@ class RemoteControl:
 
     def typing_page(self) -> bool:
         """Whether Piper's keyboard is the thing on the screen."""
-        running = self.launcher.running()
-        return running is not None and running["id"] == KEYBOARD_PAGE
+        page = self.launcher.page()
+        return page is not None and page["id"] == KEYBOARD_PAGE
 
     def open_keyboard(self) -> dict:
         """Put Piper's own keyboard over the page that asked for one."""
         with self._source_lock:
             if not self.session.enabled() or self.typing_page():
                 return self.launcher.snapshot()
-            self._typing_over = self.launcher.running()
         return self.launcher.open_page(
             KEYBOARD_PAGE, "Keyboard", f"http://127.0.0.1:{self.port}/keys")
 
     def close_keyboard(self, text=None) -> dict:
         """Take the keyboard away, and type what it composed into the page.
 
-        The window goes first: the text belongs in the field underneath, which
-        cannot hold the keyboard focus while something sits on top of it.
+        The window goes first and the page underneath is untouched, still
+        showing the search box it was asked for: a keyboard that closed the
+        page it was summoned by would take the box with it. Typing waits a
+        moment for the focus to land back where it was.
         """
         if not self.typing_page():
             return self.launcher.snapshot()
-        service, self._typing_over = self._typing_over, None
-        self.launcher.stop()
-        if service is not None:
-            self.launcher.launch(service["id"])
-            time.sleep(KEYBOARD_SETTLE_S)
+        state = self.launcher.close_page()
         if text:
+            time.sleep(KEYBOARD_SETTLE_S)
             self.keys.write(text)
         self.watcher.forget()
-        return self.launcher.snapshot()
+        return state
 
     def _drive_service(self, action: str) -> None:
         """Send one press to the open service in the language it understands.
@@ -348,11 +345,11 @@ class RemoteControl:
         controls the page reports and OK clicks the one it landed on. Back is
         typed either way, because escape closes an overlay in both.
         """
+        if self.typing_page():
+            return  # Piper's own page reads the same presses and acts on them
         running = self.launcher.running()
         if running is None:
             return
-        if self.launcher.policy(running["id"]) == SELF:
-            return  # Piper's own page reads the same presses and acts on them
         driving = self._cursor_service()
         if driving is not None and (action in DIRECTIONS or action == "ok"):
             self.desktop.press(action, mode=driving)
@@ -372,6 +369,10 @@ class RemoteControl:
         if action not in RETURN_TO_PIPER:
             self.leaving.disarm()
             return False
+        if self.typing_page():
+            self.leaving.disarm()
+            self.close_keyboard(None)
+            return True
         if self.launcher.running() is not None:
             self.leaving.disarm()
             self.launcher.stop()

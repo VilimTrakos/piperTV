@@ -120,6 +120,8 @@ class ServiceLauncher:
         self._lock = threading.RLock()
         self._process = None
         self._running: dict | None = None
+        self._page_process = None
+        self._page: dict | None = None
         self._error: str | None = None
         self._history: deque = deque(maxlen=max(1, int(remembered)))
 
@@ -169,7 +171,7 @@ class ServiceLauncher:
     def catalogue(self) -> list[dict]:
         """Everything Piper can open, for an interface that lists more than that."""
         return [{"id": key, "name": service["name"], "control": self.policy(key)}
-                for key, service in self.services.items() if not service.get("page")]
+                for key, service in self.services.items()]
 
     def policy(self, service_id) -> str:
         """How the remote drives this service.
@@ -208,18 +210,59 @@ class ServiceLauncher:
 
     # --- opening and closing ---------------------------------------------
 
-    def open_page(self, page_id: str, name: str, url: str, control: str = SELF) -> dict:
+    def open_page(self, page_id: str, name: str, url: str) -> dict:
         """Open one of Piper's own pages over whatever is on the screen.
 
-        The same browser and the same window as a service, because that is the
-        one thing here known to appear on top of a full-screen window. It is
-        not in the catalogue: nobody chooses it from the ring.
+        Beside the service rather than instead of it: a keyboard that closed
+        the page it was summoned by would take the search box with it. The
+        service keeps running underneath, untouched, and gets the screen back
+        when this window goes.
         """
         with self._lock:
-            self.services = dict(self.services)
-            self.services[page_id] = {"name": name, "url": url, "control": control,
-                                      "page": True}
-        return self.launch(page_id)
+            self._reap()
+            reason = self._session_missing() or self._unavailable()
+            if reason:
+                raise RuntimeError(reason)
+            self._close_page()
+            started = self.clock()
+            service = {"id": page_id, "name": name, "url": url}
+            try:
+                self._page_process = self.spawn(
+                    self.command(service), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True, close_fds=True)
+            except OSError as exc:
+                self._page_process = None
+                self._error = f"Could not open {name}: {exc}"
+                raise RuntimeError(self._error) from exc
+            self._page = {"id": page_id, "name": name, "started_at": started}
+            LOG.info("Opened %s over what was on the screen", name)
+            return self._state()
+
+    def page(self) -> dict | None:
+        """Piper's own page on the screen, if one is up."""
+        with self._lock:
+            self._reap()
+            return dict(self._page) if self._page else None
+
+    def close_page(self) -> dict:
+        """Take it away and leave whatever it was covering where it was."""
+        with self._lock:
+            self._close_page()
+            return self._state()
+
+    def _close_page(self) -> None:
+        process, self._page_process = self._page_process, None
+        self._page = None
+        if process is None or process.poll() is not None:
+            return
+        try:
+            process.terminate()
+            if self._wait(process, STOP_GRACE_S) is None:
+                process.kill()
+                self._wait(process, KILL_GRACE_S)
+        except OSError as exc:  # already gone, or no longer ours to signal
+            LOG.warning("Closing Piper's page: %s", exc)
 
     def launch(self, service_id) -> dict:
         """Put one service on the screen, replacing whatever was there."""
@@ -272,6 +315,7 @@ class ServiceLauncher:
     def close(self) -> None:
         """Leave nothing full screen that the remote can no longer close."""
         with self._lock:
+            self._close_page()
             self._close()
 
     # --- state ------------------------------------------------------------
@@ -289,7 +333,8 @@ class ServiceLauncher:
             running = dict(self._running,
                            seconds=max(0.0, round(now - self._running["started_at"], 1)))
         return {"available": reason is None, "reason": reason, "browser": self.browser,
-                "services": self.catalogue(), "running": running, "error": self._error,
+                "services": self.catalogue(), "running": running,
+                "page": dict(self._page) if self._page else None, "error": self._error,
                 "history": [dict(entry, age_s=max(0.0, round(now - entry["ended_at"], 1)))
                             for entry in self._history]}
 
@@ -297,6 +342,8 @@ class ServiceLauncher:
 
     def _reap(self) -> None:
         """Notice a service that ended by itself: closed, crashed, or refused to start."""
+        if self._page_process is not None and self._page_process.poll() is not None:
+            self._page_process, self._page = None, None
         if self._process is None:
             return
         code = self._process.poll()
