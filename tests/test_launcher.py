@@ -81,12 +81,17 @@ class LauncherTests(unittest.TestCase):
 
     # --- the command ------------------------------------------------------
 
-    def test_youtube_opens_full_screen_in_its_own_profile(self):
+    def test_youtube_fills_the_screen_in_its_own_profile(self):
         launcher = self.build()
         launcher.launch("youtube")
         command = self.spawn.started[0].command
         self.assertEqual(command[0], str(self.browser))
-        self.assertIn("--kiosk", command)
+        # The size of the screen, but not fullscreen: a fullscreen window sits
+        # above every layer a keyboard could be drawn in.
+        self.assertIn("--window-size=1920,1080", command)
+        self.assertIn("--window-position=0,0", command)
+        self.assertNotIn("--kiosk", command)
+        self.assertNotIn("--start-fullscreen", command)
         # Both are required on a Pi 3B+: the GPU context fails, and the keyring
         # prompt cannot be answered from a sofa.
         self.assertIn("--disable-gpu", command)
