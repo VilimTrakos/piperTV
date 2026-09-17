@@ -847,17 +847,26 @@ class KeyboardPageTests(unittest.TestCase):
         control.launch("prime", visit)
         return control
 
-    def test_a_focused_search_box_brings_up_the_keyboard(self):
+    def test_a_search_box_chosen_with_ok_brings_up_the_keyboard(self):
         control = self.build_with_page()
+        control._press("ok")                 # the cursor clicks into the box
         control.watcher.focus("entry", "Search")
         self.assertTrue(control.typing_page())
         self.assertEqual(control.launcher.pages[-1][0], "keyboard")
+
+    def test_a_page_focusing_its_own_box_as_it_loads_is_not_a_request(self):
+        # Search pages do this on every load; the keyboard would be up before
+        # anyone had chosen anything, over a page nobody has read yet.
+        control = self.build_with_page()
+        control.watcher.focus("entry", "Search")
+        self.assertFalse(control.typing_page())
 
     def test_an_application_with_its_own_keyboard_is_left_alone(self):
         control, _monitor, _controller, _targets = build("active")
         control.watcher.on_text_field = control._text_field_focused
         visit = select(control, "piper")["session"]["id"]
         control.launch("youtube", visit)   # typed at, not pointed at
+        control._press("ok")
         control.watcher.focus("entry", "Search")
         self.assertFalse(control.typing_page())
 
@@ -872,8 +881,10 @@ class KeyboardPageTests(unittest.TestCase):
         # It reads the same feed and moves its own highlight; Piper forwarding
         # them as well would move two keys at a time.
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus()
         control.keys.sent.clear()
+        control.desktop.presses.clear()   # the click that chose the box
         for button in ("right", "down", "ok"):
             control._press(button)
         self.assertEqual(control.keys.sent, [])
@@ -883,6 +894,7 @@ class KeyboardPageTests(unittest.TestCase):
 
     def test_what_was_composed_is_typed_into_the_page_underneath(self):
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus()
         # The page it covers is never closed, so the search box is still there.
         self.assertEqual(control.launcher.running()["id"], "prime")
@@ -895,6 +907,7 @@ class KeyboardPageTests(unittest.TestCase):
 
     def test_cancelling_types_nothing(self):
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus()
         control.close_keyboard(None)
         self.assertEqual(control.keys.typed, [])
@@ -902,6 +915,7 @@ class KeyboardPageTests(unittest.TestCase):
 
     def test_back_takes_the_keyboard_away_and_leaves_the_page_open(self):
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus()
         control._press("exit")
         self.assertFalse(control.typing_page())
@@ -912,6 +926,7 @@ class KeyboardPageTests(unittest.TestCase):
         # Typing into a field is reported as that field being in use, and the
         # keyboard reopened on the echo of its own keystrokes.
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus()
         control.close_keyboard("rings of power")
         control.watcher.focus()          # what the typing stirred up
@@ -919,14 +934,17 @@ class KeyboardPageTests(unittest.TestCase):
 
     def test_a_field_chosen_afterwards_still_gets_a_keyboard(self):
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus()
         control.close_keyboard("x")
         control._keyboard_muted_until = -float("inf")   # the moment passes
+        control._press("ok")
         control.watcher.focus("entry", "Another box")
         self.assertTrue(control.typing_page())
 
     def test_the_field_is_let_go_of_so_it_is_not_offered_twice(self):
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus()
         control.close_keyboard("x")
         self.assertGreaterEqual(control.watcher.forgotten, 1)
@@ -934,6 +952,7 @@ class KeyboardPageTests(unittest.TestCase):
 
     def test_the_same_field_reported_again_does_not_stack_keyboards(self):
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus()
         opened = len(control.launcher.pages)
         control.watcher.focus()
@@ -941,6 +960,7 @@ class KeyboardPageTests(unittest.TestCase):
 
     def test_the_feed_says_what_is_being_typed_into(self):
         control = self.build_with_page()
+        control._press("ok")
         control.watcher.focus("entry", "Search with DuckDuckGo")
         self.assertEqual(control.events(0)["typing"]["label"], "Search with DuckDuckGo")
 
