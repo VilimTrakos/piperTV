@@ -49,6 +49,10 @@ KEYBOARD_SETTLE_S = 1.2
 # would bring the keyboard straight back. Piper stops listening to its own
 # handiwork for this long.
 KEYBOARD_MUTE_S = 4.0
+# A page focuses its own search box the moment it loads, which is the page
+# deciding rather than the person watching. The keyboard follows a press of
+# OK: focus that lands this soon after one was asked for.
+KEYBOARD_AFTER_CLICK_S = 5.0
 # Holding a direction while what it moves moves in whole steps -- the ring, a
 # menu, the cursor jumping between controls. Slow enough that a press a shade
 # too long does not skip past what it was aimed at, and still fast enough to
@@ -122,6 +126,7 @@ class RemoteControl:
         self.leaving = LeaveRequest()
         self._input_context = None
         self._keyboard_muted_until = -float("inf")
+        self._clicked_at = -float("inf")
         self.roles = self._load_roles()
         self.pointer = self._load_pointer()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
@@ -311,6 +316,10 @@ class RemoteControl:
             return
         if time.monotonic() < self._keyboard_muted_until:
             return  # Piper is typing; this is the echo of its own keystrokes
+        if time.monotonic() - self._clicked_at > KEYBOARD_AFTER_CLICK_S:
+            # Nobody asked for this: a page focusing its own search box as it
+            # loads is not a request for a keyboard.
+            return
         LOG.info("A page focused %s; opening the keyboard", field.get("role"))
         self.open_keyboard()
 
@@ -363,6 +372,10 @@ class RemoteControl:
             return
         driving = self._cursor_service()
         if driving is not None and (action in DIRECTIONS or action == "ok"):
+            if action == "ok":
+                # What the cursor lands on may be a search box, and a keyboard
+                # is offered only for a field that was actually chosen.
+                self._clicked_at = time.monotonic()
             self.desktop.press(action, mode=driving)
             return
         self.keys.send(action)
