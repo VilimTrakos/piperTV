@@ -19,7 +19,7 @@ from .cec import CecMonitor
 from .desktop import POINTER_DEFAULTS, DesktopControl, validate_pointer
 from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
-from .focus import FocusWatcher
+from .focus import TEXT_ROLES, FocusWatcher
 from .keyboard import OnScreenKeyboard, ServiceKeys
 from .launcher import SNAP, ServiceLauncher
 from .pointer import health as pointer_health
@@ -316,16 +316,37 @@ class RemoteControl:
         LOG.info("A page is using %s; showing the keyboard", field.get("role"))
         self.open_keyboard()
 
-    def _look_after_click(self) -> None:
-        """Check what the click landed on, a moment after it lands.
+    def _look_after_click(self, position=None) -> None:
+        """Find out what OK landed on, without holding the next press up.
 
         Listening alone is not enough: a search box on a page of results is
         focused already, so clicking into it moves neither the focus nor the
-        caret and the page says nothing at all. What is in hand has to be
-        asked for as well -- shortly afterwards, because the page needs a
-        moment to decide.
+        caret and the page says nothing at all. Two questions are asked
+        instead, because neither answers everything. What covers the point the
+        cursor is on is known at once and exactly, whether the page spoke or
+        not; and a click that puts the focus somewhere else -- a button that
+        opens a search bar of its own -- is heard on the bus a moment later.
+        Whichever arrives first brings the keyboard.
         """
+        if position is not None:
+            threading.Thread(target=self._look_under_cursor, args=(position,),
+                             name="piper-click", daemon=True).start()
         threading.Timer(AFTER_CLICK_S, self._look_after_click_now).start()
+
+    def _look_under_cursor(self, position) -> None:
+        """Ask the page about the one point the click landed on."""
+        try:
+            if self._cursor_service() is None or self.onscreen.showing():
+                return
+            if not hasattr(self.targets, "at_point"):
+                return
+            found = self.targets.at_point(*position)
+            role = None if found is None else found.get("role")
+            if role in TEXT_ROLES:
+                LOG.info("OK clicked a %s; showing the keyboard", role)
+                self.open_keyboard()
+        except Exception as exc:  # noqa: BLE001 - a click must not raise
+            LOG.warning("Asking what the cursor is on: %s", exc)
 
     def _look_after_click_now(self) -> None:
         """The look itself, taken on a timer or, in a test, straight away."""
@@ -378,8 +399,9 @@ class RemoteControl:
                 # What the cursor lands on may be a search box, and a keyboard
                 # is offered only for a field that was actually chosen.
                 self._clicked_at = time.monotonic()
-                self._look_after_click()
-            self.desktop.press(action, mode=driving)
+            position = self.desktop.press(action, mode=driving)
+            if action == "ok":
+                self._look_after_click(position)
             return
         self.keys.send(action)
 
