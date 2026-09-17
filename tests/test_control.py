@@ -91,27 +91,10 @@ class FakeLauncher:
 
     def __init__(self):
         self.launched = []
-        self.pages = []
-        self.page_open = None
-        self.page_closed = 0
         self.history = []
         self.stopped = self.closed = 0
         self.open = None
         self.available = True
-
-    def open_page(self, page_id, name, url):
-        # Beside the service, never instead of it.
-        self.pages.append((page_id, url))
-        self.page_open = {"id": page_id, "name": name, "started_at": 0}
-        return self.snapshot()
-
-    def page(self):
-        return dict(self.page_open) if self.page_open else None
-
-    def close_page(self):
-        self.page_closed += 1
-        self.page_open = None
-        return self.snapshot()
 
     def launch(self, service):
         if service not in self.KNOWN:
@@ -140,13 +123,12 @@ class FakeLauncher:
         return {"available": self.available, "reason": None, "browser": "/usr/bin/chromium",
                 "services": [{"id": key, "name": name, "control": self.policy(key)}
                              for key, name in self.KNOWN.items()],
-                "running": self.running(), "page": self.page(), "error": None,
+                "running": self.running(), "error": None,
                 "history": list(self.history)}
 
     def close(self):
         self.closed += 1
         self.open = None
-        self.page_open = None
 
 
 class FakeKeys:
@@ -178,6 +160,45 @@ class FakeKeys:
     def close(self):
         self.closed += 1
         self.active = False
+
+
+class FakeOnScreen:
+    """Stands in for the keyboard drawn across the bottom of the screen."""
+
+    def __init__(self, available=True):
+        self.prepared = self.shown = self.hidden = self.closed = 0
+        self.visible = False
+        self.ready = False
+        self.usable = available
+
+    def prepare(self):
+        self.prepared += 1
+        self.ready = self.usable
+        return self.usable
+
+    def show(self):
+        if not self.usable:
+            return False
+        self.shown += 1
+        self.visible = True
+        self.ready = True
+        return True
+
+    def hide(self):
+        self.hidden += 1
+        was, self.visible = self.visible, False
+        return was
+
+    def showing(self):
+        return self.visible
+
+    def health(self):
+        return {"ok": True, "available": self.usable, "ready": self.ready,
+                "showing": self.visible, "error": None}
+
+    def close(self):
+        self.closed += 1
+        self.visible = self.ready = False
 
 
 class FakeWatcher:
@@ -243,6 +264,7 @@ def build(state="unknown", **kwargs):
     kwargs.setdefault("interface", FakeInterface())
     kwargs.setdefault("keys", FakeKeys())
     kwargs.setdefault("watcher", FakeWatcher())
+    kwargs.setdefault("onscreen", FakeOnScreen())
     control = RemoteControl(FakeStore(), screen=SCREEN, monitor=monitor,
                             controller=controller, targets=targets,
                             desktop=FakeDesktop(), **kwargs)
@@ -837,8 +859,8 @@ class WayOutTests(unittest.TestCase):
                 self.assertEqual(control.interface.closed, 0)
 
 
-class KeyboardPageTests(unittest.TestCase):
-    """Typing into a page's search box, with nothing but the four arrows."""
+class KeyboardTests(unittest.TestCase):
+    """Typing into a page's search box, with nothing but a remote."""
 
     def build_with_page(self):
         control, _monitor, _controller, _targets = build("active")
@@ -847,19 +869,23 @@ class KeyboardPageTests(unittest.TestCase):
         control.launch("prime", visit)
         return control
 
-    def test_a_search_box_chosen_with_ok_brings_up_the_keyboard(self):
+    def test_a_page_gets_its_keyboard_ready_as_it_opens(self):
+        # Starting it on demand takes ten seconds on this Pi, which is ten
+        # seconds of staring at a search box.
+        control = self.build_with_page()
+        self.assertEqual(control.onscreen.prepared, 1)
+        self.assertFalse(control.onscreen.showing())
+
+    def test_a_search_box_chosen_with_ok_brings_it_up(self):
         control = self.build_with_page()
         control._press("ok")                 # the cursor clicks into the box
         control.watcher.focus("entry", "Search")
-        self.assertTrue(control.typing_page())
-        self.assertEqual(control.launcher.pages[-1][0], "keyboard")
+        self.assertTrue(control.onscreen.showing())
 
     def test_a_page_focusing_its_own_box_as_it_loads_is_not_a_request(self):
-        # Search pages do this on every load; the keyboard would be up before
-        # anyone had chosen anything, over a page nobody has read yet.
         control = self.build_with_page()
         control.watcher.focus("entry", "Search")
-        self.assertFalse(control.typing_page())
+        self.assertFalse(control.onscreen.showing())
 
     def test_an_application_with_its_own_keyboard_is_left_alone(self):
         control, _monitor, _controller, _targets = build("active")
@@ -868,107 +894,74 @@ class KeyboardPageTests(unittest.TestCase):
         control.launch("youtube", visit)   # typed at, not pointed at
         control._press("ok")
         control.watcher.focus("entry", "Search")
-        self.assertFalse(control.typing_page())
+        self.assertFalse(control.onscreen.showing())
+        self.assertEqual(control.onscreen.prepared, 0)
 
-    def test_nothing_opens_when_the_gate_is_shut(self):
+    def test_nothing_appears_when_the_gate_is_shut(self):
         control = self.build_with_page()
-        control.monitor_state = None
         control.session.stop()
-        control.watcher.focus("entry", "Search")
-        self.assertFalse(control.typing_page())
+        control.open_keyboard()
+        self.assertFalse(control.onscreen.showing())
 
-    def test_presses_are_left_to_the_page_itself(self):
-        # It reads the same feed and moves its own highlight; Piper forwarding
-        # them as well would move two keys at a time.
+    def test_back_takes_it_away_and_leaves_the_page_open(self):
         control = self.build_with_page()
         control._press("ok")
         control.watcher.focus()
-        control.keys.sent.clear()
-        control.desktop.presses.clear()   # the click that chose the box
-        for button in ("right", "down", "ok"):
-            control._press(button)
-        self.assertEqual(control.keys.sent, [])
-        self.assertEqual(control.desktop.presses, [])
-        self.assertEqual([event["button"] for event in control.events(0)["events"]][-3:],
-                         ["right", "down", "ok"])
-
-    def test_what_was_composed_is_typed_into_the_page_underneath(self):
-        control = self.build_with_page()
-        control._press("ok")
-        control.watcher.focus()
-        # The page it covers is never closed, so the search box is still there.
-        self.assertEqual(control.launcher.running()["id"], "prime")
-        control.close_keyboard("rings of power")
-        self.assertFalse(control.typing_page())
-        self.assertEqual(control.keys.typed, ["rings of power"])
-        self.assertEqual(control.launcher.running()["id"], "prime")
-        self.assertEqual(control.launcher.launched.count("prime"), 1,
-                         "the page underneath is never reopened, which would lose the box")
-
-    def test_cancelling_types_nothing(self):
-        control = self.build_with_page()
-        control._press("ok")
-        control.watcher.focus()
-        control.close_keyboard(None)
-        self.assertEqual(control.keys.typed, [])
+        control._press("back")
+        self.assertFalse(control.onscreen.showing())
+        self.assertEqual(control.launcher.stopped, 0, "back closed the keyboard, not the page")
         self.assertEqual(control.launcher.running()["id"], "prime")
 
-    def test_back_takes_the_keyboard_away_and_leaves_the_page_open(self):
+    def test_exit_takes_it_away_before_it_closes_anything(self):
         control = self.build_with_page()
         control._press("ok")
         control.watcher.focus()
         control._press("exit")
-        self.assertFalse(control.typing_page())
-        self.assertEqual(control.launcher.stopped, 0, "exit closed the keyboard, not the page")
-        self.assertEqual(control.launcher.running()["id"], "prime")
+        self.assertFalse(control.onscreen.showing())
+        self.assertEqual(control.launcher.stopped, 0)
 
-    def test_pipers_own_typing_does_not_bring_the_keyboard_back(self):
-        # Typing into a field is reported as that field being in use, and the
-        # keyboard reopened on the echo of its own keystrokes.
+    def test_exit_closes_the_page_once_the_keyboard_is_gone(self):
         control = self.build_with_page()
         control._press("ok")
         control.watcher.focus()
-        control.close_keyboard("rings of power")
-        control.watcher.focus()          # what the typing stirred up
-        self.assertFalse(control.typing_page())
+        control._press("exit")      # takes the keyboard away
+        control._press("exit")      # now the page
+        self.assertEqual(control.launcher.stopped, 1)
 
-    def test_a_field_chosen_afterwards_still_gets_a_keyboard(self):
+    def test_the_cursor_still_works_its_keys_while_it_is_up(self):
+        # They are pressed by clicking them, like anything else on a page.
         control = self.build_with_page()
         control._press("ok")
         control.watcher.focus()
-        control.close_keyboard("x")
-        control._keyboard_muted_until = -float("inf")   # the moment passes
-        control._press("ok")
-        control.watcher.focus("entry", "Another box")
-        self.assertTrue(control.typing_page())
+        control.desktop.presses.clear()
+        for button in ("down", "right", "ok"):
+            control._press(button)
+        self.assertEqual(control.desktop.presses, ["down", "right", "ok"])
 
-    def test_the_field_is_let_go_of_so_it_is_not_offered_twice(self):
+    def test_closing_the_service_takes_it_with_it(self):
         control = self.build_with_page()
         control._press("ok")
         control.watcher.focus()
-        control.close_keyboard("x")
-        self.assertGreaterEqual(control.watcher.forgotten, 1)
-        self.assertIsNone(control.watcher.typing_into())
+        control._press("exit")   # keyboard
+        control._press("exit")   # service
+        self.assertEqual(control.onscreen.closed, 1)
 
-    def test_the_same_field_reported_again_does_not_stack_keyboards(self):
+    def test_a_pi_without_it_installed_carries_on_regardless(self):
+        control, _monitor, _controller, _targets = build(
+            "active", onscreen=FakeOnScreen(available=False))
+        control.watcher.on_text_field = control._text_field_focused
+        visit = select(control, "piper")["session"]["id"]
+        control.launch("prime", visit)
+        control._press("ok")
+        control.watcher.focus()
+        self.assertFalse(control.onscreen.showing())
+        self.assertFalse(control.onscreen.health()["available"])
+
+    def test_the_feed_says_whether_it_is_up(self):
         control = self.build_with_page()
         control._press("ok")
         control.watcher.focus()
-        opened = len(control.launcher.pages)
-        control.watcher.focus()
-        self.assertEqual(len(control.launcher.pages), opened)
-
-    def test_the_feed_says_what_is_being_typed_into(self):
-        control = self.build_with_page()
-        control._press("ok")
-        control.watcher.focus("entry", "Search with DuckDuckGo")
-        self.assertEqual(control.events(0)["typing"]["label"], "Search with DuckDuckGo")
-
-    def test_closing_nothing_is_harmless(self):
-        control, _monitor, _controller, _targets = build("active")
-        select(control, "piper")
-        control.close_keyboard("hello")
-        self.assertEqual(control.keys.typed, [])
+        self.assertTrue(control.events(0)["keyboard"]["showing"])
 
 
 class HoldPaceTests(unittest.TestCase):

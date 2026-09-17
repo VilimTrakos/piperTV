@@ -50,7 +50,7 @@ TV_USER_AGENT = ("Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/537.36 "
 # an OK button, so its keys are typed at it. A site built for a mouse ignores
 # arrow keys entirely -- there is no way to reach a cookie dialog's Accept with
 # them -- so the cursor is snapped from one of its controls to the next instead.
-KEYS, SNAP, SELF = "keys", "snap", "self"
+KEYS, SNAP = "keys", "snap"
 
 # Only YouTube publishes a web app built for a television. Everything else
 # here is the ordinary site, driven by the cursor -- which is why the drive
@@ -129,8 +129,6 @@ class ServiceLauncher:
         self._lock = threading.RLock()
         self._process = None
         self._running: dict | None = None
-        self._page_process = None
-        self._page: dict | None = None
         self._error: str | None = None
         self._history: deque = deque(maxlen=max(1, int(remembered)))
 
@@ -185,13 +183,10 @@ class ServiceLauncher:
     def policy(self, service_id) -> str:
         """How the remote drives this service.
 
-        By typing at it, by snapping the cursor through it, or not at all --
-        "self" is a page of Piper's own, which reads the same presses from the
-        same feed and acts on them itself.
+By typing at it, or by snapping the cursor through it.
         """
         service = self.services.get(service_id) or {}
-        control = service.get("control")
-        return control if control in (SNAP, SELF) else KEYS
+        return SNAP if service.get("control") == SNAP else KEYS
 
     def command(self, service: dict) -> list[str]:
         """What to run for this service: its own program, or a browser.
@@ -222,60 +217,6 @@ class ServiceLauncher:
         return command
 
     # --- opening and closing ---------------------------------------------
-
-    def open_page(self, page_id: str, name: str, url: str) -> dict:
-        """Open one of Piper's own pages over whatever is on the screen.
-
-        Beside the service rather than instead of it: a keyboard that closed
-        the page it was summoned by would take the search box with it. The
-        service keeps running underneath, untouched, and gets the screen back
-        when this window goes.
-        """
-        with self._lock:
-            self._reap()
-            reason = self._session_missing() or self._unavailable()
-            if reason:
-                raise RuntimeError(reason)
-            self._close_page()
-            started = self.clock()
-            service = {"id": page_id, "name": name, "url": url}
-            try:
-                self._page_process = self.spawn(
-                    self.command(service), stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    start_new_session=True, close_fds=True)
-            except OSError as exc:
-                self._page_process = None
-                self._error = f"Could not open {name}: {exc}"
-                raise RuntimeError(self._error) from exc
-            self._page = {"id": page_id, "name": name, "started_at": started}
-            LOG.info("Opened %s over what was on the screen", name)
-            return self._state()
-
-    def page(self) -> dict | None:
-        """Piper's own page on the screen, if one is up."""
-        with self._lock:
-            self._reap()
-            return dict(self._page) if self._page else None
-
-    def close_page(self) -> dict:
-        """Take it away and leave whatever it was covering where it was."""
-        with self._lock:
-            self._close_page()
-            return self._state()
-
-    def _close_page(self) -> None:
-        process, self._page_process = self._page_process, None
-        self._page = None
-        if process is None or process.poll() is not None:
-            return
-        try:
-            process.terminate()
-            if self._wait(process, STOP_GRACE_S) is None:
-                process.kill()
-                self._wait(process, KILL_GRACE_S)
-        except OSError as exc:  # already gone, or no longer ours to signal
-            LOG.warning("Closing Piper's page: %s", exc)
 
     def launch(self, service_id) -> dict:
         """Put one service on the screen, replacing whatever was there."""
@@ -328,7 +269,6 @@ class ServiceLauncher:
     def close(self) -> None:
         """Leave nothing full screen that the remote can no longer close."""
         with self._lock:
-            self._close_page()
             self._close()
 
     # --- state ------------------------------------------------------------
@@ -347,7 +287,7 @@ class ServiceLauncher:
                            seconds=max(0.0, round(now - self._running["started_at"], 1)))
         return {"available": reason is None, "reason": reason, "browser": self.browser,
                 "services": self.catalogue(), "running": running,
-                "page": dict(self._page) if self._page else None, "error": self._error,
+                "error": self._error,
                 "history": [dict(entry, age_s=max(0.0, round(now - entry["ended_at"], 1)))
                             for entry in self._history]}
 
@@ -355,8 +295,6 @@ class ServiceLauncher:
 
     def _reap(self) -> None:
         """Notice a service that ended by itself: closed, crashed, or refused to start."""
-        if self._page_process is not None and self._page_process.poll() is not None:
-            self._page_process, self._page = None, None
         if self._process is None:
             return
         code = self._process.poll()
