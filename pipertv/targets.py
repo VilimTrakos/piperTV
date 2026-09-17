@@ -36,6 +36,10 @@ MAX_NODES = 2000
 MAX_DEPTH = 25
 CACHE_S = 1.5
 SCAN_S = .9
+# Asking what covers one point is a descent, not a walk: every level answers
+# with the child under the point, and the answer stops changing at the
+# innermost control. A page nests deeply, so allow for the same depth as a walk.
+POINT_DEPTH = MAX_DEPTH
 
 # Roles worth moving a cursor to: things a person would click. Browsers report
 # their page controls with the short names -- "button", not "push button", and
@@ -91,6 +95,26 @@ def target_point(node, screen, coords=DESKTOP_COORDS):
     return {"x": (left + right) // 2, "y": (top + bottom) // 2,
             "left": left, "top": top, "right": right, "bottom": bottom,
             "label": str(label)[:80]}
+
+
+def deepest_at(node, x, y, coords=DESKTOP_COORDS, depth=POINT_DEPTH):
+    """The innermost accessible object covering a point, from a window down.
+
+    Snapping asks the desktop where its controls are; this asks about one
+    place. A click needs the second question: the page's own search box may
+    have been focused since it loaded, so clicking into it announces nothing,
+    and a nudged cursor was never snapped to a target to begin with.
+    """
+    found = None
+    for _ in range(depth):
+        try:
+            child = node.queryComponent().getAccessibleAtPoint(int(x), int(y), coords)
+        except Exception:
+            break  # No Component interface, or the window went away mid-descent.
+        if child is None or child == node:
+            break  # Nothing of its own under the point: this is the innermost.
+        node, found = child, child
+    return found
 
 
 def state_names(node):
@@ -296,6 +320,27 @@ class AtspiTargets:
             self.invalidate()
             return None
         return dict(point, role=target.get("role"), _node=node, _window=window)
+
+    def at_point(self, x, y):
+        """What sits under a point on the screen, as {role, label}, or None.
+
+        Costs a handful of round trips rather than a walk, and is not cached:
+        it is asked once, right after a click, and the answer is about the page
+        as it is at that moment.
+        """
+        try:
+            applications = list(itertools.islice(iter(self._desktop()), 64))
+            for window in self._active_windows(applications):
+                found = deepest_at(window, x, y)
+                if found is None:
+                    continue
+                try:
+                    return {"role": found.getRoleName(), "label": str(found.name or "")[:80]}
+                except Exception:
+                    continue
+        except Exception as exc:  # noqa: BLE001 - a stopped bus is a desktop condition
+            LOG.warning("Asking what is under the cursor: %s", exc)
+        return None
 
     def invalidate(self):
         """Drop the cache, so the next press sees the desktop as it is now."""

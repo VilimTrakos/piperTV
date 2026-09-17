@@ -2,7 +2,7 @@ import logging
 import unittest
 
 from pipertv.targets import (ACTIONABLE, UNPLACED, AtspiTargets, collect_targets,
-                             distinct_targets, target_point, valid_extent)
+                             deepest_at, distinct_targets, target_point, valid_extent)
 
 SCREEN = (1920, 1080)
 
@@ -49,6 +49,18 @@ class Node:
 
     def getExtents(self, _coords):
         return self.box
+
+    def getAccessibleAtPoint(self, x, y, _coords):
+        """The child covering the point, the way a toolkit answers it."""
+        if self.broken == "at point":
+            raise RuntimeError("the application closed")
+        for child in self.children:
+            box = child.box
+            if box is None:
+                continue
+            if box.x <= x < box.x + box.width and box.y <= y < box.y + box.height:
+                return child
+        return None
 
 
 def button(name, x, y, width=40, height=36):
@@ -324,6 +336,52 @@ class AtspiTargetsTests(unittest.TestCase):
         self.assertEqual((health["applications"], health["targets"]), (1, 1))
         self.assertEqual(health["source"], "accessibility")
         self.assertIsNone(health["error"])
+
+
+class AtPointTests(unittest.TestCase):
+    """What a click landed on, asked about one point rather than walked to."""
+
+    def setUp(self):
+        self.box = Node("combo box", "Search privately", Box(151, 17, 636, 48))
+        # A page nests its box as deeply as it likes; the descent follows.
+        inner = Node("section", "", Box(0, 0, 1920, 100), children=[self.box])
+        self.page = Node("document web", "Results", Box(0, 0, 1920, 1080),
+                         children=[inner, button("Feedback", 1600, 950)])
+        self.window = Node("frame", "test at DuckDuckGo", Box(0, 0, 1920, 1080),
+                           children=[self.page],
+                           states=("active", "showing", "visible", "enabled"))
+        self.application = Node("application", "Chromium", children=[self.window])
+
+    def build(self):
+        return AtspiTargets(SCREEN, clock=lambda: 0.0,
+                            registry=FakeRegistry([self.application]))
+
+    def test_the_search_box_under_the_cursor_is_named_by_its_role(self):
+        found = self.build().at_point(470, 41)
+        self.assertEqual(found, {"role": "combo box", "label": "Search privately"})
+
+    def test_a_point_on_the_page_itself_is_not_a_field(self):
+        self.assertEqual(self.build().at_point(900, 500)["role"], "document web")
+
+    def test_a_point_over_nothing_at_all_answers_nothing(self):
+        self.window.children = []
+        self.assertIsNone(self.build().at_point(470, 41))
+
+    def test_a_covered_background_window_is_not_asked(self):
+        self.window.states = ("showing", "visible", "enabled")
+        self.assertIsNone(self.build().at_point(470, 41))
+
+    def test_a_bus_that_is_not_running_answers_nothing_rather_than_failing(self):
+        targets = AtspiTargets(SCREEN, clock=lambda: 0.0,
+                               registry=FakeRegistry([], fail=True))
+        self.assertIsNone(targets.at_point(470, 41))
+
+    def test_an_application_that_goes_away_mid_descent_answers_what_it_had(self):
+        self.page.broken = "at point"
+        self.assertEqual(self.build().at_point(470, 41)["role"], "document web")
+
+    def test_the_descent_ends_where_nothing_smaller_covers_the_point(self):
+        self.assertIs(deepest_at(self.window, 470, 41), self.box)
 
 
 class DistinctTargetTests(unittest.TestCase):

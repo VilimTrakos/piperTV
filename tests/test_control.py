@@ -45,11 +45,17 @@ class FakeController:
 class FakeTargets:
     name = "fake"
 
-    def __init__(self):
+    def __init__(self, under=None):
         self.invalidated = 0
+        self.under = under          # what the page reports under a point
+        self.asked = []
 
     def targets(self):
         return []
+
+    def at_point(self, x, y):
+        self.asked.append((x, y))
+        return self.under
 
     def invalidate(self):
         self.invalidated += 1
@@ -66,11 +72,13 @@ class FakeDesktop:
         self.active = False
         self.presses = []
         self.modes = []
+        self.position = (470, 41)   # where a press leaves the cursor
 
     def press(self, button, mode=None):
         self.presses.append(button)
         self.modes.append(mode)
         self.active = True  # pressing opens the virtual pointer
+        return self.position
 
     def release(self):
         self.released += 1
@@ -956,6 +964,48 @@ class KeyboardTests(unittest.TestCase):
         control.watcher.focus()
         self.assertFalse(control.onscreen.showing())
         self.assertFalse(control.onscreen.health()["available"])
+
+    def test_clicking_a_search_box_brings_it_up_with_nothing_said_on_the_bus(self):
+        # The one that was failing on a page of results: the box there has been
+        # focused since the page loaded, so clicking into it moves neither the
+        # focus nor the caret and the page announces nothing at all. What the
+        # cursor is standing on is asked about instead, and answers.
+        control = self.build_with_page()
+        control.targets.under = {"role": "combo box", "label": "Search privately"}
+        control._look_under_cursor(control.desktop.position)
+        self.assertTrue(control.onscreen.showing())
+        self.assertEqual(control.targets.asked, [(470, 41)])
+
+    def test_a_click_anywhere_else_on_the_page_brings_up_nothing(self):
+        control = self.build_with_page()
+        control.targets.under = {"role": "link", "label": "Some result"}
+        control._look_under_cursor(control.desktop.position)
+        self.assertFalse(control.onscreen.showing())
+
+    def test_a_page_that_says_nothing_about_the_point_is_not_a_reason_to_fail(self):
+        control = self.build_with_page()
+        control.targets.under = None
+        control._look_under_cursor(control.desktop.position)   # must not raise
+        self.assertFalse(control.onscreen.showing())
+
+    def test_a_press_of_ok_asks_the_page_what_it_landed_on(self):
+        control = self.build_with_page()
+        control.targets.under = {"role": "entry", "label": "Search"}
+        control._press("ok")
+        for _ in range(100):
+            if control.onscreen.showing():
+                break
+            time.sleep(0.01)
+        self.assertTrue(control.onscreen.showing())
+
+    def test_an_application_with_its_own_keyboard_is_not_asked(self):
+        # YouTube's television app is typed at, not clicked: nothing to look up.
+        control, _monitor, _controller, _targets = build("active")
+        visit = select(control, "piper")["session"]["id"]
+        control.launch("youtube", visit)
+        control.targets.under = {"role": "entry", "label": "Search"}
+        control._press("ok")
+        self.assertEqual(control.targets.asked, [])
 
     def test_a_click_in_a_box_that_was_already_focused_still_brings_it_up(self):
         # A search box on a page of results is focused already: clicking into
