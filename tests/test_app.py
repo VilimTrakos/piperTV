@@ -175,6 +175,15 @@ class FakeRemote:
     def stop_service(self):
         return self.launcher.stop()
 
+    def open_keyboard(self):
+        self.keyboard_opened = getattr(self, "keyboard_opened", 0) + 1
+        return self.launcher.snapshot()
+
+    def close_keyboard(self, text=None):
+        self.typed = getattr(self, "typed", [])
+        self.typed.append(text)
+        return self.launcher.snapshot()
+
     def reload_recordings(self):
         self.reloaded += 1
 
@@ -429,6 +438,33 @@ class TvInterfaceTests(unittest.TestCase):
         self.assertIn("not showing the Pi", response.get_json()["error"])
         self.assertEqual(self.remote.launcher.launched, [])
 
+    def test_the_keyboard_page_hands_back_what_it_composed(self):
+        response = self.client.post("/api/tv/type", json={"text": "rings of power"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.remote.typed, ["rings of power"])
+
+    def test_cancelling_the_keyboard_sends_nothing(self):
+        self.client.post("/api/tv/type", json={"text": None})
+        self.assertEqual(self.remote.typed, [None])
+
+    def test_nonsense_to_type_is_refused(self):
+        for values in ({"text": 42}, {"text": "x" * 300}):
+            with self.subTest(values=values):
+                response = self.client.post("/api/tv/type", json=values)
+                self.assertEqual(response.status_code, 400)
+
+    def test_the_keyboard_can_also_be_asked_for_outright(self):
+        response = self.client.post("/api/tv/keyboard", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.remote.keyboard_opened, 1)
+
+    def test_the_keyboard_page_and_its_assets_are_served(self):
+        for path in ("/keys", "/keys.js", "/keys.css"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                response.close()
+
     def test_a_nonsense_position_is_rejected(self):
         for after in ("-1", "abc", "1.5", ""):
             with self.subTest(after=after):
@@ -465,7 +501,9 @@ class ControlDisabledTests(unittest.TestCase):
                  self.client.post("/api/control/stop", json={}),
                  self.client.get("/api/tv/events"),
                  self.client.post("/api/tv/launch", json={"service": "youtube", "session_id": "x"}),
-                 self.client.post("/api/tv/close", json={})]
+                 self.client.post("/api/tv/close", json={}),
+                 self.client.post("/api/tv/type", json={"text": "x"}),
+                 self.client.post("/api/tv/keyboard", json={})]
         for response in cases:
             with self.subTest(path=response.request.path):
                 self.assertEqual(response.status_code, 404)

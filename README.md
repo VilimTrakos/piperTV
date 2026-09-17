@@ -149,6 +149,14 @@ Two limits are worth knowing before you try it:
   it. Expect the pages to load and sign in, and expect playback of protected
   titles to be poor or refused; a TV stick is the answer there, not a browser
   flag.
+- **A search box brings up a keyboard.** Click into one on any page and Piper
+  notices — the page announces it over the accessibility bus, the same bus
+  snapping reads — and puts its own keyboard on the screen over it. The four
+  arrows move between the keys and OK presses one, so a keyboard is never
+  needed to work a keyboard. **Search** hands the line over: the keyboard goes
+  away, the page gets its focus back, and Piper types what was composed into
+  the box. **Back** cancels and types nothing. YouTube and Kodi are left alone;
+  they have keyboards of their own, navigated by the arrows Piper already sends.
 - **How the cursor moves is yours to set.** A page built for a mouse is driven
   either by snapping between the controls it reports, or by moving the cursor
   itself — smoothly, faster the longer a direction is held. Which works better

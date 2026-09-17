@@ -60,13 +60,18 @@ def fake_keyboard(accept_all=True, **kwargs):
 
 
 class DeviceTests(unittest.TestCase):
-    def test_the_device_declares_only_the_keys_a_remote_has(self):
+    def test_the_device_declares_exactly_what_piper_can_press(self):
         with fake_keyboard() as (_device, fake):
             declared = [value for request, value in fake.ioctls
                         if request == keyboard.UI_SET_KEYBIT]
         self.assertEqual(sorted(declared), sorted(set(KEYS.values())))
-        # Letters and digits are absent by construction, not by convention.
-        self.assertNotIn(30, declared)  # KEY_A
+        # A search box needs letters; a remote does not have them, so they are
+        # here for what the on-screen keyboard composes and nothing else.
+        self.assertIn(keyboard.LETTERS["a"], declared)
+        # Function keys, modifiers beyond shift, and the rest stay out.
+        for absent in (59, 125, 29):  # F1, Meta, Ctrl
+            with self.subTest(code=absent):
+                self.assertNotIn(absent, declared)
 
     def test_a_key_is_pressed_and_released(self):
         with fake_keyboard() as (device, fake):
@@ -83,11 +88,34 @@ class DeviceTests(unittest.TestCase):
                     device.tap(name)
                     self.assertEqual(fake.keys(before), [(code, 1), (code, 0)])
 
-    def test_a_key_a_remote_does_not_have_is_refused(self):
+    def test_a_key_this_keyboard_has_no_button_for_is_refused(self):
         with fake_keyboard() as (device, _fake):
-            for key in ("a", "f5", "", None):
+            for key in ("f5", "ctrl", "", None, "\u0161"):
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     device.tap(key)
+
+    def test_a_line_of_text_is_typed_character_by_character(self):
+        with fake_keyboard() as (device, fake):
+            before = len(fake.writes)
+            self.assertEqual(device.write("ab 1"), 4)
+            pressed = [(code, value) for code, value in fake.keys(before) if value == 1]
+            self.assertEqual(pressed, [(keyboard.LETTERS["a"], 1), (keyboard.LETTERS["b"], 1),
+                                       (keyboard.KEY_SPACE, 1), (keyboard.LETTERS["1"], 1)])
+
+    def test_a_capital_is_typed_with_shift_held_around_it(self):
+        with fake_keyboard() as (device, fake):
+            before = len(fake.writes)
+            device.write("A")
+            self.assertEqual(fake.keys(before),
+                             [(keyboard.KEY_LEFTSHIFT, 1), (keyboard.LETTERS["a"], 1),
+                              (keyboard.LETTERS["a"], 0), (keyboard.KEY_LEFTSHIFT, 0)])
+
+    def test_a_character_with_no_key_is_skipped_rather_than_mistyped(self):
+        with fake_keyboard() as (device, fake):
+            before = len(fake.writes)
+            self.assertEqual(device.write("a\u0161b"), 2)  # a, b -- the accented one has no key
+            pressed = [code for code, value in fake.keys(before) if value == 1]
+            self.assertEqual(pressed, [keyboard.LETTERS["a"], keyboard.LETTERS["b"]])
 
     def test_every_event_batch_ends_with_a_report(self):
         # Without the report the kernel holds the press and nothing arrives.

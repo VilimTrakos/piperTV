@@ -152,6 +152,19 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
     def tv_stylesheet():
         return app.send_static_file("tv.css")
 
+    # Piper's own keyboard, shown over a page whose search box was selected.
+    @app.get("/keys")
+    def keys_page():
+        return app.send_static_file("keys.html")
+
+    @app.get("/keys.js")
+    def keys_javascript():
+        return app.send_static_file("keys.js")
+
+    @app.get("/keys.css")
+    def keys_stylesheet():
+        return app.send_static_file("keys.css")
+
     @app.get("/api/state")
     def state():
         return jsonify(workbench.state())
@@ -282,6 +295,23 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
     def tv_close():
         body()
         return jsonify(desktop().stop_service())
+
+    @app.post("/api/tv/type")
+    def tv_type():
+        # Sent by the keyboard page itself: what was composed, or nothing at
+        # all when it was cancelled. Either way the window goes away.
+        values = body()
+        text = values.get("text")
+        if text is not None and not isinstance(text, str):
+            raise ValueError("Text to type must be a string.")
+        if isinstance(text, str) and len(text) > 200:
+            raise ValueError("A search is at most 200 characters.")
+        return jsonify(desktop().close_keyboard(text))
+
+    @app.post("/api/tv/keyboard")
+    def tv_keyboard():
+        body()
+        return jsonify(desktop().open_keyboard())
 
     @app.get("/api/tv/events")
     def tv_events():

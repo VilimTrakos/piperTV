@@ -37,9 +37,22 @@ KEY_HOME, KEY_SPACE = 102, 57
 LOG = logging.getLogger(__name__)
 
 # What Piper can perform, named after the role rather than the key cap.
+KEY_LEFTSHIFT = 42
+# Letters and digits in the order the kernel numbers them.
+_ROWS = (("q w e r t y u i o p", 16), ("a s d f g h j k l", 30),
+         ("z x c v b n m", 44), ("1 2 3 4 5 6 7 8 9 0", 2))
+LETTERS = {key: first + offset
+           for keys, first in _ROWS
+           for offset, key in enumerate(keys.split())}
+# What a search box needs beyond letters. Anything else is out of reach on
+# purpose: this types what a person picked from a keyboard on the screen.
+PUNCTUATION = {"-": 12, "=": 13, ".": 52, ",": 51, "/": 53, ";": 39, "'": 40}
+SHIFTED = {"_": "-", "+": "=", ":": ";", "?": "/", '"': "'", "<": ",", ">": "."}
+
 KEYS = {"up": KEY_UP, "down": KEY_DOWN, "left": KEY_LEFT, "right": KEY_RIGHT,
         "ok": KEY_ENTER, "back": KEY_ESC, "home": KEY_HOME, "space": KEY_SPACE,
-        "backspace": KEY_BACKSPACE}
+        "backspace": KEY_BACKSPACE, "enter": KEY_ENTER, "shift": KEY_LEFTSHIFT,
+        **LETTERS, **PUNCTUATION}
 
 
 class VirtualKeyboard:
@@ -119,6 +132,46 @@ class VirtualKeyboard:
             self._write(((EV_KEY, code, 0),))
             return key
 
+    def write(self, text: str) -> int:
+        """Type a line of text, as if someone had typed it on a keyboard.
+
+        Only what a search box needs: letters, digits and a little
+        punctuation, with shift held for the capitals. A character this
+        keyboard has no key for is skipped rather than mistyped as something
+        else.
+        """
+        if not isinstance(text, str):
+            raise ValueError("Text to type must be a string.")
+        typed = 0
+        with self._lock:
+            for character in text:
+                key, shift = self._key_for(character)
+                if key is None:
+                    continue
+                code = KEYS[key]
+                if shift:
+                    self._write(((EV_KEY, KEY_LEFTSHIFT, 1),))
+                self._write(((EV_KEY, code, 1),))
+                self._write(((EV_KEY, code, 0),))
+                if shift:
+                    self._write(((EV_KEY, KEY_LEFTSHIFT, 0),))
+                typed += 1
+        return typed
+
+    @staticmethod
+    def _key_for(character: str):
+        """Which key types this character, and whether shift is held for it."""
+        if character == " ":
+            return "space", False
+        lowered = character.lower()
+        if lowered in KEYS and lowered != character:
+            return lowered, True          # a capital letter
+        if character in KEYS:
+            return character, False
+        if character in SHIFTED:
+            return SHIFTED[character], True
+        return None, False
+
     def __exit__(self, *_args) -> None:
         self.close()
 
@@ -178,6 +231,22 @@ class ServiceKeys:
                 LOG.warning("Typing into the open service: %s", exc)
                 self.release()
                 return None
+
+    def write(self, text: str) -> int:
+        """Type a line into whatever holds focus. Returns how much was typed."""
+        with self._lock:
+            try:
+                if self._keyboard is None:
+                    self._keyboard = self.factory()
+                    self._keyboard.open()
+                typed = self._keyboard.write(text)
+                self._error = None
+                return typed
+            except Exception as exc:  # noqa: BLE001 - the receiver must survive
+                self._error = str(exc) or type(exc).__name__
+                LOG.warning("Typing into the open service: %s", exc)
+                self.release()
+                return 0
 
     def release(self) -> None:
         with self._lock:

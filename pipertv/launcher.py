@@ -50,7 +50,7 @@ TV_USER_AGENT = ("Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/537.36 "
 # an OK button, so its keys are typed at it. A site built for a mouse ignores
 # arrow keys entirely -- there is no way to reach a cookie dialog's Accept with
 # them -- so the cursor is snapped from one of its controls to the next instead.
-KEYS, SNAP = "keys", "snap"
+KEYS, SNAP, SELF = "keys", "snap", "self"
 
 # Only YouTube publishes a web app built for a television. Everything else
 # here is the ordinary site, driven by the cursor -- which is why the drive
@@ -169,12 +169,18 @@ class ServiceLauncher:
     def catalogue(self) -> list[dict]:
         """Everything Piper can open, for an interface that lists more than that."""
         return [{"id": key, "name": service["name"], "control": self.policy(key)}
-                for key, service in self.services.items()]
+                for key, service in self.services.items() if not service.get("page")]
 
     def policy(self, service_id) -> str:
-        """How the remote drives this service: by typing at it, or by snapping."""
+        """How the remote drives this service.
+
+        By typing at it, by snapping the cursor through it, or not at all --
+        "self" is a page of Piper's own, which reads the same presses from the
+        same feed and acts on them itself.
+        """
         service = self.services.get(service_id) or {}
-        return SNAP if service.get("control") == SNAP else KEYS
+        control = service.get("control")
+        return control if control in (SNAP, SELF) else KEYS
 
     def command(self, service: dict) -> list[str]:
         """What to run for this service: its own program, or a browser.
@@ -201,6 +207,19 @@ class ServiceLauncher:
         return command
 
     # --- opening and closing ---------------------------------------------
+
+    def open_page(self, page_id: str, name: str, url: str, control: str = SELF) -> dict:
+        """Open one of Piper's own pages over whatever is on the screen.
+
+        The same browser and the same window as a service, because that is the
+        one thing here known to appear on top of a full-screen window. It is
+        not in the catalogue: nobody chooses it from the ring.
+        """
+        with self._lock:
+            self.services = dict(self.services)
+            self.services[page_id] = {"name": name, "url": url, "control": control,
+                                      "page": True}
+        return self.launch(page_id)
 
     def launch(self, service_id) -> dict:
         """Put one service on the screen, replacing whatever was there."""
