@@ -26,9 +26,38 @@ LOG = logging.getLogger(__name__)
 # The roles a browser uses for the things a keyboard belongs to.
 TEXT_ROLES = frozenset({"entry", "text", "password text", "combo box",
                         "search box", "spin button", "terminal"})
+# A browser has text fields of its own -- the address bar above all -- and in
+# kiosk mode they are not even on the screen. Only a field inside the page
+# counts, and a page announces itself in the ancestry of everything in it.
+PAGE_ROLES = frozenset({"document web", "document frame", "document",
+                        "embedded", "internal frame"})
+PAGE_DEPTH = 10
 EVENTS = ("object:state-changed:focused", "object:text-caret-moved")
 # How long after the last report a field still counts as the one in hand.
 FRESH_S = 30.0
+
+
+def in_page(node, depth: int = PAGE_DEPTH, roles=PAGE_ROLES) -> bool:
+    """Whether this control belongs to a web page rather than to the browser.
+
+    Everything in a page hangs below a document; the address bar and the rest
+    of the browser's own furniture hang below panels and tool bars. Walking up
+    a few levels is enough to tell them apart, and costs nothing next to
+    walking down.
+    """
+    for _ in range(depth):
+        try:
+            node = node.parent
+        except Exception:
+            return False
+        if node is None:
+            return False
+        try:
+            if node.getRoleName() in roles:
+                return True
+        except Exception:
+            return False
+    return False
 
 
 class FocusWatcher:
@@ -101,6 +130,8 @@ class FocusWatcher:
             role = source.getRoleName()
             if role not in self.roles:
                 return
+            if not in_page(source):
+                return  # the browser's own address bar, not the page's search box
             field = {"role": role, "label": (source.name or "")[:80], "at": self.clock()}
         except Exception as exc:  # noqa: BLE001 - an event must never raise here
             LOG.debug("Reading a focus event: %s", exc)

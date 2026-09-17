@@ -7,17 +7,27 @@ logging.getLogger("pipertv.focus").addHandler(logging.NullHandler())
 
 
 class FakeSource:
-    def __init__(self, role, name=""):
+    """An accessible with the ancestry a page or the browser would give it."""
+
+    def __init__(self, role, name="", ancestors=("section", "document web", "frame")):
         self.role = role
         self.name = name
+        self._ancestors = list(ancestors)
 
     def getRoleName(self):
         return self.role
 
+    @property
+    def parent(self):
+        if not self._ancestors:
+            return None
+        return FakeSource(self._ancestors[0], ancestors=self._ancestors[1:])
+
 
 class FakeEvent:
-    def __init__(self, role, name="", detail1=1, type="object:state-changed:focused"):
-        self.source = FakeSource(role, name)
+    def __init__(self, role, name="", detail1=1, type="object:state-changed:focused",
+                 ancestors=("section", "document web", "frame")):
+        self.source = FakeSource(role, name, ancestors)
         self.detail1 = detail1
         self.type = type
 
@@ -98,6 +108,19 @@ class FocusWatcherTests(unittest.TestCase):
         self.watcher.observe(FakeEvent("entry", "Search"))
         self.watcher.forget()
         self.assertIsNone(self.watcher.typing_into())
+
+    def test_the_browsers_own_address_bar_is_not_a_page_asking_to_be_typed_into(self):
+        # It takes focus the moment a window opens, and in kiosk mode it is not
+        # even on the screen: a keyboard for it types into nothing anyone sees.
+        self.watcher.observe(FakeEvent("entry", "Address and search bar",
+                                       ancestors=("tool bar", "panel", "frame")))
+        self.assertIsNone(self.watcher.typing_into())
+        self.assertEqual(self.opened, [])
+
+    def test_a_field_inside_the_page_is(self):
+        self.watcher.observe(FakeEvent("combo box", "Search with DuckDuckGo",
+                                       ancestors=("landmark", "section", "document web")))
+        self.assertIsNotNone(self.watcher.typing_into())
 
     def test_an_event_that_cannot_be_read_is_ignored(self):
         class Broken:
