@@ -908,6 +908,23 @@ class KeyboardPageTests(unittest.TestCase):
         self.assertEqual(control.launcher.stopped, 0, "exit closed the keyboard, not the page")
         self.assertEqual(control.launcher.running()["id"], "prime")
 
+    def test_pipers_own_typing_does_not_bring_the_keyboard_back(self):
+        # Typing into a field is reported as that field being in use, and the
+        # keyboard reopened on the echo of its own keystrokes.
+        control = self.build_with_page()
+        control.watcher.focus()
+        control.close_keyboard("rings of power")
+        control.watcher.focus()          # what the typing stirred up
+        self.assertFalse(control.typing_page())
+
+    def test_a_field_chosen_afterwards_still_gets_a_keyboard(self):
+        control = self.build_with_page()
+        control.watcher.focus()
+        control.close_keyboard("x")
+        control._keyboard_muted_until = -float("inf")   # the moment passes
+        control.watcher.focus("entry", "Another box")
+        self.assertTrue(control.typing_page())
+
     def test_the_field_is_let_go_of_so_it_is_not_offered_twice(self):
         control = self.build_with_page()
         control.watcher.focus()
