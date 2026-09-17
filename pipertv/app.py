@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import logging
 from pathlib import Path
 import signal
 import socket
@@ -302,6 +303,19 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
     return app
 
 
+def say_what_happens(level=logging.INFO) -> None:
+    """Put Piper's own account of what it did into the log it writes.
+
+    Without this the modules speak to nobody: an unconfigured logger drops
+    everything below a warning, so a report of "the keyboard did not appear"
+    had no record to check it against. The browser's request line is the
+    opposite problem -- the interface asks for its feed four times a second --
+    so that one is quietened to leave the account readable.
+    """
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: all IPv4 interfaces)")
@@ -316,6 +330,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
+    say_what_happens()
     try:
         app = create_app(args.data, args.device, args.demo,
                          control=not args.demo and not args.no_control,
