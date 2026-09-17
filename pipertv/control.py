@@ -44,6 +44,9 @@ LEAVE = "exit"
 # deciding rather than the person watching. The keyboard follows a press of
 # OK: focus that lands this soon after one was asked for.
 KEYBOARD_AFTER_CLICK_S = 5.0
+# Long enough for a page to act on a click and say what it focused, short
+# enough that the keyboard feels like part of the press.
+AFTER_CLICK_S = 0.45
 # Holding a direction while what it moves moves in whole steps -- the ring, a
 # menu, the cursor jumping between controls. Slow enough that a press a shade
 # too long does not skip past what it was aimed at, and still fast enough to
@@ -313,6 +316,33 @@ class RemoteControl:
         LOG.info("A page is using %s; showing the keyboard", field.get("role"))
         self.open_keyboard()
 
+    def _look_after_click(self) -> None:
+        """Check what the click landed on, a moment after it lands.
+
+        Listening alone is not enough: a search box on a page of results is
+        focused already, so clicking into it moves neither the focus nor the
+        caret and the page says nothing at all. What is in hand has to be
+        asked for as well -- shortly afterwards, because the page needs a
+        moment to decide.
+        """
+        threading.Timer(AFTER_CLICK_S, self._look_after_click_now).start()
+
+    def _look_after_click_now(self) -> None:
+        """The look itself, taken on a timer or, in a test, straight away."""
+        try:
+            if self._cursor_service() is None:
+                return
+            field = self.watcher.typing_into()
+            if field is not None and not self.onscreen.showing():
+                LOG.info("A click landed in %s; showing the keyboard", field.get("role"))
+                self.open_keyboard()
+            elif field is None and self.onscreen.showing():
+                # The click went somewhere else entirely, and the keyboard has
+                # no business covering a page nobody is typing into.
+                self.close_keyboard()
+        except Exception as exc:  # noqa: BLE001 - a timer must not raise
+            LOG.warning("Looking at what the click landed on: %s", exc)
+
     def typing_page(self) -> bool:
         """Whether the keyboard is on the screen."""
         return self.onscreen.showing()
@@ -348,6 +378,7 @@ class RemoteControl:
                 # What the cursor lands on may be a search box, and a keyboard
                 # is offered only for a field that was actually chosen.
                 self._clicked_at = time.monotonic()
+                self._look_after_click()
             self.desktop.press(action, mode=driving)
             return
         self.keys.send(action)
