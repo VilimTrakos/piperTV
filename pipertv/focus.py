@@ -35,6 +35,9 @@ PAGE_DEPTH = 10
 EVENTS = ("object:state-changed:focused", "object:text-caret-moved")
 # How long after the last report a field still counts as the one in hand.
 FRESH_S = 30.0
+# A field reports itself many times over while it is used -- every caret move
+# is another word from it. Only the first of a burst is worth passing on.
+REPORT_EVERY_S = 0.4
 
 
 def in_page(node, depth: int = PAGE_DEPTH, roles=PAGE_ROLES) -> bool:
@@ -78,6 +81,7 @@ class FocusWatcher:
         self._thread = None
         self._stop = threading.Event()
         self._field = None
+        self._reported_at = -float("inf")
         self._error: str | None = None
 
     # --- the bus ----------------------------------------------------------
@@ -137,10 +141,19 @@ class FocusWatcher:
             LOG.debug("Reading a focus event: %s", exc)
             return
         with self._lock:
-            first = self._field is None or self._field["label"] != field["label"]
+            # Not only when the field changes: a page focuses its search box as
+            # it loads, so by the time someone clicks into it the field is
+            # already the one in hand and says nothing new about itself. What
+            # is worth reporting is that it is in use now -- whoever listens
+            # decides whether the moment calls for a keyboard.
+            now = field["at"]
+            another = self._field is None or self._field["label"] != field["label"]
+            fresh = another or now - self._reported_at >= REPORT_EVERY_S
             self._field = field
             self._error = None
-        if first and self.on_text_field is not None:
+            if fresh:
+                self._reported_at = now
+        if fresh and self.on_text_field is not None:
             try:
                 self.on_text_field(dict(field))
             except Exception as exc:  # noqa: BLE001 - the bus thread must survive
@@ -159,6 +172,7 @@ class FocusWatcher:
         """Let go of the field, so its keyboard is not offered twice."""
         with self._lock:
             self._field = None
+            self._reported_at = -float("inf")
 
     def health(self) -> dict:
         with self._lock:
