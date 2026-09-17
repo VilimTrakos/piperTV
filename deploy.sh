@@ -158,7 +158,17 @@ if [ -z "$KIOSK" ]; then
   # restarting only when that page changed. A Python change is picked up by
   # the app restart alone, and the screen never goes black.
   PAGES="find pipertv/static -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1"
-  if [ "$(cd "$STAGE" && eval "$PAGES")" = "$(pi "cd $DIR && $PAGES")" ]; then KIOSK=0; else KIOSK=1; fi
+  SHOWING=$(pi "ps -eo args | grep -c '[c]hromium --type=renderer' || true")
+  if [ "${SHOWING:-0}" -lt 1 ]; then
+    # Nothing is showing it -- after a reboot, or a crash. Whatever changed,
+    # the interface has to be started or the television stays on the desktop.
+    KIOSK=1
+    echo "the interface is not on the screen; starting it"
+  elif [ "$(cd "$STAGE" && eval "$PAGES")" = "$(pi "cd $DIR && $PAGES")" ]; then
+    KIOSK=0
+  else
+    KIOSK=1
+  fi
 fi
 
 say "Stopping the old app and interface"
@@ -212,7 +222,9 @@ else:
           '| browser:', services.get('browser'))
 print('detection:', (control.get('detection') or {}).get('state'))
 PY
-echo \"interface windows: \$(ps -eo args | grep -c \"[c]hromium --type=renderer\")\""
+WINDOWS=\$(ps -eo args | grep -c \"[c]hromium --type=renderer\")
+echo \"interface windows: \$WINDOWS\"
+[ \"\$WINDOWS\" -ge 1 ] || { echo 'the interface did not come up; last lines of its log:'; tail -5 /tmp/kiosk.log; exit 1; }"
 
 if [ "$SESSION" = 1 ]; then
   say "Opening a Piper session"
