@@ -957,6 +957,25 @@ class KeyboardTests(unittest.TestCase):
         self.assertFalse(control.onscreen.showing())
         self.assertFalse(control.onscreen.health()["available"])
 
+    def test_a_click_in_a_box_that_was_already_focused_still_brings_it_up(self):
+        # A search box on a page of results is focused already: clicking into
+        # it moves neither the focus nor the caret, so the page says nothing.
+        control = self.build_with_page()
+        control.watcher.field = {"role": "entry", "label": "Search", "at": 0}
+        control._press("ok")
+        control._look_after_click_now()
+        self.assertTrue(control.onscreen.showing())
+
+    def test_a_click_on_something_else_takes_it_away(self):
+        control = self.build_with_page()
+        control._press("ok")
+        control.watcher.focus()
+        self.assertTrue(control.onscreen.showing())
+        control.watcher.forget()            # focus moved to a link
+        control._press("ok")
+        control._look_after_click_now()
+        self.assertFalse(control.onscreen.showing())
+
     def test_the_feed_says_whether_it_is_up(self):
         control = self.build_with_page()
         control._press("ok")
