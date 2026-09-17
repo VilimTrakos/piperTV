@@ -1,11 +1,12 @@
 import json
+import logging
 from pathlib import Path
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
-from pipertv.app import create_app, main
+from pipertv.app import create_app, main, say_what_happens
 from pipertv.session import ControlSession
 from pipertv.tv import ButtonLog
 
@@ -218,6 +219,31 @@ class FakeRemote:
 
     def health(self):
         return {"screen": [1920, 1080], "pointer": {"ok": True}}
+
+
+class LoggingTests(unittest.TestCase):
+    """What the Pi writes down about itself while it runs."""
+
+    def setUp(self):
+        root = logging.getLogger()
+        self.handlers = list(root.handlers)
+        self.level = root.level
+        self.werkzeug = logging.getLogger("werkzeug").level
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        root = logging.getLogger()
+        root.handlers = self.handlers
+        root.setLevel(self.level)
+        logging.getLogger("werkzeug").setLevel(self.werkzeug)
+
+    def test_pipers_own_account_of_a_press_is_kept(self):
+        say_what_happens()
+        self.assertTrue(logging.getLogger("pipertv.control").isEnabledFor(logging.INFO))
+
+    def test_the_interfaces_four_requests_a_second_are_not(self):
+        say_what_happens()
+        self.assertFalse(logging.getLogger("werkzeug").isEnabledFor(logging.INFO))
 
 
 class PointerSettingTests(unittest.TestCase):
