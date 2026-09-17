@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Piper — keyboard</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/tv.css">
+  <link rel="stylesheet" href="/keys.css">
+  <script src="/keys.js" defer></script>
+</head>
+<body>
+
+<main id="screen-keys" class="screen is-shown">
+  <header class="tv-header">
+    <div class="wordmark">piper</div>
+    <div class="tv-meta"><span id="keys-target">typing</span></div>
+  </header>
+
+  <section class="typed" aria-live="polite">
+    <div id="typed-text" class="typed-text"></div>
+    <div id="typed-caret" class="typed-caret"></div>
+  </section>
+
+  <div id="keys-grid" class="keys-grid" role="group" aria-label="Keyboard"></div>
+
+  <p id="keys-hint" class="mono ring-hint"></p>
+</main>
+
+</body>
+</html>
