@@ -152,6 +152,22 @@ class FocusWatcherTests(unittest.TestCase):
                                        ancestors=("landmark", "section", "document web")))
         self.assertIsNotNone(self.watcher.typing_into())
 
+    def test_a_box_buried_deep_in_a_page_is_still_in_the_page(self):
+        # Measured on a page of DuckDuckGo results: the search box there sits
+        # under a dozen sections, and a walk that gave up before reaching the
+        # document decided the page's own box belonged to the browser.
+        deep = ("section",) * 11 + ("document web", "frame")
+        self.watcher.observe(FakeEvent("combo box", "Search privately", ancestors=deep))
+        self.assertIsNotNone(self.watcher.typing_into())
+
+    def test_a_browser_field_stays_out_however_far_the_walk_goes(self):
+        # The window is where the walk stops: nothing above it is a page.
+        self.watcher.observe(FakeEvent("entry", "Address and search bar",
+                                       ancestors=("panel", "tool bar", "panel", "panel",
+                                                  "frame", "application", "desktop frame")))
+        self.assertIsNone(self.watcher.typing_into())
+        self.assertEqual(self.opened, [])
+
     def test_an_event_that_cannot_be_read_is_ignored(self):
         class Broken:
             type = "object:state-changed:focused"
