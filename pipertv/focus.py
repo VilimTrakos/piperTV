@@ -33,8 +33,12 @@ PAGE_ROLES = frozenset({"document web", "document frame", "document",
                         "embedded", "internal frame"})
 PAGE_DEPTH = 10
 EVENTS = ("object:state-changed:focused", "object:text-caret-moved")
-# How long after the last report a field still counts as the one in hand.
-FRESH_S = 30.0
+# How long a field stays in hand without being heard from. Generous, because
+# what really lets go of it is focus moving to something that is not a field --
+# a link, a button, another page -- which is noticed as it happens. A search
+# box on a page of results can sit focused for a long time before anyone
+# clicks into it, and it is still the box they mean.
+FRESH_S = 900.0
 # A field reports itself many times over while it is used -- every caret move
 # is another word from it. Only the first of a burst is worth passing on.
 REPORT_EVERY_S = 0.4
