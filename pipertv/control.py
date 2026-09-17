@@ -20,7 +20,7 @@ from .desktop import POINTER_DEFAULTS, DesktopControl, validate_pointer
 from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
 from .focus import FocusWatcher
-from .keyboard import ServiceKeys
+from .keyboard import OnScreenKeyboard, ServiceKeys
 from .launcher import SNAP, ServiceLauncher
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
@@ -40,15 +40,6 @@ RECORDING = "Recording a remote button, so the remote is not controlling the des
 # interface, because that is the door out of Piper itself.
 RETURN_TO_PIPER = ("exit", "home")
 LEAVE = "exit"
-# Piper's own keyboard, opened over a page that asked to be typed into.
-KEYBOARD_PAGE = "keyboard"
-# How long the page underneath needs its focus back before it is typed
-# into. Less than this and the first letters land nowhere.
-KEYBOARD_SETTLE_S = 1.2
-# Typing into a field is itself reported as the field being in use, which
-# would bring the keyboard straight back. Piper stops listening to its own
-# handiwork for this long.
-KEYBOARD_MUTE_S = 4.0
 # A page focuses its own search box the moment it loads, which is the page
 # deciding rather than the person watching. The keyboard follows a press of
 # OK: focus that lands this soon after one was asked for.
@@ -107,7 +98,7 @@ class RemoteControl:
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
                  buttons=None, launcher=None, browser=None, interface=None, port=8765,
-                 keys=None, watcher=None):
+                 keys=None, watcher=None, onscreen=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -121,12 +112,12 @@ class RemoteControl:
                          if launcher is None else launcher)
         self.interface = Interface(port=port) if interface is None else interface
         self.keys = ServiceKeys() if keys is None else keys
+        self.onscreen = OnScreenKeyboard() if onscreen is None else onscreen
         self.watcher = (FocusWatcher(on_text_field=self._text_field_focused)
                         if watcher is None else watcher)
         self.port = port
         self.leaving = LeaveRequest()
         self._input_context = None
-        self._keyboard_muted_until = -float("inf")
         self._clicked_at = -float("inf")
         self.roles = self._load_roles()
         self.pointer = self._load_pointer()
@@ -307,56 +298,38 @@ class RemoteControl:
         return "snapping" if self.pointer.get("drive") != "nudge" else "pointer"
 
     def _text_field_focused(self, field: dict) -> None:
-        """A page has focused something to type into; offer it a keyboard.
+        """A page has a search box in use; put the keyboard under it.
 
-        Only for a service driven by the cursor: an application with a
-        keyboard of its own is left to use it. Called from the accessibility
-        bus's own thread, so it must not raise.
+        Only for a service driven by the cursor -- an application with a
+        keyboard of its own is left to use it -- and only just after OK was
+        pressed, because a page focusing its own box as it loads is the page
+        deciding rather than the person watching. Called from the
+        accessibility bus's own thread, so it must not raise.
         """
-        if self._cursor_service() is None or self.typing_page():
+        if self._cursor_service() is None or self.onscreen.showing():
             return
-        if time.monotonic() < self._keyboard_muted_until:
-            return  # Piper is typing; this is the echo of its own keystrokes
         if time.monotonic() - self._clicked_at > KEYBOARD_AFTER_CLICK_S:
-            # Nobody asked for this: a page focusing its own search box as it
-            # loads is not a request for a keyboard.
             return
-        LOG.info("A page focused %s; opening the keyboard", field.get("role"))
+        LOG.info("A page is using %s; showing the keyboard", field.get("role"))
         self.open_keyboard()
 
     def typing_page(self) -> bool:
-        """Whether Piper's keyboard is the thing on the screen."""
-        page = self.launcher.page()
-        return page is not None and page["id"] == KEYBOARD_PAGE
+        """Whether the keyboard is on the screen."""
+        return self.onscreen.showing()
 
     def open_keyboard(self) -> dict:
-        """Put Piper's own keyboard over the page that asked for one."""
+        """Show the keyboard across the bottom of the screen."""
         with self._source_lock:
-            if not self.session.enabled() or self.typing_page():
-                return self.launcher.snapshot()
-        return self.launcher.open_page(
-            KEYBOARD_PAGE, "Keyboard", f"http://127.0.0.1:{self.port}/keys")
+            if not self.session.enabled():
+                return self.onscreen.health()
+        self.onscreen.show()
+        return self.onscreen.health()
 
     def close_keyboard(self, text=None) -> dict:
-        """Take the keyboard away, and type what it composed into the page.
-
-        The window goes first and the page underneath is untouched, still
-        showing the search box it was asked for: a keyboard that closed the
-        page it was summoned by would take the box with it. Typing waits a
-        moment for the focus to land back where it was.
-        """
-        if not self.typing_page():
-            return self.launcher.snapshot()
-        state = self.launcher.close_page()
+        """Take the keyboard away. It typed as it went, so nothing is pending."""
+        self.onscreen.hide()
         self.watcher.forget()
-        self._keyboard_muted_until = time.monotonic() + KEYBOARD_MUTE_S
-        if text:
-            time.sleep(KEYBOARD_SETTLE_S)
-            self.keys.write(text)
-            # Whatever the typing stirred up is ours, not a fresh request.
-            self._keyboard_muted_until = time.monotonic() + KEYBOARD_MUTE_S
-            self.watcher.forget()
-        return state
+        return self.onscreen.health()
 
     def _drive_service(self, action: str) -> None:
         """Send one press to the open service in the language it understands.
@@ -366,8 +339,6 @@ class RemoteControl:
         controls the page reports and OK clicks the one it landed on. Back is
         typed either way, because escape closes an overlay in both.
         """
-        if self.typing_page():
-            return  # Piper's own page reads the same presses and acts on them
         running = self.launcher.running()
         if running is None:
             return
@@ -391,16 +362,18 @@ class RemoteControl:
         to press. Ending something on the Pi's own screen is safe to allow
         either way: it moves no cursor and starts nothing.
         """
+        if self.onscreen.showing() and action in ("back", "exit"):
+            # The keyboard is what is in the way; it goes first.
+            self.leaving.disarm()
+            self.close_keyboard()
+            return True
         if action not in RETURN_TO_PIPER:
             self.leaving.disarm()
             return False
-        if self.typing_page():
-            self.leaving.disarm()
-            self.close_keyboard(None)
-            return True
         if self.launcher.running() is not None:
             self.leaving.disarm()
             self.launcher.stop()
+            self.onscreen.close()
             self.keys.release()
             self.desktop.release()
             return True
@@ -433,6 +406,8 @@ class RemoteControl:
             # keyboard must not outlive what it was typing into.
             if self.launcher.running() is None and self.keys.health().get("active"):
                 self.keys.release()
+            if self.launcher.running() is None and self.onscreen.health().get("ready"):
+                self.onscreen.close()
         except Exception as exc:  # noqa: BLE001 - the gate must keep running
             LOG.warning("Control supervisor: %s", exc)
 
@@ -449,7 +424,7 @@ class RemoteControl:
         if thread is not None and threading.current_thread() is not thread:
             thread.join(timeout=3)
         for part in (self.controller, self.monitor, self.desktop, self.launcher,
-                     self.keys, self.watcher):
+                     self.keys, self.watcher, self.onscreen):
             try:
                 part.close()
             except Exception as exc:  # noqa: BLE001 - shutdown must finish
@@ -492,7 +467,12 @@ class RemoteControl:
             if session_id != state["session"]["id"]:
                 raise RuntimeError("That belongs to an earlier visit to the Pi's input. "
                                    "Reload the interface on the TV.")
-        return self.launcher.launch(service)
+        state = self.launcher.launch(service)
+        if self.launcher.policy(service) == SNAP:
+            # Ready and out of sight: a keyboard that takes ten seconds to
+            # appear is one nobody waits for.
+            self.onscreen.prepare()
+        return state
 
     def stop_service(self) -> dict:
         """Give the screen back to the interface. Always allowed: it is the way out."""
@@ -558,6 +538,7 @@ class RemoteControl:
         result["session_id"] = state["session"]["id"] if state["session"] else None
         result["services"] = self.launcher.snapshot()
         result["typing"] = self.watcher.typing_into()
+        result["keyboard"] = self.onscreen.health()
         result["leaving"] = {"armed": self.leaving.armed(),
                              "seconds": self.leaving.remaining()}
         return result
@@ -573,6 +554,7 @@ class RemoteControl:
         state["interface"] = self.interface.snapshot()
         state["keys"] = self.keys.health()
         state["focus"] = self.watcher.health()
+        state["keyboard"] = self.onscreen.health()
         state["pointer_settings"] = dict(self.pointer)
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
