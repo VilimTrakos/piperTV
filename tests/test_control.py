@@ -200,6 +200,9 @@ class FakeOnScreen:
     def showing(self):
         return self.visible
 
+    def height(self):
+        return 320          # what wvkbd is started with on the Pi
+
     def health(self):
         return {"ok": True, "available": self.usable, "ready": self.ready,
                 "showing": self.visible, "error": None}
@@ -1021,10 +1024,31 @@ class KeyboardTests(unittest.TestCase):
         control._press("ok")
         control.watcher.focus()
         self.assertTrue(control.onscreen.showing())
-        control.watcher.forget()            # focus moved to a link
-        control._press("ok")
-        control._look_after_click_now()
+        control.targets.under = {"role": "link", "label": "Some result"}
+        control._look_under_cursor((470, 41))
         self.assertFalse(control.onscreen.showing())
+
+    def test_a_page_saying_nothing_does_not_take_it_away(self):
+        # It flashed up and vanished: the box had been focused since the page
+        # loaded, so the click brought the keyboard up and the page, asked a
+        # moment later what it had focused, answered nothing at all.
+        control = self.build_with_page()
+        control.targets.under = {"role": "combo box", "label": "Search privately"}
+        control._look_under_cursor((470, 41))
+        self.assertTrue(control.onscreen.showing())
+        control.watcher.field = None        # the page announced nothing
+        control._look_after_click_now()
+        self.assertTrue(control.onscreen.showing())
+
+    def test_clicking_its_own_keys_never_closes_it(self):
+        # The page underneath does not know the keyboard is there, and would
+        # report whatever each key covers.
+        control = self.build_with_page()
+        control._press("ok")
+        control.watcher.focus()
+        control.targets.under = {"role": "link", "label": "something under a key"}
+        control._look_under_cursor((300, 1000))   # inside the keyboard
+        self.assertTrue(control.onscreen.showing())
 
     def test_the_feed_says_whether_it_is_up(self):
         control = self.build_with_page()

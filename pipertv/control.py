@@ -334,33 +334,54 @@ class RemoteControl:
         threading.Timer(AFTER_CLICK_S, self._look_after_click_now).start()
 
     def _look_under_cursor(self, position) -> None:
-        """Ask the page about the one point the click landed on."""
+        """Ask the page about the one point the click landed on.
+
+        The answer decides both ways: a field brings the keyboard up, and
+        anything else that is plainly not a field takes it away again, which is
+        what a click on a link or a search button means.
+        """
         try:
-            if self._cursor_service() is None or self.onscreen.showing():
-                return
-            if not hasattr(self.targets, "at_point"):
+            if self._cursor_service() is None or not hasattr(self.targets, "at_point"):
                 return
             found = self.targets.at_point(*position)
             role = None if found is None else found.get("role")
             if role in TEXT_ROLES:
-                LOG.info("OK clicked a %s; showing the keyboard", role)
-                self.open_keyboard()
+                if not self.onscreen.showing():
+                    LOG.info("OK clicked a %s; showing the keyboard", role)
+                    self.open_keyboard()
+            elif role is not None and self.onscreen.showing():
+                if self._clear_of_keyboard(position):
+                    self.close_keyboard()
         except Exception as exc:  # noqa: BLE001 - a click must not raise
             LOG.warning("Asking what the cursor is on: %s", exc)
 
+    def _clear_of_keyboard(self, position) -> bool:
+        """Whether a click was aimed at the page rather than at a key.
+
+        The keys are clicked with the same cursor as everything else, and the
+        page underneath has no idea the keyboard is there: it would report
+        whatever each key covers, and a keyboard that closed itself on its own
+        first letter would be worse than none.
+        """
+        height = self.onscreen.height() if hasattr(self.onscreen, "height") else 0
+        return height <= 0 or position[1] < self.screen[1] - height
+
     def _look_after_click_now(self) -> None:
-        """The look itself, taken on a timer or, in a test, straight away."""
+        """What the page announced in the moment after a click, if anything.
+
+        Only ever brings the keyboard up. Taking it away is decided by what the
+        click landed on, never by silence from the page: a field that has been
+        focused since the page loaded is not always still in hand -- a page
+        loading over it lets go of it -- and the keyboard must not vanish from
+        under someone who is typing.
+        """
         try:
-            if self._cursor_service() is None:
+            if self._cursor_service() is None or self.onscreen.showing():
                 return
             field = self.watcher.typing_into()
-            if field is not None and not self.onscreen.showing():
+            if field is not None:
                 LOG.info("A click landed in %s; showing the keyboard", field.get("role"))
                 self.open_keyboard()
-            elif field is None and self.onscreen.showing():
-                # The click went somewhere else entirely, and the keyboard has
-                # no business covering a page nobody is typing into.
-                self.close_keyboard()
         except Exception as exc:  # noqa: BLE001 - a timer must not raise
             LOG.warning("Looking at what the click landed on: %s", exc)
 
