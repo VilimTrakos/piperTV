@@ -109,9 +109,29 @@ class FocusWatcherTests(unittest.TestCase):
         self.watcher.observe(FakeEvent("entry", "Address"))
         self.assertEqual([field["label"] for field in self.opened], ["Search", "Address"])
 
-    def test_a_field_left_alone_long_enough_is_no_longer_in_hand(self):
+    def test_a_field_left_alone_for_an_age_is_finally_let_go_of(self):
         self.watcher.observe(FakeEvent("entry", "Search"))
         self.clock.now += FRESH_S + 1
+        self.assertIsNone(self.watcher.typing_into())
+
+    def test_a_box_focused_a_while_ago_is_still_the_one_meant(self):
+        # A page of results keeps its search box focused; someone clicking
+        # into it minutes later means that box, and the click itself tells
+        # nobody anything.
+        self.watcher.observe(FakeEvent("entry", "Search"))
+        self.clock.now += 120
+        self.assertIsNotNone(self.watcher.typing_into())
+
+    def test_focus_moving_to_a_link_lets_go_of_the_field(self):
+        self.watcher.observe(FakeEvent("entry", "Search"))
+        self.watcher.observe(FakeEvent("link", "Some result",
+                                       ancestors=("section", "document web")))
+        self.assertIsNone(self.watcher.typing_into())
+
+    def test_a_page_loading_over_it_lets_go_as_well(self):
+        self.watcher.observe(FakeEvent("entry", "Search"))
+        self.watcher.observe(FakeEvent("document web", "Another page",
+                                       ancestors=("frame",)))
         self.assertIsNone(self.watcher.typing_into())
 
     def test_forgetting_drops_it_at_once(self):
