@@ -294,6 +294,18 @@ class OnScreenKeyboard:
         with self._lock:
             return self._showing and self._running() is not None
 
+    def height(self) -> int:
+        """How much of the screen it covers when it is up, in pixels.
+
+        Worth knowing because the page underneath does not: the accessibility
+        tree has no idea a keyboard is drawn over it, so a click on one of
+        these keys reads as a click on whatever the key happens to cover.
+        """
+        try:
+            return int(self.command[self.command.index("-L") + 1])
+        except (ValueError, IndexError):
+            return 0
+
     def health(self) -> dict:
         with self._lock:
             return {"ok": self._error is None, "available": self.available(),
