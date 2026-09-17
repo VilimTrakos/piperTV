@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from pipertv import keyboard, pointer
 from pipertv.keyboard import (KEY_ENTER, KEY_ESC, KEY_LEFT, KEY_UP, KEYS,
-                              ServiceKeys, VirtualKeyboard)
+                              OnScreenKeyboard, ServiceKeys, VirtualKeyboard)
 
 logging.getLogger("pipertv.keyboard").addHandler(logging.NullHandler())
 
@@ -212,6 +212,17 @@ class ServiceKeysTests(unittest.TestCase):
         self.keyboard.fail_on_open = False
         self.assertEqual(self.keys.send("up"), "up")
         self.assertTrue(self.keys.health()["ok"])
+
+
+class OnScreenKeyboardTests(unittest.TestCase):
+    """The keyboard drawn over the page, and what the page cannot see of it."""
+
+    def test_it_knows_how_much_of_the_screen_it_covers(self):
+        self.assertEqual(OnScreenKeyboard().height(), 320)
+
+    def test_one_started_without_a_height_claims_none(self):
+        # Nothing is known about where it is, so nothing is decided by it.
+        self.assertEqual(OnScreenKeyboard(command=("wvkbd-mobintl",)).height(), 0)
 
 
 if __name__ == "__main__":
