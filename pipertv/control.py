@@ -19,8 +19,9 @@ from .cec import CecMonitor
 from .desktop import POINTER_DEFAULTS, DesktopControl, validate_pointer
 from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
+from .focus import FocusWatcher
 from .keyboard import ServiceKeys
-from .launcher import SNAP, ServiceLauncher
+from .launcher import SELF, SNAP, ServiceLauncher
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
 from .roles import RoleMap
@@ -39,6 +40,11 @@ RECORDING = "Recording a remote button, so the remote is not controlling the des
 # interface, because that is the door out of Piper itself.
 RETURN_TO_PIPER = ("exit", "home")
 LEAVE = "exit"
+# Piper's own keyboard, opened over a page that asked to be typed into.
+KEYBOARD_PAGE = "keyboard"
+# How long the page underneath needs its focus back before it is typed
+# into. Less than this and the first letters land nowhere.
+KEYBOARD_SETTLE_S = 1.2
 # Holding a direction while what it moves moves in whole steps -- the ring, a
 # menu, the cursor jumping between controls. Slow enough that a press a shade
 # too long does not skip past what it was aimed at, and still fast enough to
@@ -93,7 +99,7 @@ class RemoteControl:
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
                  buttons=None, launcher=None, browser=None, interface=None, port=8765,
-                 keys=None):
+                 keys=None, watcher=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -106,8 +112,12 @@ class RemoteControl:
         self.launcher = ServiceLauncher(browser=browser) if launcher is None else launcher
         self.interface = Interface(port=port) if interface is None else interface
         self.keys = ServiceKeys() if keys is None else keys
+        self.watcher = (FocusWatcher(on_text_field=self._text_field_focused)
+                        if watcher is None else watcher)
+        self.port = port
         self.leaving = LeaveRequest()
         self._input_context = None
+        self._typing_over = None
         self.roles = self._load_roles()
         self.pointer = self._load_pointer()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
@@ -195,6 +205,7 @@ class RemoteControl:
                 return
             self._stop.clear()
             self.monitor.start()
+            self.watcher.start()
             self.controller.resume()
             self._thread = threading.Thread(target=self._run, name="piper-control", daemon=True)
             self._thread.start()
@@ -285,6 +296,50 @@ class RemoteControl:
             return None
         return "snapping" if self.pointer.get("drive") != "nudge" else "pointer"
 
+    def _text_field_focused(self, field: dict) -> None:
+        """A page has focused something to type into; offer it a keyboard.
+
+        Only for a service driven by the cursor: an application with a
+        keyboard of its own is left to use it. Called from the accessibility
+        bus's own thread, so it must not raise.
+        """
+        if self._cursor_service() is None or self.typing_page():
+            return
+        LOG.info("A page focused %s; opening the keyboard", field.get("role"))
+        self.open_keyboard()
+
+    def typing_page(self) -> bool:
+        """Whether Piper's keyboard is the thing on the screen."""
+        running = self.launcher.running()
+        return running is not None and running["id"] == KEYBOARD_PAGE
+
+    def open_keyboard(self) -> dict:
+        """Put Piper's own keyboard over the page that asked for one."""
+        with self._source_lock:
+            if not self.session.enabled() or self.typing_page():
+                return self.launcher.snapshot()
+            self._typing_over = self.launcher.running()
+        return self.launcher.open_page(
+            KEYBOARD_PAGE, "Keyboard", f"http://127.0.0.1:{self.port}/keys")
+
+    def close_keyboard(self, text=None) -> dict:
+        """Take the keyboard away, and type what it composed into the page.
+
+        The window goes first: the text belongs in the field underneath, which
+        cannot hold the keyboard focus while something sits on top of it.
+        """
+        if not self.typing_page():
+            return self.launcher.snapshot()
+        service, self._typing_over = self._typing_over, None
+        self.launcher.stop()
+        if service is not None:
+            self.launcher.launch(service["id"])
+            time.sleep(KEYBOARD_SETTLE_S)
+        if text:
+            self.keys.write(text)
+        self.watcher.forget()
+        return self.launcher.snapshot()
+
     def _drive_service(self, action: str) -> None:
         """Send one press to the open service in the language it understands.
 
@@ -296,6 +351,8 @@ class RemoteControl:
         running = self.launcher.running()
         if running is None:
             return
+        if self.launcher.policy(running["id"]) == SELF:
+            return  # Piper's own page reads the same presses and acts on them
         driving = self._cursor_service()
         if driving is not None and (action in DIRECTIONS or action == "ok"):
             self.desktop.press(action, mode=driving)
@@ -365,7 +422,8 @@ class RemoteControl:
             self._thread = None
         if thread is not None and threading.current_thread() is not thread:
             thread.join(timeout=3)
-        for part in (self.controller, self.monitor, self.desktop, self.launcher, self.keys):
+        for part in (self.controller, self.monitor, self.desktop, self.launcher,
+                     self.keys, self.watcher):
             try:
                 part.close()
             except Exception as exc:  # noqa: BLE001 - shutdown must finish
@@ -473,6 +531,7 @@ class RemoteControl:
         result["control"] = state["control"]
         result["session_id"] = state["session"]["id"] if state["session"] else None
         result["services"] = self.launcher.snapshot()
+        result["typing"] = self.watcher.typing_into()
         result["leaving"] = {"armed": self.leaving.armed(),
                              "seconds": self.leaving.remaining()}
         return result
@@ -487,6 +546,7 @@ class RemoteControl:
         state["services"] = self.launcher.snapshot()
         state["interface"] = self.interface.snapshot()
         state["keys"] = self.keys.health()
+        state["focus"] = self.watcher.health()
         state["pointer_settings"] = dict(self.pointer)
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),

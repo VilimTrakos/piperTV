@@ -91,10 +91,17 @@ class FakeLauncher:
 
     def __init__(self):
         self.launched = []
+        self.pages = []
         self.history = []
         self.stopped = self.closed = 0
         self.open = None
         self.available = True
+
+    def open_page(self, page_id, name, url, control="self"):
+        self.KNOWN = dict(self.KNOWN, **{page_id: name})
+        self.POLICY = dict(self.POLICY, **{page_id: control})
+        self.pages.append((page_id, url))
+        return self.launch(page_id)
 
     def launch(self, service):
         if service not in self.KNOWN:
@@ -135,6 +142,7 @@ class FakeKeys:
 
     def __init__(self):
         self.sent = []
+        self.typed = []
         self.released = self.closed = 0
         self.active = False
 
@@ -142,6 +150,11 @@ class FakeKeys:
         self.sent.append(key)
         self.active = True
         return key
+
+    def write(self, text):
+        self.typed.append(text)
+        self.active = True
+        return len(text)
 
     def release(self):
         self.released += 1
@@ -153,6 +166,37 @@ class FakeKeys:
     def close(self):
         self.closed += 1
         self.active = False
+
+
+class FakeWatcher:
+    """Stands in for the accessibility bus reporting what a page focused."""
+
+    def __init__(self):
+        self.started = self.closed = self.forgotten = 0
+        self.field = None
+        self.on_text_field = None
+
+    def start(self):
+        self.started += 1
+
+    def focus(self, role="entry", label="Search"):
+        """Pretend a page focused something to type into."""
+        self.field = {"role": role, "label": label, "at": 0}
+        if self.on_text_field is not None:
+            self.on_text_field(dict(self.field))
+
+    def typing_into(self):
+        return dict(self.field) if self.field else None
+
+    def forget(self):
+        self.forgotten += 1
+        self.field = None
+
+    def health(self):
+        return {"ok": True, "watching": True, "field": self.typing_into(), "error": None}
+
+    def close(self):
+        self.closed += 1
 
 
 class FakeInterface:
@@ -186,6 +230,7 @@ def build(state="unknown", **kwargs):
     kwargs.setdefault("launcher", FakeLauncher())
     kwargs.setdefault("interface", FakeInterface())
     kwargs.setdefault("keys", FakeKeys())
+    kwargs.setdefault("watcher", FakeWatcher())
     control = RemoteControl(FakeStore(), screen=SCREEN, monitor=monitor,
                             controller=controller, targets=targets,
                             desktop=FakeDesktop(), **kwargs)
@@ -778,6 +823,92 @@ class WayOutTests(unittest.TestCase):
                 control._press(button)
                 control._press(button)
                 self.assertEqual(control.interface.closed, 0)
+
+
+class KeyboardPageTests(unittest.TestCase):
+    """Typing into a page's search box, with nothing but the four arrows."""
+
+    def build_with_page(self):
+        control, _monitor, _controller, _targets = build("active")
+        control.watcher.on_text_field = control._text_field_focused
+        visit = select(control, "piper")["session"]["id"]
+        control.launch("prime", visit)
+        return control
+
+    def test_a_focused_search_box_brings_up_the_keyboard(self):
+        control = self.build_with_page()
+        control.watcher.focus("entry", "Search")
+        self.assertTrue(control.typing_page())
+        self.assertEqual(control.launcher.pages[-1][0], "keyboard")
+
+    def test_an_application_with_its_own_keyboard_is_left_alone(self):
+        control, _monitor, _controller, _targets = build("active")
+        control.watcher.on_text_field = control._text_field_focused
+        visit = select(control, "piper")["session"]["id"]
+        control.launch("youtube", visit)   # typed at, not pointed at
+        control.watcher.focus("entry", "Search")
+        self.assertFalse(control.typing_page())
+
+    def test_nothing_opens_when_the_gate_is_shut(self):
+        control = self.build_with_page()
+        control.monitor_state = None
+        control.session.stop()
+        control.watcher.focus("entry", "Search")
+        self.assertFalse(control.typing_page())
+
+    def test_presses_are_left_to_the_page_itself(self):
+        # It reads the same feed and moves its own highlight; Piper forwarding
+        # them as well would move two keys at a time.
+        control = self.build_with_page()
+        control.watcher.focus()
+        control.keys.sent.clear()
+        for button in ("right", "down", "ok"):
+            control._press(button)
+        self.assertEqual(control.keys.sent, [])
+        self.assertEqual(control.desktop.presses, [])
+        self.assertEqual([event["button"] for event in control.events(0)["events"]][-3:],
+                         ["right", "down", "ok"])
+
+    def test_what_was_composed_is_typed_into_the_page_underneath(self):
+        control = self.build_with_page()
+        control.watcher.focus()
+        control.close_keyboard("rings of power")
+        self.assertFalse(control.typing_page())
+        self.assertEqual(control.keys.typed, ["rings of power"])
+        # The page it was covering is back on the screen.
+        self.assertEqual(control.launcher.running()["id"], "prime")
+
+    def test_cancelling_types_nothing(self):
+        control = self.build_with_page()
+        control.watcher.focus()
+        control.close_keyboard(None)
+        self.assertEqual(control.keys.typed, [])
+        self.assertEqual(control.launcher.running()["id"], "prime")
+
+    def test_the_field_is_let_go_of_so_it_is_not_offered_twice(self):
+        control = self.build_with_page()
+        control.watcher.focus()
+        control.close_keyboard("x")
+        self.assertEqual(control.watcher.forgotten, 1)
+        self.assertIsNone(control.watcher.typing_into())
+
+    def test_the_same_field_reported_again_does_not_stack_keyboards(self):
+        control = self.build_with_page()
+        control.watcher.focus()
+        opened = len(control.launcher.pages)
+        control.watcher.focus()
+        self.assertEqual(len(control.launcher.pages), opened)
+
+    def test_the_feed_says_what_is_being_typed_into(self):
+        control = self.build_with_page()
+        control.watcher.focus("entry", "Search with DuckDuckGo")
+        self.assertEqual(control.events(0)["typing"]["label"], "Search with DuckDuckGo")
+
+    def test_closing_nothing_is_harmless(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.close_keyboard("hello")
+        self.assertEqual(control.keys.typed, [])
 
 
 class HoldPaceTests(unittest.TestCase):
