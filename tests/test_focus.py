@@ -89,10 +89,20 @@ class FocusWatcherTests(unittest.TestCase):
                                        type="object:text-caret-moved"))
         self.assertIsNotNone(self.watcher.typing_into())
 
-    def test_the_same_field_reported_again_does_not_reopen_the_keyboard(self):
+    def test_a_burst_from_one_field_is_reported_once(self):
         for _ in range(4):
             self.watcher.observe(FakeEvent("entry", "Search"))
         self.assertEqual(len(self.opened), 1)
+
+    def test_a_field_used_again_later_is_reported_again(self):
+        # A page focuses its search box as it loads, so by the time someone
+        # clicks into it the field has nothing new to say about itself -- and
+        # that click is exactly when a keyboard is wanted.
+        self.watcher.observe(FakeEvent("entry", "Search"))
+        self.clock.now += 5
+        self.watcher.observe(FakeEvent("entry", "Search",
+                                       type="object:text-caret-moved", detail1=-1))
+        self.assertEqual(len(self.opened), 2)
 
     def test_moving_to_another_field_is_a_new_request(self):
         self.watcher.observe(FakeEvent("entry", "Search"))
