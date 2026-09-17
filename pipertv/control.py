@@ -45,6 +45,10 @@ KEYBOARD_PAGE = "keyboard"
 # How long the page underneath needs its focus back before it is typed
 # into. Less than this and the first letters land nowhere.
 KEYBOARD_SETTLE_S = 1.2
+# Typing into a field is itself reported as the field being in use, which
+# would bring the keyboard straight back. Piper stops listening to its own
+# handiwork for this long.
+KEYBOARD_MUTE_S = 4.0
 # Holding a direction while what it moves moves in whole steps -- the ring, a
 # menu, the cursor jumping between controls. Slow enough that a press a shade
 # too long does not skip past what it was aimed at, and still fast enough to
@@ -117,6 +121,7 @@ class RemoteControl:
         self.port = port
         self.leaving = LeaveRequest()
         self._input_context = None
+        self._keyboard_muted_until = -float("inf")
         self.roles = self._load_roles()
         self.pointer = self._load_pointer()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
@@ -304,6 +309,8 @@ class RemoteControl:
         """
         if self._cursor_service() is None or self.typing_page():
             return
+        if time.monotonic() < self._keyboard_muted_until:
+            return  # Piper is typing; this is the echo of its own keystrokes
         LOG.info("A page focused %s; opening the keyboard", field.get("role"))
         self.open_keyboard()
 
@@ -331,10 +338,14 @@ class RemoteControl:
         if not self.typing_page():
             return self.launcher.snapshot()
         state = self.launcher.close_page()
+        self.watcher.forget()
+        self._keyboard_muted_until = time.monotonic() + KEYBOARD_MUTE_S
         if text:
             time.sleep(KEYBOARD_SETTLE_S)
             self.keys.write(text)
-        self.watcher.forget()
+            # Whatever the typing stirred up is ours, not a fresh request.
+            self._keyboard_muted_until = time.monotonic() + KEYBOARD_MUTE_S
+            self.watcher.forget()
         return state
 
     def _drive_service(self, action: str) -> None:
