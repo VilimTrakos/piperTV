@@ -86,7 +86,13 @@ KIOSK_ARGS = ("--disable-gpu", "--password-store=basic",
               # Without this the page is a blank box to the accessibility bus,
               # and snapping has nothing in it to move the cursor to.
               "--force-renderer-accessibility",
-              "--kiosk", "--start-fullscreen", "--noerrdialogs", "--disable-infobars",
+              # Not "--kiosk" and not fullscreen: a fullscreen window is placed
+              # above every layer a keyboard could be drawn in, so a page with a
+              # search box would have nowhere to show one. A window the size of
+              # the screen, with its title bar suppressed by a window rule and
+              # the desktop panel hidden, looks exactly the same and leaves room
+              # above it.
+              "--noerrdialogs", "--disable-infobars",
               "--no-first-run", "--no-default-browser-check",
               "--disable-session-crashed-bubble", "--disable-features=Translate",
               "--autoplay-policy=no-user-gesture-required")
@@ -109,7 +115,8 @@ class ServiceLauncher:
     """
 
     def __init__(self, services=None, browser=None, spawn=subprocess.Popen,
-                 environ=None, profiles=None, clock=time.time, remembered: int = 5):
+                 environ=None, profiles=None, clock=time.time, remembered: int = 5,
+                 screen=(1920, 1080)):
         self.services = dict(SERVICES if services is None else services)
         self.environ = os.environ if environ is None else environ
         self.requested = browser
@@ -117,6 +124,7 @@ class ServiceLauncher:
         self.spawn = spawn
         self.profiles = Path(profiles) if profiles else self._default_profiles()
         self.clock = clock
+        self.screen = (int(screen[0]), int(screen[1]))
         self._lock = threading.RLock()
         self._process = None
         self._running: dict | None = None
@@ -198,7 +206,9 @@ class ServiceLauncher:
             return list(own)
         profile = self.profiles / service["id"]
         profile.mkdir(parents=True, exist_ok=True)
-        command = [self.browser, *KIOSK_ARGS, f"--user-data-dir={profile}"]
+        width, height = self.screen
+        command = [self.browser, *KIOSK_ARGS, f"--user-data-dir={profile}",
+                   f"--window-size={width},{height}", "--window-position=0,0"]
         if self.environ.get("WAYLAND_DISPLAY"):
             # Chromium otherwise picks its X11 backend and exits with "Missing X
             # server or $DISPLAY" on a Wayland session such as this Pi's labwc.

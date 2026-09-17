@@ -117,7 +117,8 @@ class RemoteControl:
                                        enabled=self._enabled)
                         if desktop is None else desktop)
         self.buttons = ButtonLog() if buttons is None else buttons
-        self.launcher = ServiceLauncher(browser=browser) if launcher is None else launcher
+        self.launcher = (ServiceLauncher(browser=browser, screen=self.screen)
+                         if launcher is None else launcher)
         self.interface = Interface(port=port) if interface is None else interface
         self.keys = ServiceKeys() if keys is None else keys
         self.watcher = (FocusWatcher(on_text_field=self._text_field_focused)
