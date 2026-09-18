@@ -455,12 +455,10 @@
       value.className = "option-value";
       value.textContent = optionValue(row);
       item.append(label, value);
+      // One click does it. A second click would land somewhere else anyway:
+      // choosing a row scrolls the list under the cursor.
       item.addEventListener("click", () => {
-        if (index !== OPTIONS.focus) {
-          OPTIONS.focus = index;
-          renderOptions();
-          return;
-        }
+        OPTIONS.focus = index;
         activateOption();
       });
       list.append(item);
@@ -476,6 +474,13 @@
     $("options-hint").textContent = OPTIONS.capture
       ? "press the button on your remote · OK or back cancels"
       : "▲ ▼ choose · OK · ▶ back to the wheel · ▲ at the top does the same";
+  }
+
+  function wheelOptions(event) {
+    // A list this long is worth a wheel when there is a mouse on the desk.
+    if (state.screen !== "options") return;
+    event.preventDefault();
+    moveOption(event.deltaY > 0 ? 1 : -1);
   }
 
   function moveOption(step) {
@@ -727,6 +732,7 @@
     renderFocus();
     $("options-corner").addEventListener("click", openOptions);
     $("options-back").addEventListener("click", closeOptions);
+    $("options-list").addEventListener("wheel", wheelOptions, { passive: false });
     clock();
     setInterval(clock, 20000);
 
