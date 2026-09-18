@@ -53,11 +53,21 @@ class InterfaceTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
 
-    def build(self, processes, alive=(), stubborn=()):
+    def build(self, processes, alive=(), stubborn=(), **kwargs):
         FakeProcfs(self.temporary.name, processes)
         self.kill = FakeKill(self.temporary.name, alive or processes, stubborn)
+        kwargs.setdefault("browser", "/usr/bin/chromium")
+        kwargs.setdefault("environ", {"WAYLAND_DISPLAY": "wayland-0"})
+        # Never the real Popen: a test must not start a browser on the machine
+        # it is running on.
+        self.started = []
+        kwargs.setdefault("spawn", lambda command, **_kwargs: self.started.append(command))
+        # A clock that moves: waiting for a window to appear is a loop against
+        # a deadline, and a frozen clock would never reach it.
+        ticks = iter(range(0, 100_000))
+        kwargs.setdefault("clock", lambda: float(next(ticks)))
         return Interface(port=8765, procfs=self.temporary.name, kill=self.kill,
-                         clock=lambda: 0.0, sleep=lambda _s: None, grace_s=0.0)
+                         sleep=lambda _s: None, grace_s=0.0, **kwargs)
 
     def test_the_window_showing_the_interface_is_found(self):
         interface = self.build({4242: KIOSK, 99: ["/usr/bin/pcmanfm"]})
@@ -101,6 +111,52 @@ class InterfaceTests(unittest.TestCase):
         interface = self.build({4242: KIOSK})
         Path(self.temporary.name, "7777").mkdir()  # a pid directory with no cmdline
         self.assertEqual(interface.windows(), [4242])
+
+    def test_full_screen_is_a_kiosk_showing_this_app(self):
+        interface = self.build({})
+        command = interface.command({})
+        self.assertIn("--kiosk", command)
+        self.assertIn("--ozone-platform=wayland", command)
+        self.assertEqual(command[-1], "http://127.0.0.1:8765/tv?boot=0")
+
+    def test_a_window_is_the_same_page_with_the_desktop_around_it(self):
+        interface = self.build({}, screen=(1920, 1080))
+        command = interface.command({"windowed": True, "width": 1280, "height": 720})
+        self.assertNotIn("--kiosk", command)
+        self.assertIn("--window-size=1280,720", command)
+        self.assertIn("--window-position=320,180", command)
+        self.assertEqual(command[-1], "--app=http://127.0.0.1:8765/tv?boot=0")
+
+    def test_an_x11_session_is_left_to_chromium_s_default(self):
+        interface = self.build({}, environ={"DISPLAY": ":0"})
+        self.assertNotIn("--ozone-platform=wayland", interface.command({}))
+
+    def test_opening_replaces_the_window_already_showing_it(self):
+        # The one reason to ask for this while it is up is that its shape
+        # should change, and a browser cannot be talked out of its shape.
+        interface = self.build({4242: KIOSK})
+        interface.open({})
+        self.assertEqual(self.kill.signals, [(4242, signal.SIGTERM)])
+        self.assertEqual(len(self.started), 1)
+
+    def test_a_pi_without_a_browser_says_so_rather_than_failing(self):
+        interface = self.build({}, browser=None)
+        result = interface.open({})
+        self.assertFalse(result["showing"])
+        self.assertIn("chromium", result["error"])
+
+    def test_a_browser_that_will_not_start_is_reported(self):
+        def refuse(*_args, **_kwargs):
+            raise OSError("no such file")
+
+        interface = self.build({}, spawn=refuse)
+        self.assertIn("no such file", interface.open({})["error"])
+
+    def test_a_window_that_never_appears_is_not_reported_as_showing(self):
+        interface = self.build({}, spawn=lambda *_a, **_k: None)
+        result = interface.open({})
+        self.assertFalse(result["showing"])
+        self.assertIn("no window", result["error"])
 
     def test_a_nonsense_port_is_refused(self):
         for port in (0, 70000, "8765", True):

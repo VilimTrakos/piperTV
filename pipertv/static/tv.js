@@ -46,6 +46,21 @@
     open: null, opening: false, notice: "", serviceError: null };
   let noticeTimer = null;
 
+  // Two presses of left, close enough together to be one gesture, open the
+  // options. The first of them has already moved the wheel, so the gesture
+  // puts it back: nobody asked to change what is selected.
+  const DOUBLE_LEFT_MS = 450;
+  let lastLeftAt = 0;
+  let focusBeforeLeft = 0;
+  // A television has no mouse, so the cursor is hidden until one moves -- the
+  // same page is worked on over VNC, where clicking a tile has to be possible.
+  const POINTER_IDLE_MS = 2500;
+  let pointingTimer = null;
+  // What the options screen is showing, and what it is waiting for.
+  const CAPTURE_DONE = ["captured", "timeout", "cancelled", "error"];
+  const OPTIONS = { rows: [], focus: 0, busy: "", loaded: false };
+  let busyTimer = null;
+
   const unit = () => Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
 
   function place(element, x, y, size) {
@@ -70,6 +85,18 @@
       if (service.colour) tile.style.background = service.colour;
       tile.setAttribute("role", "img");
       tile.setAttribute("aria-label", service.name);
+      // A click chooses, and a click on what is already chosen opens it --
+      // the same two steps the remote takes, so neither surprises the other.
+      tile.addEventListener("click", () => {
+        if (state.open) return;
+        if (index !== state.focus) {
+          state.focus = index;
+          layoutRing();
+          renderFocus();
+          return;
+        }
+        press("ok");
+      });
       ring.append(tile);
       return { element: tile, service, index };
     });
@@ -167,6 +194,7 @@
     state.screen = name;
     $("screen-boot").classList.toggle("is-shown", name === "boot");
     $("screen-home").classList.toggle("is-shown", name === "home");
+    $("screen-options").classList.toggle("is-shown", name === "options");
   }
 
   function notify(message, persist = false, kind = "") {
@@ -185,6 +213,7 @@
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     $("home-clock").textContent = time;
+    $("options-clock").textContent = time;
     $("boot-meta").textContent = `raspberry pi · ${time}`;
     // "just now" becomes "20 min ago" without anything else having changed.
     if (state.screen === "home") renderHistory();
@@ -219,6 +248,23 @@
     }
   }
 
+  async function get(path) {
+    const response = await fetch(path, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`the Pi answered ${response.status}`);
+    return response.json();
+  }
+
+  async function send(method, path, payload) {
+    const response = await fetch(path, {
+      method,
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `the Pi answered ${response.status}`);
+    return result;
+  }
+
   async function openService(service) {
     if (state.opening) return;
     state.opening = true;
@@ -236,6 +282,7 @@
   const closeService = () => ask("/api/tv/close", {}, "Could not close the open service.");
 
   function press(button) {
+    if (state.screen === "options") { pressOptions(button); return; }
     if (state.screen !== "home") return;
     if (state.open) {
       // Something owns the screen; the ring must not move behind it, and back
@@ -245,7 +292,23 @@
     }
     switch (button) {
       case "right": move(1); break;
-      case "left": move(-1); break;
+      case "left": {
+        const now = Date.now();
+        if (now - lastLeftAt <= DOUBLE_LEFT_MS) {
+          // The gesture, not two steps: put the wheel back where it was and
+          // open the options instead.
+          lastLeftAt = 0;
+          state.focus = focusBeforeLeft;
+          layoutRing();
+          renderFocus();
+          openOptions();
+          break;
+        }
+        lastLeftAt = now;
+        focusBeforeLeft = state.focus;
+        move(-1);
+        break;
+      }
       case "down": move(1); break;
       case "up": move(-1); break;
       case "ok": {
@@ -258,6 +321,193 @@
         break;
       }
       case "home": move(-state.focus); break;
+      default: break;
+    }
+  }
+
+  // --- the options: the remote's own buttons, and the shape of the screen ---
+
+  function say(message, forSeconds = 0) {
+    clearTimeout(busyTimer);
+    OPTIONS.busy = message;
+    renderOptions();
+    if (message && forSeconds) {
+      busyTimer = setTimeout(() => { OPTIONS.busy = ""; renderOptions(); }, forSeconds * 1000);
+    }
+  }
+
+  async function refreshOptions() {
+    // Three things the Pi knows: which button carries each of Piper's roles,
+    // which buttons have actually been recorded, and whether Piper is filling
+    // the screen. They are read together so the list is never half true.
+    const [roles, library, shape] = await Promise.all([
+      get("/api/roles"), get("/api/state"), get("/api/window"),
+    ]);
+    const recordings = library.recordings || {};
+    const learned = new Set(Object.keys(recordings)
+      .filter((id) => (recordings[id].samples || []).length));
+    const labels = new Map((library.buttons || []).map((button) => [button.id, button.label]));
+    const rows = (roles.roles || []).map((entry) => ({
+      kind: "role",
+      role: entry.role,
+      button: entry.button,
+      buttonLabel: labels.get(entry.button) || entry.button,
+      learned: learned.has(entry.button),
+      rebound: !!entry.rebound,
+    }));
+    rows.push({ kind: "window", settings: shape.settings });
+    OPTIONS.rows = rows;
+    OPTIONS.focus = Math.min(OPTIONS.focus, Math.max(0, rows.length - 1));
+    OPTIONS.loaded = true;
+    renderOptions();
+  }
+
+  function optionValue(row) {
+    if (row.kind === "window") {
+      const shape = row.settings;
+      return shape.windowed ? `window · ${shape.width}×${shape.height}` : "full screen";
+    }
+    const where = row.rebound ? `${row.buttonLabel} (moved)` : row.buttonLabel;
+    return row.learned ? where : `${where} · not recorded`;
+  }
+
+  function optionTitle(row) {
+    return row.kind === "window" ? "Display" : row.role;
+  }
+
+  function optionNote(row) {
+    if (row.kind === "window") {
+      return row.settings.windowed
+        ? "OK fills the screen again · piper restarts"
+        : "OK puts piper in a window, with the desktop around it · piper restarts";
+    }
+    return row.learned
+      ? `OK records the ${row.buttonLabel} button again`
+      : `OK records the ${row.buttonLabel} button, which has no signal yet`;
+  }
+
+  function renderOptions() {
+    const list = $("options-list");
+    list.replaceChildren();
+    OPTIONS.rows.forEach((row, index) => {
+      const item = document.createElement("li");
+      item.className = index === OPTIONS.focus ? "option is-focused" : "option";
+      const label = document.createElement("span");
+      label.className = "option-label";
+      label.textContent = optionTitle(row);
+      const value = document.createElement("span");
+      value.className = "option-value";
+      value.textContent = optionValue(row);
+      item.append(label, value);
+      item.addEventListener("click", () => {
+        if (index !== OPTIONS.focus) {
+          OPTIONS.focus = index;
+          renderOptions();
+          return;
+        }
+        activateOption();
+      });
+      list.append(item);
+    });
+    const row = OPTIONS.rows[OPTIONS.focus];
+    $("option-name").textContent = row ? optionTitle(row) : "";
+    $("option-note").textContent = row ? optionNote(row) : "reading the library…";
+    const busy = $("option-busy");
+    busy.textContent = OPTIONS.busy;
+    busy.hidden = !OPTIONS.busy;
+    $("options-hint").textContent =
+      "▲ ▼ choose · OK · ▶ back to the wheel · ▲ at the top does the same";
+  }
+
+  function moveOption(step) {
+    const count = OPTIONS.rows.length;
+    if (!count) return;
+    OPTIONS.focus = (OPTIONS.focus + step + count) % count;
+    renderOptions();
+  }
+
+  async function openOptions() {
+    showScreen("options");
+    say("");
+    renderOptions();
+    try {
+      await refreshOptions();
+    } catch (error) {
+      say(`the options could not be read · ${error.message || error}`, 6);
+    }
+  }
+
+  function closeOptions() {
+    clearTimeout(busyTimer);
+    OPTIONS.busy = "";
+    showScreen("home");
+    layoutRing();
+    renderFocus();
+  }
+
+  async function waitForCapture(id) {
+    // The gate is shut while a signal is being learned, so the press being
+    // recorded does not also drive this page. Nothing arrives here until the
+    // Pi is finished either way.
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      const job = await get(`/api/captures/${id}`);
+      if (CAPTURE_DONE.includes(job.status)) return job;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return { status: "timeout" };
+  }
+
+  function outcome(job) {
+    if (job.status === "captured") return "saved · that button works again";
+    if (job.status === "timeout") return "nothing arrived · point the remote at the receiver and try again";
+    if (job.status === "cancelled") return "cancelled";
+    return job.error || "the recording failed";
+  }
+
+  async function learnRole(row) {
+    say(`press the ${row.buttonLabel} button on your remote now`);
+    try {
+      const job = await send("POST", "/api/captures", { button_id: row.button });
+      const done = await waitForCapture(job.id);
+      say(outcome(done), 8);
+    } catch (error) {
+      say(String(error.message || error), 8);
+      return;
+    }
+    try {
+      await refreshOptions();
+    } catch {
+      // The list is stale rather than wrong; the next visit reads it again.
+    }
+  }
+
+  async function switchWindow(row) {
+    const windowed = !row.settings.windowed;
+    say(windowed ? "putting piper in a window…" : "filling the screen again…");
+    try {
+      await send("PUT", "/api/window", { windowed });
+    } catch {
+      // Expected as often as not: this page is the window being replaced, so
+      // the answer has nowhere to arrive. What follows is a new page.
+    }
+  }
+
+  function activateOption() {
+    const row = OPTIONS.rows[OPTIONS.focus];
+    if (!row || OPTIONS.busy.startsWith("press the")) return;
+    if (row.kind === "window") { switchWindow(row); return; }
+    learnRole(row);
+  }
+
+  function pressOptions(button) {
+    switch (button) {
+      case "down": moveOption(1); break;
+      case "up":
+        if (OPTIONS.focus === 0) closeOptions();
+        else moveOption(-1);
+        break;
+      case "right": case "back": case "home": closeOptions(); break;
+      case "ok": activateOption(); break;
       default: break;
     }
   }
@@ -314,6 +564,15 @@
 
   window.addEventListener("resize", () => { if (state.screen === "home") layoutRing(); });
 
+  // A mouse, when there is one: the cursor appears while it moves and goes
+  // away again, so a television is not left with an arrow parked on it.
+  document.addEventListener("mousemove", () => {
+    document.body.classList.add("is-pointing");
+    clearTimeout(pointingTimer);
+    pointingTimer = setTimeout(
+      () => document.body.classList.remove("is-pointing"), POINTER_IDLE_MS);
+  });
+
   async function poll() {
     let delay = 250;
     const abort = new AbortController();
@@ -343,11 +602,14 @@
         state.session = feed.session_id || null;
         applyServices(feed.services);
         applyLeaving(feed.leaving);
-        state.primed = state.screen === "home" && !document.hidden;
+        state.primed = (state.screen === "home" || state.screen === "options")
+          && !document.hidden;
         state.control = feed.control;
-        $("home-source").textContent = feed.control === "on"
+        const source = feed.control === "on"
           ? feed.mode === "piper" ? "remote connected" : "desktop control selected"
           : "remote control off";
+        $("home-source").textContent = source;
+        $("options-state").textContent = source;
         if (continuous && state.primed && feed.control === "on" && feed.mode === "piper") {
           for (const event of feed.events || []) {
             if (event.mode === "piper" && event.session_id === feed.session_id && event.navigation) {
@@ -374,6 +636,7 @@
     renderHistory();
     buildRing();
     renderFocus();
+    $("options-corner").addEventListener("click", openOptions);
     clock();
     setInterval(clock, 20000);
 

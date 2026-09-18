@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from .buttons import BUTTONS, BUTTON_IDS
 from .desktop import validate_pointer
 from .roles import ROLES, validate_roles
+from .window import validate_window
 
 
 def utc_now():
@@ -199,6 +200,19 @@ class RecordingStore:
         with self.lock:
             updated = copy.deepcopy(self.document)
             updated["pointer"] = checked
+            self._commit(updated)
+            return dict(checked)
+
+    def window(self):
+        with self.lock:
+            return dict(self.document.get("window", {}))
+
+    def set_window(self, values):
+        """Keep whether Piper fills the screen beside everything else it owns."""
+        checked = validate_window(values)
+        with self.lock:
+            updated = copy.deepcopy(self.document)
+            updated["window"] = checked
             self._commit(updated)
             return dict(checked)
 

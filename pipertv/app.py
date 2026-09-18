@@ -19,6 +19,7 @@ from .desktop import DRIVES, POINTER_DEFAULTS, POINTER_LIMITS, validate_pointer
 from .learner import Workbench
 from .roles import SUGGESTED, RoleMap
 from .storage import RecordingStore
+from .window import WINDOW_DEFAULTS, WINDOW_LIMITS, validate_window
 
 STATIC = Path(__file__).parent / "static"
 
@@ -247,6 +248,27 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
             remote.reload_pointer()
         return jsonify(pointer_state())
 
+    def window_state() -> dict:
+        settings = workbench.store.window()
+        return {"settings": validate_window(settings),
+                "defaults": dict(WINDOW_DEFAULTS),
+                "limits": {name: list(bounds) for name, bounds in WINDOW_LIMITS.items()}}
+
+    @app.get("/api/window")
+    def get_window():
+        return jsonify(window_state())
+
+    @app.put("/api/window")
+    def set_window():
+        # Kept with the recordings, like the role bindings: whether Piper fills
+        # this television or sits in a window belongs to the room it is in.
+        workbench.store.set_window(body())
+        if remote is not None:
+            # Taking effect means the interface comes back in the new shape; a
+            # browser cannot be talked out of the shape it was started with.
+            remote.reload_window()
+        return jsonify(window_state())
+
     def desktop() -> RemoteControl:
         if remote is None:
             raise KeyError("Desktop control is not running on this server.")
@@ -291,6 +313,12 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         # wants it without one.
         show = body().get("show", True)
         return jsonify(desktop().open_keyboard() if show else desktop().close_keyboard())
+
+    @app.post("/api/tv/interface")
+    def show_tv_interface():
+        # For a deploy, and for anyone who closed the interface and wants it
+        # back without a browser command line.
+        return jsonify(desktop().show_interface())
 
     @app.get("/api/tv/events")
     def tv_events():
