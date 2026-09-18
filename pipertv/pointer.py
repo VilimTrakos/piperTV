@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import struct
+import subprocess
 import threading
 import time
 
@@ -56,7 +57,18 @@ ABS_SETUP = "=HH6i"          # struct uinput_abs_setup
 # the device range is a resolution-independent grid rather than a pixel count.
 AXIS_MAX = 32767
 DEVICE = "/dev/uinput"
+# The console's framebuffer, which is not what anyone is looking at: it keeps
+# whatever mode the kernel set at boot -- 1024x768 on this Pi when the
+# television happened to be off -- while the compositor drives the screen at
+# its own resolution. So it is the fallback, and the compositor is asked first.
 SCREEN_SIZE = "/sys/class/graphics/fb0/virtual_size"
+DISPLAY_TOOL = ("wlr-randr",)
+ASK_TIMEOUT_S = 3.0
+# A size is not worth a process every time it is wanted; it changes when a
+# television is switched on, not between two presses.
+SIZE_CACHE_S = 5.0
+_asked = {"at": -float("inf"), "size": None}
+_ask_lock = threading.Lock()
 
 
 def to_axis(pixel: float, extent: int) -> int:
@@ -73,8 +85,36 @@ def to_pixel(axis: int, extent: int) -> int:
     return max(0, min(extent - 1, round(axis / AXIS_MAX * (extent - 1))))
 
 
-def read_screen_size(path: str = SCREEN_SIZE) -> tuple[int, int] | None:
-    """Read the framebuffer size, for when no accessibility bus reports one."""
+def ask_compositor(command=DISPLAY_TOOL, run=subprocess.run,
+                   clock=time.monotonic) -> tuple[int, int] | None:
+    """The mode the screen is actually running, as the compositor reports it.
+
+    Cached for a few seconds: a resolution changes when a television is
+    switched on, and asking costs a process on a Pi that has few to spare.
+    """
+    with _ask_lock:
+        now = clock()
+        if now - _asked["at"] < SIZE_CACHE_S:
+            return _asked["size"]
+        size = None
+        try:
+            done = run(list(command), capture_output=True, text=True,
+                       timeout=ASK_TIMEOUT_S, check=False)
+            for line in (done.stdout or "").splitlines():
+                if "current" not in line:
+                    continue
+                found = re.search(r"(\d{2,6})\s*x\s*(\d{2,6})\s*px", line)
+                if found:
+                    size = (int(found.group(1)), int(found.group(2)))
+                    break
+        except Exception:  # noqa: BLE001 - a desktop without the tool is a condition
+            size = None
+        _asked["at"], _asked["size"] = now, size
+        return size
+
+
+def read_framebuffer_size(path: str = SCREEN_SIZE) -> tuple[int, int] | None:
+    """Read the console framebuffer's size, for a desktop that answers nothing."""
     try:
         with open(path, "r", encoding="ascii") as handle:
             text = handle.read(64)
@@ -85,6 +125,17 @@ def read_screen_size(path: str = SCREEN_SIZE) -> tuple[int, int] | None:
         return None
     width, height = int(found.group(1)), int(found.group(2))
     return (width, height) if width >= 2 and height >= 2 else None
+
+
+def read_screen_size(path: str = SCREEN_SIZE, ask=ask_compositor) -> tuple[int, int] | None:
+    """How big the screen is, in the pixels everything else is measured in.
+
+    Both the cursor and snapping live in these coordinates: a size too small
+    puts half the television out of the cursor's reach and throws away every
+    control beyond it, which looks exactly like a remote that stopped working.
+    """
+    size = ask() if ask is not None else None
+    return size if size is not None else read_framebuffer_size(path)
 
 
 def health(device: str = DEVICE) -> dict:
