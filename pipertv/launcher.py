@@ -28,8 +28,11 @@ import shutil
 import subprocess
 import threading
 import time
+
 from collections import deque
 from pathlib import Path
+
+from .window import geometry, validate_window
 
 LOG = logging.getLogger(__name__)
 
@@ -117,7 +120,7 @@ class ServiceLauncher:
 
     def __init__(self, services=None, browser=None, spawn=subprocess.Popen,
                  environ=None, profiles=None, clock=time.time, remembered: int = 5,
-                 screen=(1920, 1080)):
+                 screen=(1920, 1080), window=None):
         self.services = dict(SERVICES if services is None else services)
         self.environ = os.environ if environ is None else environ
         self.requested = browser
@@ -126,11 +129,19 @@ class ServiceLauncher:
         self.profiles = Path(profiles) if profiles else self._default_profiles()
         self.clock = clock
         self.screen = (int(screen[0]), int(screen[1]))
+        self.window = validate_window(window or {})
         self._lock = threading.RLock()
         self._process = None
         self._running: dict | None = None
         self._error: str | None = None
         self._history: deque = deque(maxlen=max(1, int(remembered)))
+
+    def configure(self, window) -> dict:
+        """Apply a checked window preference to whatever opens next."""
+        checked = validate_window(window)
+        with self._lock:
+            self.window = checked
+            return dict(checked)
 
     # --- what this Pi can do ---------------------------------------------
 
@@ -202,9 +213,9 @@ By typing at it, or by snapping the cursor through it.
             return list(own)
         profile = self.profiles / service["id"]
         profile.mkdir(parents=True, exist_ok=True)
-        width, height = self.screen
+        (width, height), (left, top) = geometry(self.window, self.screen)
         command = [self.browser, *KIOSK_ARGS, f"--user-data-dir={profile}",
-                   f"--window-size={width},{height}", "--window-position=0,0"]
+                   f"--window-size={width},{height}", f"--window-position={left},{top}"]
         if self.environ.get("WAYLAND_DISPLAY"):
             # Chromium otherwise picks its X11 backend and exits with "Missing X
             # server or $DISPLAY" on a Wayland session such as this Pi's labwc.

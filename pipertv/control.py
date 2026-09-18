@@ -27,6 +27,7 @@ from .pointer import read_screen_size
 from .roles import RoleMap
 from .session import DESKTOP_MODES, ControlSession
 from .targets import AtspiTargets
+from .window import validate_window
 from .tv import ButtonLog
 
 LOG = logging.getLogger(__name__)
@@ -117,7 +118,8 @@ class RemoteControl:
         self.buttons = ButtonLog() if buttons is None else buttons
         self.launcher = (ServiceLauncher(browser=browser, screen=self.screen)
                          if launcher is None else launcher)
-        self.interface = Interface(port=port) if interface is None else interface
+        self.interface = (Interface(port=port, screen=self.screen)
+                          if interface is None else interface)
         self.keys = ServiceKeys() if keys is None else keys
         self.onscreen = OnScreenKeyboard() if onscreen is None else onscreen
         self.watcher = (FocusWatcher(on_text_field=self._text_field_focused)
@@ -129,6 +131,7 @@ class RemoteControl:
         self._clicked_at = -float("inf")
         self.roles = self._load_roles()
         self.pointer = self._load_pointer()
+        self.window = self._load_window()
         self.monitor = CecMonitor(device=cec_device) if monitor is None else monitor
         self.controller = (IRController(store, self._press, self._listening,
                                         device=device,
@@ -170,6 +173,44 @@ class RemoteControl:
         except Exception as exc:  # noqa: BLE001
             LOG.warning("Applying the pointer settings: %s", exc)
         return settings
+
+    def _load_window(self) -> dict:
+        """Read whether Piper fills the screen, falling back to the default.
+
+        A hand-edited library must not stop the remote working; an unusable
+        preference means everything opens full screen, as it always did.
+        """
+        try:
+            settings = validate_window(self.store.snapshot().get("window") or {})
+        except Exception as exc:  # noqa: BLE001 - the remote must still start
+            LOG.warning("Ignoring the saved window settings: %s", exc)
+            settings = validate_window({})
+        try:
+            self.launcher.configure(settings)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("Applying the window settings: %s", exc)
+        return settings
+
+    def reload_window(self) -> dict:
+        """Take the saved window shape, and show the interface in it."""
+        with self._source_lock:
+            self.window = self._load_window()
+        self.show_interface()
+        return dict(self.window)
+
+    def show_interface(self) -> dict:
+        """Put the interface back on the screen, in the shape that is set.
+
+        A shape that produces no window falls back to the one that always
+        works. Nobody at the television can undo a setting that left them with
+        a black screen, so a failed window is not allowed to be the end of it.
+        """
+        result = self.interface.open(self.window)
+        if not result.get("showing") and self.window.get("windowed"):
+            LOG.warning("A window did not appear; filling the screen instead")
+            self.window = validate_window({})
+            result = self.interface.open(self.window)
+        return result
 
     def reload_pointer(self) -> dict:
         with self._source_lock:
@@ -647,6 +688,7 @@ class RemoteControl:
         state["focus"] = self.watcher.health()
         state["keyboard"] = self.onscreen.health()
         state["pointer_settings"] = dict(self.pointer)
+        state["window_settings"] = dict(self.window)
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
                             "desktop": self.desktop.health(),

@@ -197,17 +197,16 @@ sleep 4
 
 if [ "$KIOSK" = 1 ]; then
   say "Starting the interface on the TV"
-  # --disable-gpu and --password-store=basic are not tidiness: without them the
-  # Pi 3B+ fails EGL and chromium blocks on the keyring prompt.
-  timeout 30 ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" \
-    "$WAYLAND_ENV; setsid nohup chromium --ozone-platform=wayland --kiosk --start-fullscreen \
-      --disable-gpu --password-store=basic --no-first-run --noerrdialogs \
-      --no-default-browser-check --force-renderer-accessibility \
-      --user-data-dir=$PROFILE 'http://127.0.0.1:$PORT/tv?boot=0' \
-      > /tmp/kiosk.log 2>&1 < /dev/null & disown; exit 0" || true
-  # Chromium needs longer than this feels like on a 3B+; checking too early
-  # reports no interface when one is on its way up.
-  sleep 12
+  # The app puts it there, rather than this script spelling out a browser
+  # command line of its own: whether the interface fills the screen or sits in
+  # a window is a setting now, and only one of the two can be right about it.
+  # It waits for the window, so this waits for it.
+  pi "curl -s -m 45 -X POST -H 'Content-Type: application/json' -d '{}' \
+       http://127.0.0.1:$PORT/api/tv/interface" \
+    | python3 -c "import json,sys
+try: shown = json.load(sys.stdin)
+except Exception: shown = {}
+print('interface:', 'up' if shown.get('showing') else shown.get('error') or 'no answer')"
 fi
 
 # --- prove it ---------------------------------------------------------------

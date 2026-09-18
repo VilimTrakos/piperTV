@@ -197,6 +197,14 @@ class FakeRemote:
         self.rebound = getattr(self, "rebound", 0) + 1
         return {}
 
+    def reload_window(self):
+        self.reshaped = getattr(self, "reshaped", 0) + 1
+        return {}
+
+    def show_interface(self):
+        self.shown = getattr(self, "shown", 0) + 1
+        return {"port": 8765, "showing": True, "error": None}
+
     def start(self):
         self.started += 1
 
@@ -250,6 +258,49 @@ class LoggingTests(unittest.TestCase):
     def test_the_interfaces_four_requests_a_second_are_not(self):
         say_what_happens()
         self.assertFalse(logging.getLogger("werkzeug").isEnabledFor(logging.INFO))
+
+
+class WindowSettingTests(unittest.TestCase):
+    """Whether Piper fills this television or sits in a window on it."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.path = Path(self.temporary.name) / "recordings.json"
+        self.remote = FakeRemote()
+        self.app = create_app(data=self.path, demo=True, remote=self.remote)
+        self.client = self.app.test_client()
+        workbench = self.app.extensions["pipertv"]
+        self.addCleanup(workbench.backend.close)
+        self.addCleanup(workbench.close)
+
+    def test_the_default_is_the_whole_screen(self):
+        result = self.client.get("/api/window").get_json()
+        self.assertFalse(result["settings"]["windowed"])
+        self.assertIn("width", result["limits"])
+
+    def test_a_window_is_saved_and_survives_a_restart(self):
+        answer = self.client.put("/api/window", json={"windowed": True})
+        self.assertEqual(answer.status_code, 200)
+        self.assertTrue(answer.get_json()["settings"]["windowed"])
+        again = create_app(data=self.path, demo=True).test_client()
+        self.assertTrue(again.get("/api/window").get_json()["settings"]["windowed"])
+
+    def test_changing_it_puts_the_interface_back_in_the_new_shape(self):
+        # A browser cannot be talked out of the shape it was started with.
+        self.client.put("/api/window", json={"windowed": True})
+        self.assertEqual(getattr(self.remote, "reshaped", 0), 1)
+
+    def test_a_nonsense_setting_is_refused_with_a_reason(self):
+        answer = self.client.put("/api/window", json={"width": 10})
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("width", answer.get_json()["error"])
+
+    def test_the_interface_can_be_asked_for_by_name(self):
+        answer = self.client.post("/api/tv/interface", json={})
+        self.assertEqual(answer.status_code, 200)
+        self.assertTrue(answer.get_json()["showing"])
+        self.assertEqual(getattr(self.remote, "shown", 0), 1)
 
 
 class PointerSettingTests(unittest.TestCase):

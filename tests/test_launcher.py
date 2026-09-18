@@ -156,6 +156,23 @@ class LauncherTests(unittest.TestCase):
         launcher.launch("browser")
         self.assertEqual(self.spawn.started[0].command[-1], "--app=https://www.google.com")
 
+    def test_a_windowed_service_opens_centred_rather_than_filling_the_screen(self):
+        # The same Pi seen over VNC has work going on around Piper.
+        launcher = self.build(window={"windowed": True, "width": 1280, "height": 720})
+        launcher.launch("browser")
+        command = self.spawn.started[0].command
+        self.assertIn("--window-size=1280,720", command)
+        self.assertIn("--window-position=320,180", command)
+
+    def test_the_shape_can_be_changed_without_a_restart(self):
+        launcher = self.build()
+        launcher.launch("browser")
+        self.assertIn("--window-size=1920,1080", self.spawn.started[0].command)
+        launcher.configure({"windowed": True, "width": 1024, "height": 768})
+        launcher.stop()
+        launcher.launch("browser")
+        self.assertIn("--window-size=1024,768", self.spawn.started[-1].command)
+
     def test_voyo_opens_the_croatian_service(self):
         launcher = self.build()
         launcher.launch("voyo")
