@@ -227,7 +227,11 @@ else:
           '| browser:', services.get('browser'))
 print('detection:', (control.get('detection') or {}).get('state'))
 PY
-WINDOWS=\$(ps -eo args | grep -c \"[c]hromium --type=renderer\")
+for _ in \$(seq 20); do
+  WINDOWS=\$(ps -eo args | grep -c \"[c]hromium --type=renderer\")
+  [ \"\$WINDOWS\" -ge 1 ] && break
+  sleep 1                     # a renderer takes a few seconds on a 3B+
+done
 echo \"interface windows: \$WINDOWS\"
 [ \"\$WINDOWS\" -ge 1 ] || { echo 'the interface did not come up; last lines of its log:'; tail -5 /tmp/kiosk.log; exit 1; }"
 
