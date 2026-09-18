@@ -20,7 +20,7 @@ from .desktop import POINTER_DEFAULTS, DesktopControl, validate_pointer
 from .interface import Interface
 from .ir_control import DIRECTIONS, IRController
 from .focus import TEXT_ROLES, FocusWatcher
-from .keyboard import OnScreenKeyboard, ServiceKeys
+from .keyboard import PAGE_BACK, OnScreenKeyboard, ServiceKeys
 from .launcher import SNAP, ServiceLauncher
 from .pointer import health as pointer_health
 from .pointer import read_screen_size
@@ -408,8 +408,9 @@ class RemoteControl:
 
         A television app is typed at. A site built for a mouse is snapped
         through: its arrow keys do nothing, so the cursor jumps between the
-        controls the page reports and OK clicks the one it landed on. Back is
-        typed either way, because escape closes an overlay in both.
+        controls the page reports and OK clicks the one it landed on. Back
+        differs too: an application closes what it has open, while a page has
+        nothing to close and goes back to the one before it instead.
         """
         running = self.launcher.running()
         if running is None:
@@ -423,6 +424,10 @@ class RemoteControl:
             position = self.desktop.press(action, mode=driving)
             if action == "ok":
                 self._look_after_click(position)
+            return
+        if driving is not None and action == "back":
+            # On a page, escape closes nothing and back means the page before.
+            self.keys.send(PAGE_BACK)
             return
         self.keys.send(action)
 
