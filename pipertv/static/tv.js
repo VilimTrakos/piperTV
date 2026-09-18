@@ -414,9 +414,9 @@
   }
 
   function visibleRows() {
-    // A section's own row is always there; what is under it is there when the
-    // section has been opened.
-    return OPTIONS.rows.filter((row) => row.kind === "section" || row.kind === "window"
+    // A section's own row is always there, and so is anything that belongs to
+    // no section; what is under a section is there once it has been opened.
+    return OPTIONS.rows.filter((row) => row.section === null || row.kind === "section"
       || OPTIONS.open.has(row.section));
   }
 
