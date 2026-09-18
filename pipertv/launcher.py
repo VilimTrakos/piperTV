@@ -69,9 +69,6 @@ SERVICES = {
     # Croatia's own, and the reason the catalogue is a list rather than a
     # guess: what is worth a tile depends on where the television is.
     "voyo": {"name": "Voyo", "url": "https://voyo.hr", "control": SNAP},
-    # Plex's web app reaches a server on this network as readily as one on the
-    # internet; app.plex.tv is the front door to both.
-    "plex": {"name": "Plex", "url": "https://app.plex.tv/desktop", "control": SNAP},
     "browser": {"name": "Web browser", "url": "https://www.google.com",
                 "control": SNAP},
     # Not a page at all: Kodi decodes video in the Pi's own hardware, which is

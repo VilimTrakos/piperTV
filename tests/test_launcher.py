@@ -227,7 +227,7 @@ class LauncherTests(unittest.TestCase):
                 launcher.launch(value)
         self.assertEqual([service["id"] for service in launcher.catalogue()],
                          ["youtube", "prime", "netflix", "disney", "hbo", "voyo",
-                          "plex", "browser", "kodi"])
+                          "browser", "kodi"])
 
     # --- one service at a time -------------------------------------------
 
