@@ -406,3 +406,34 @@ body.is-pointing .corner { cursor: pointer; }
 body.is-pointing .tile:hover,
 body.is-pointing .option:hover { outline: 1px solid var(--ink-30); }
 body.is-pointing .corner:hover { border-color: var(--ink-30); }
+
+/* --- options: a back a mouse can reach, and the remote in groups -------- */
+
+.back-button {
+  padding: calc(8 * var(--u)) calc(16 * var(--u));
+  border: 1px solid var(--panel-edge);
+  border-radius: calc(10 * var(--u));
+  background: var(--panel);
+  color: var(--ink-70);
+  font-family: var(--mono);
+  font-size: calc(18 * var(--u));
+  cursor: inherit;
+}
+body.is-pointing .back-button { cursor: pointer; }
+body.is-pointing .back-button:hover { color: var(--ink); border-color: var(--ink-30); }
+
+.option-section .option-label {
+  font-size: calc(20 * var(--u));
+  letter-spacing: calc(2 * var(--u));
+  text-transform: uppercase;
+  color: var(--ink-45);
+}
+.option-section.is-focused .option-label { color: var(--ink); }
+.option-role .option-label,
+.option-button .option-label { padding-left: calc(24 * var(--u)); }
+
+.option-count {
+  margin: calc(20 * var(--u)) 0 0;
+  font-size: calc(18 * var(--u));
+  color: var(--ink-30);
+}
