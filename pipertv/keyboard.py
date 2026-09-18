@@ -56,6 +56,17 @@ KEYS = {"up": KEY_UP, "down": KEY_DOWN, "left": KEY_LEFT, "right": KEY_RIGHT,
         "ok": KEY_ENTER, "back": KEY_ESC, "home": KEY_HOME, "space": KEY_SPACE,
         "backspace": KEY_BACKSPACE, "enter": KEY_ENTER, "shift": KEY_LEFTSHIFT,
         **LETTERS, **PUNCTUATION}
+# Keys held together rather than tapped. A page is not an application: escape
+# closes nothing on one, and what back means on a web page is the page before
+# this one, which every browser reaches by holding alt and pressing left.
+KEY_LEFTALT = 56
+PAGE_BACK = "page back"
+CHORDS = {PAGE_BACK: (KEY_LEFTALT, KEY_LEFT)}
+
+
+def every_code():
+    """Every key this keyboard may ever press, chords included."""
+    return sorted(set(KEYS.values()) | {code for chord in CHORDS.values() for code in chord})
 
 
 class VirtualKeyboard:
@@ -98,7 +109,7 @@ class VirtualKeyboard:
             try:
                 self._ioctl(UI_SET_EVBIT, EV_KEY)
                 self._ioctl(UI_SET_EVBIT, EV_SYN)
-                for code in sorted(set(KEYS.values())):
+                for code in every_code():
                     self._ioctl(UI_SET_KEYBIT, code)
                 name = self.name.encode("ascii", "replace")[:79]
                 self._ioctl(UI_DEV_SETUP, struct.pack(SETUP, BUS_VIRTUAL, 0x1209,
@@ -126,13 +137,23 @@ class VirtualKeyboard:
             raise OSError("The virtual keyboard accepted only part of an event batch.")
 
     def tap(self, key: str) -> str:
-        """Press and release one key, named by what Piper calls it."""
-        code = KEYS.get(key)
-        if code is None:
-            raise ValueError(f"A remote cannot type {key!r}.")
+        """Press and release one key, or one combination, as Piper names it.
+
+        A combination is held the way a person holds one: the modifier goes
+        down first and comes up last, or the key arrives on its own and does
+        something else entirely.
+        """
+        codes = CHORDS.get(key)
+        if codes is None:
+            code = KEYS.get(key)
+            if code is None:
+                raise ValueError(f"A remote cannot type {key!r}.")
+            codes = (code,)
         with self._lock:
-            self._write(((EV_KEY, code, 1),))
-            self._write(((EV_KEY, code, 0),))
+            for code in codes:
+                self._write(((EV_KEY, code, 1),))
+            for code in reversed(codes):
+                self._write(((EV_KEY, code, 0),))
             return key
 
     def write(self, text: str) -> int:
@@ -186,7 +207,7 @@ class VirtualKeyboard:
             try:
                 # Release everything: a closed session must not leave a key
                 # held down, which would repeat into the desktop forever.
-                for code in sorted(set(KEYS.values())):
+                for code in every_code():
                     self._write(((EV_KEY, code, 0),))
             except OSError:
                 pass
@@ -344,7 +365,7 @@ class ServiceKeys:
     def send(self, key: str):
         """Type one key into whatever holds focus. Returns what was sent."""
         with self._lock:
-            if key not in KEYS:
+            if key not in KEYS and key not in CHORDS:
                 return None  # volume, power, digits: not ours to forward
             try:
                 if self._keyboard is None:

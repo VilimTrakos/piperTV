@@ -64,11 +64,13 @@ class DeviceTests(unittest.TestCase):
         with fake_keyboard() as (_device, fake):
             declared = [value for request, value in fake.ioctls
                         if request == keyboard.UI_SET_KEYBIT]
-        self.assertEqual(sorted(declared), sorted(set(KEYS.values())))
+        self.assertEqual(sorted(declared), keyboard.every_code())
         # A search box needs letters; a remote does not have them, so they are
         # here for what the on-screen keyboard composes and nothing else.
         self.assertIn(keyboard.LETTERS["a"], declared)
-        # Function keys, modifiers beyond shift, and the rest stay out.
+        # Alt is declared for the one combination a page understands.
+        self.assertIn(keyboard.KEY_LEFTALT, declared)
+        # Function keys, the remaining modifiers, and the rest stay out.
         for absent in (59, 125, 29):  # F1, Meta, Ctrl
             with self.subTest(code=absent):
                 self.assertNotIn(absent, declared)
@@ -133,7 +135,7 @@ class DeviceTests(unittest.TestCase):
             before = len(fake.writes)
             device.close()
             released = {code for code, value in fake.keys(before) if value == 0}
-            self.assertEqual(released, set(KEYS.values()),
+            self.assertEqual(released, set(keyboard.every_code()),
                              "a held key would repeat into the desktop for ever")
             self.assertIn(keyboard.UI_DEV_DESTROY, fake.requests())
             self.assertEqual(fake.closed, [88])
@@ -212,6 +214,47 @@ class ServiceKeysTests(unittest.TestCase):
         self.keyboard.fail_on_open = False
         self.assertEqual(self.keys.send("up"), "up")
         self.assertTrue(self.keys.health()["ok"])
+
+
+class ChordTests(unittest.TestCase):
+    """Keys held together, for what a page means by back."""
+
+    def test_going_back_a_page_holds_alt_over_the_left_arrow(self):
+        with fake_keyboard() as (device, fake):
+            before = len(fake.writes)
+            device.tap(keyboard.PAGE_BACK)
+            self.assertEqual(fake.keys(before),
+                             [(keyboard.KEY_LEFTALT, 1), (KEY_LEFT, 1),
+                              (KEY_LEFT, 0), (keyboard.KEY_LEFTALT, 0)])
+
+    def test_the_modifier_is_released_last(self):
+        # Released in the other order, the left arrow arrives on its own and
+        # moves the cursor instead of leaving the page.
+        with fake_keyboard() as (device, fake):
+            before = len(fake.writes)
+            device.tap(keyboard.PAGE_BACK)
+            pressed = fake.keys(before)
+        self.assertEqual(pressed[-1][0], keyboard.KEY_LEFTALT)
+
+    def test_a_service_may_be_sent_one(self):
+        sent = []
+
+        class Recorder:
+            def open(self):
+                return self
+
+            def tap(self, key):
+                sent.append(key)
+                return key
+
+        keys = ServiceKeys(factory=Recorder)
+        self.assertEqual(keys.send(keyboard.PAGE_BACK), keyboard.PAGE_BACK)
+        self.assertEqual(sent, [keyboard.PAGE_BACK])
+
+    def test_anything_it_does_not_know_is_still_refused(self):
+        with fake_keyboard() as (device, _fake):
+            with self.assertRaises(ValueError):
+                device.tap("page forward")
 
 
 class OnScreenKeyboardTests(unittest.TestCase):

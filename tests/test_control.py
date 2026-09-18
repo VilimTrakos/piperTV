@@ -653,14 +653,35 @@ class ServiceTests(unittest.TestCase):
                          "the visit chose piper; the service asks for snapping")
         self.assertEqual(control.keys.sent, [])
 
-    def test_back_is_typed_even_to_a_snapped_service(self):
-        # Escape closes an overlay on a page as much as in an app.
+    def test_back_on_a_page_goes_back_a_page(self):
+        # A page has nothing for escape to close: it is left by going back to
+        # whatever was on the screen before it.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", self.session_id(control))
         control._press("back")
-        self.assertEqual(control.keys.sent, ["back"])
+        self.assertEqual(control.keys.sent, ["page back"])
         self.assertEqual(control.desktop.presses, [])
+
+    def test_back_in_an_application_still_closes_what_it_has_open(self):
+        # A television app has its own idea of back, and escape is how it
+        # hears it; there is no page behind it to return to.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("youtube", self.session_id(control))
+        control._press("back")
+        self.assertEqual(control.keys.sent, ["back"])
+
+    def test_back_takes_the_keyboard_away_before_it_leaves_the_page(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        control.open_keyboard()
+        control._press("back")
+        self.assertFalse(control.onscreen.showing())
+        self.assertEqual(control.keys.sent, [], "the page stayed where it was")
+        control._press("back")
+        self.assertEqual(control.keys.sent, ["page back"])
 
     def test_a_television_app_is_typed_at_rather_than_snapped(self):
         control, _monitor, _controller, _targets = build("active")
