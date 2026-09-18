@@ -6,8 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pipertv import pointer
-from pipertv.pointer import (AXIS_MAX, VirtualPointer, health, read_screen_size,
-                             to_axis, to_pixel)
+from pipertv.pointer import (AXIS_MAX, VirtualPointer, ask_compositor, health,
+                             read_framebuffer_size, read_screen_size, to_axis, to_pixel)
 
 SCREEN = (1920, 1080)
 
@@ -98,16 +98,90 @@ class ScreenSizeTests(unittest.TestCase):
 
     def test_reads_the_framebuffer_size(self):
         self.path.write_text("1920,1080\n")
-        self.assertEqual(read_screen_size(str(self.path)), (1920, 1080))
+        self.assertEqual(read_framebuffer_size(str(self.path)), (1920, 1080))
 
     def test_unusable_contents_report_nothing(self):
         for text in ("", "garbage", "1920", "1,1", "1920,1080,60", "-1920,1080"):
             with self.subTest(text=text):
                 self.path.write_text(text)
-                self.assertIsNone(read_screen_size(str(self.path)))
+                self.assertIsNone(read_framebuffer_size(str(self.path)))
 
     def test_a_missing_file_reports_nothing(self):
-        self.assertIsNone(read_screen_size(str(self.path.with_name("absent"))))
+        self.assertIsNone(read_framebuffer_size(str(self.path.with_name("absent"))))
+
+
+class Answer:
+    """Stands in for the display tool the compositor answers through."""
+
+    def __init__(self, stdout="", fail=None):
+        self.stdout = stdout
+        self.fail = fail
+        self.calls = 0
+
+    def __call__(self, command, **_kwargs):
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        return self
+
+
+WLR_RANDR = """HDMI-A-1 "GRU GRUNDIG TV (HDMI-A-1)"
+  Modes:
+    1920x1080 px, 50.000000 Hz (preferred, current)
+    1600x1200 px, 60.000000 Hz
+"""
+
+
+class ScreenSizeTests(unittest.TestCase):
+    """What the screen measures, which is not what the console framebuffer says."""
+
+    def setUp(self):
+        pointer._asked.update({"at": -float("inf"), "size": None})
+        self.addCleanup(pointer._asked.update, {"at": -float("inf"), "size": None})
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.path = Path(self.temporary.name) / "virtual_size"
+        self.path.write_text("1024,768\n")   # the mode the kernel set at boot
+
+    def clock(self):
+        return 1000.0
+
+    def test_the_mode_the_screen_is_running_is_the_one_that_counts(self):
+        answer = Answer(WLR_RANDR)
+        self.assertEqual(ask_compositor(run=answer, clock=self.clock), (1920, 1080))
+
+    def test_the_stale_console_size_does_not_win(self):
+        # A Pi that booted with the television off keeps 1024x768 in fb0 for
+        # ever, and half the screen would be out of the cursor's reach.
+        answer = Answer(WLR_RANDR)
+        size = read_screen_size(str(self.path),
+                                ask=lambda: ask_compositor(run=answer, clock=self.clock))
+        self.assertEqual(size, (1920, 1080))
+
+    def test_a_desktop_that_answers_nothing_falls_back_to_the_framebuffer(self):
+        self.assertEqual(read_screen_size(str(self.path), ask=lambda: None), (1024, 768))
+
+    def test_a_pi_without_the_tool_is_not_a_failure(self):
+        answer = Answer(fail=FileNotFoundError("no wlr-randr here"))
+        self.assertIsNone(ask_compositor(run=answer, clock=self.clock))
+
+    def test_an_answer_with_no_current_mode_reports_nothing(self):
+        answer = Answer("HDMI-A-1 \"TV\"\n  Enabled: no\n")
+        self.assertIsNone(ask_compositor(run=answer, clock=self.clock))
+
+    def test_it_is_not_asked_again_between_presses(self):
+        answer = Answer(WLR_RANDR)
+        for _ in range(5):
+            ask_compositor(run=answer, clock=self.clock)
+        self.assertEqual(answer.calls, 1)
+
+    def test_a_television_switched_on_later_is_noticed(self):
+        answer = Answer(WLR_RANDR)
+        moments = iter([1000.0, 1000.0 + pointer.SIZE_CACHE_S + 1])
+        self.assertEqual(ask_compositor(run=answer, clock=lambda: next(moments)),
+                         (1920, 1080))
+        ask_compositor(run=answer, clock=lambda: next(moments))
+        self.assertEqual(answer.calls, 2)
 
 
 class HealthTests(unittest.TestCase):
