@@ -137,6 +137,12 @@ if [ -n "$WATCHING" ] && [ "$FORCE" = 0 ]; then
   exit 1
 fi
 
+# What the interface is showing has to be asked BEFORE the new files land, or
+# the answer is always "the same": the comparison would be the copy against
+# itself, and a changed page would never reach the television.
+PAGES="find pipertv/static -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1"
+WAS_SHOWING=$(pi "cd $DIR && $PAGES" 2>/dev/null || echo "")
+
 say "Sending $VERSION"
 rsync -az --delete --exclude=__pycache__ -e "ssh -S $CONTROL -o BatchMode=yes" \
   "$STAGE/pipertv/" "$LOGIN@$HOST:$DIR/pipertv/"
@@ -157,17 +163,17 @@ if [ -z "$KIOSK" ]; then
   # The interface is a page a browser is already showing, so it needs
   # restarting only when that page changed. A Python change is picked up by
   # the app restart alone, and the screen never goes black.
-  PAGES="find pipertv/static -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1"
   SHOWING=$(pi "ps -eo args | grep -c '[c]hromium --type=renderer' || true")
   if [ "${SHOWING:-0}" -lt 1 ]; then
     # Nothing is showing it -- after a reboot, or a crash. Whatever changed,
     # the interface has to be started or the television stays on the desktop.
     KIOSK=1
     echo "the interface is not on the screen; starting it"
-  elif [ "$(cd "$STAGE" && eval "$PAGES")" = "$(pi "cd $DIR && $PAGES")" ]; then
+  elif [ "$(cd "$STAGE" && eval "$PAGES")" = "$WAS_SHOWING" ]; then
     KIOSK=0
   else
     KIOSK=1
+    echo "the interface page changed; restarting it"
   fi
 fi
 
