@@ -247,6 +247,9 @@ body {
   width: calc(var(--u) * 560);
   margin-left: calc(var(--u) * -280);
   text-align: center;
+  /* It says what is chosen; it does not take part in choosing. Its box lies
+     over the lower tiles, and a mouse aimed at one of them landed on this. */
+  pointer-events: none;
 }
 
 .focus-name {
@@ -269,6 +272,7 @@ body {
   text-align: center;
   font-size: calc(var(--u) * 21);
   color: var(--ink-30);
+  pointer-events: none;          /* it spans the screen and explains, no more */
 }
 
 /* --- notices ----------------------------------------------------------- */
