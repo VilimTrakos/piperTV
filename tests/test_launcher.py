@@ -149,6 +149,18 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(command[-1], "--app=https://www.primevideo.com")
         self.assertFalse([part for part in command if part.startswith("--user-agent=")])
 
+    def test_the_browser_opens_on_a_search_page(self):
+        # The tile is a browser, and a browser with nowhere to go is a blank
+        # window: it opens where someone would start.
+        launcher = self.build()
+        launcher.launch("browser")
+        self.assertEqual(self.spawn.started[0].command[-1], "--app=https://www.google.com")
+
+    def test_voyo_opens_the_croatian_service(self):
+        launcher = self.build()
+        launcher.launch("voyo")
+        self.assertEqual(self.spawn.started[0].command[-1], "--app=https://voyo.hr")
+
     def test_a_wayland_session_gets_the_wayland_backend(self):
         # Without this chromium chooses X11 and exits with "Missing X server".
         launcher = self.build()
@@ -214,8 +226,8 @@ class LauncherTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 launcher.launch(value)
         self.assertEqual([service["id"] for service in launcher.catalogue()],
-                         ["youtube", "prime", "netflix", "disney", "hbo", "plex",
-                          "browser", "kodi"])
+                         ["youtube", "prime", "netflix", "disney", "hbo", "voyo",
+                          "plex", "browser", "kodi"])
 
     # --- one service at a time -------------------------------------------
 
