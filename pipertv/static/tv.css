@@ -447,8 +447,13 @@ body.is-pointing .back-button:hover { color: var(--ink); border-color: var(--ink
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: calc(6 * var(--u));
-  padding: calc(18 * var(--u)) calc(24 * var(--u));
+  /* Nineteen rows have to fit between the header and the hint, or the keys at
+     the bottom of the remote are the ones nobody can reach. */
+  gap: calc(5 * var(--u));
+  padding: calc(14 * var(--u)) calc(20 * var(--u));
+  width: calc(560 * var(--u));
+  justify-self: center;
+  align-self: center;
   border: 1px solid var(--panel-edge);
   border-radius: calc(28 * var(--u));
   background: #0E1116;
@@ -463,15 +468,15 @@ body.is-pointing .back-button:hover { color: var(--ink); border-color: var(--ink
 }
 
 .remote-key {
-  min-width: calc(92 * var(--u));
-  padding: calc(8 * var(--u)) calc(10 * var(--u));
+  min-width: calc(84 * var(--u));
+  padding: calc(5 * var(--u)) calc(9 * var(--u));
   border: 1px solid rgba(255, 255, 255, .09);
-  border-radius: calc(9 * var(--u));
+  border-radius: calc(8 * var(--u));
   background: #171B22;
   color: var(--ink-45);
   font-family: var(--mono);
-  font-size: calc(17 * var(--u));
-  line-height: 1.1;
+  font-size: calc(15 * var(--u));
+  line-height: 1.15;
   text-align: center;
   cursor: inherit;
 }
@@ -482,7 +487,7 @@ body.is-pointing .back-button:hover { color: var(--ink); border-color: var(--ink
   color: var(--ink);
   box-shadow: 0 0 0 calc(3 * var(--u)) var(--accent);
 }
-.remote-key.is-colour { min-width: calc(66 * var(--u)); }
+.remote-key.is-colour { min-width: calc(60 * var(--u)); }
 .remote-key.red { border-color: #A8382F; }
 .remote-key.green { border-color: #3B7A57; }
 .remote-key.yellow { border-color: #C39A22; }
