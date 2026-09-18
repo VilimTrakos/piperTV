@@ -36,15 +36,23 @@ DRIVES = ("snap", "nudge")
 # it belongs where a person goes to tune it.
 POINTER_DEFAULTS = {"drive": "snap", "step_px": 24, "max_step_px": 180,
                     "accelerate_within_s": 0.25, "scroll_clicks": 2,
-                    "hold_delay_s": 0.65, "hold_interval_s": 0.25}
+                    "hold_delay_s": 0.65, "hold_interval_s": 0.25,
+                    "reserved_top_px": 36}
 POINTER_LIMITS = {"step_px": (2, 200), "max_step_px": (8, 600),
                   "accelerate_within_s": (0.05, 2.0), "scroll_clicks": (1, 10),
-                  "hold_delay_s": (0.2, 3.0), "hold_interval_s": (0.05, 1.0)}
+                  "hold_delay_s": (0.2, 3.0), "hold_interval_s": (0.05, 1.0),
+                  "reserved_top_px": (0, 400)}
 SECONDS = ("accelerate_within_s", "hold_delay_s", "hold_interval_s")
 # The cursor is at an edge when a step would not move it any further. A page
 # then scrolls instead, which is what a hand would do with the wheel rather
 # than carry the cursor off to a scrollbar.
 EDGE_PX = 2
+# A strip along the top of the screen that is not the page's, whatever is
+# drawn there. Measured on this Pi: the desktop's panel hides itself but keeps
+# its whole 36-pixel height as an input region, and a wheel turned inside that
+# strip reaches the panel instead of the page -- at y=35 nothing moved, at
+# y=36 the page scrolled. The cursor stays below it, so scrolling up works the
+# way scrolling down always did. A Pi with nothing up there sets it to zero.
 
 
 def validate_pointer(values) -> dict:
@@ -228,6 +236,7 @@ class DesktopControl:
         self._standing = None
         self._standing_at = None
         self.scroll_clicks = POINTER_DEFAULTS["scroll_clicks"]
+        self.reserved_top_px = POINTER_DEFAULTS["reserved_top_px"]
 
     def configure(self, settings: dict) -> dict:
         """Apply a checked pointer preference to the live cursor."""
@@ -237,6 +246,7 @@ class DesktopControl:
             self.max_step_px = checked["max_step_px"]
             self.accelerate_within_s = checked["accelerate_within_s"]
             self.scroll_clicks = checked["scroll_clicks"]
+            self.reserved_top_px = checked["reserved_top_px"]
             self._streak = 0
             return self.settings()
 
@@ -244,7 +254,12 @@ class DesktopControl:
         with self._lock:
             return {"step_px": self.step_px, "max_step_px": self.max_step_px,
                     "accelerate_within_s": self.accelerate_within_s,
-                    "scroll_clicks": self.scroll_clicks}
+                    "scroll_clicks": self.scroll_clicks,
+                    "reserved_top_px": self.reserved_top_px}
+
+    def reachable(self, y: int) -> int:
+        """Keep a cursor position out of the strip that is not the page's."""
+        return max(int(self.reserved_top_px), int(y))
 
     def _scroll(self, pointer, button) -> tuple:
         """Turn the wheel in the direction the cursor cannot go any further."""
@@ -254,7 +269,7 @@ class DesktopControl:
     def _at_edge(self, pointer, button) -> bool:
         x, y = pointer.position
         if button == "up":
-            return y <= EDGE_PX
+            return y <= self.reserved_top_px + EDGE_PX
         if button == "down":
             return y >= self.screen[1] - 1 - EDGE_PX
         return False
@@ -291,8 +306,11 @@ class DesktopControl:
         # press put it on one: a wide button hands over to whatever sits under
         # any part of it, which is what makes a row walk in order.
         standing = self._standing if self._standing_at == pointer.position else None
-        found = choose_target(pointer.position, self.targets.targets(), button,
-                              box=standing)
+        # A control in the strip along the top cannot be clicked -- the press
+        # would land on whatever owns that strip -- so it is not offered.
+        within = [target for target in self.targets.targets()
+                  if target.get("y", 0) >= self.reserved_top_px]
+        found = choose_target(pointer.position, within, button, box=standing)
         if found is not None and hasattr(self.targets, "resolve"):
             found = self.targets.resolve(found)
             # Revalidation can return a moved window. A RIGHT press must never
@@ -352,7 +370,8 @@ class DesktopControl:
                     step = self._step(button, self.clock())
                     dx = step if button == "right" else -step if button == "left" else 0
                     dy = step if button == "down" else -step if button == "up" else 0
-                    position = pointer.move_by(dx, dy)
+                    x, y = pointer.position
+                    position = pointer.move_to(x + dx, self.reachable(y + dy))
                     self._error = None
                     return position
                 if button in CLICKS:

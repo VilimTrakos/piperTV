@@ -2,7 +2,8 @@ import logging
 import time
 import unittest
 
-from pipertv.control import STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S, RemoteControl
+from pipertv.control import (BACK_AGAIN_S, STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S,
+                             RemoteControl)
 
 SCREEN = (1920, 1080)
 
@@ -653,15 +654,45 @@ class ServiceTests(unittest.TestCase):
                          "the visit chose piper; the service asks for snapping")
         self.assertEqual(control.keys.sent, [])
 
-    def test_back_on_a_page_goes_back_a_page(self):
+    def test_back_twice_on_a_page_goes_back_a_page(self):
         # A page has nothing for escape to close: it is left by going back to
-        # whatever was on the screen before it.
+        # whatever was on the screen before it, on the second press.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", self.session_id(control))
         control._press("back")
+        self.assertEqual(control.keys.sent, [], "one press leaves the page alone")
+        control._press("back")
         self.assertEqual(control.keys.sent, ["page back"])
         self.assertEqual(control.desktop.presses, [])
+
+    def test_a_third_press_starts_the_gesture_again(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        for _ in range(4):
+            control._press("back")
+        self.assertEqual(control.keys.sent, ["page back", "page back"])
+
+    def test_a_press_aimed_at_something_else_ends_the_gesture(self):
+        # Back, then a look around the page, then back: that second back is
+        # the start of a new request, not the end of an abandoned one.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        control._press("back")
+        control._press("down")
+        control._press("back")
+        self.assertEqual(control.keys.sent, [])
+
+    def test_a_long_wait_between_the_two_is_not_one_gesture(self):
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        control._press("back")
+        control.going_back._asked_at -= BACK_AGAIN_S + 1
+        control._press("back")
+        self.assertEqual(control.keys.sent, [])
 
     def test_back_in_an_application_still_closes_what_it_has_open(self):
         # A television app has its own idea of back, and escape is how it
@@ -672,7 +703,9 @@ class ServiceTests(unittest.TestCase):
         control._press("back")
         self.assertEqual(control.keys.sent, ["back"])
 
-    def test_back_takes_the_keyboard_away_before_it_leaves_the_page(self):
+    def test_back_takes_the_keyboard_away_and_is_spent_on_it(self):
+        # One press turns the keyboard off; it is not also half of a request
+        # to leave the page, which would leave whoever typed somewhere else.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", self.session_id(control))
@@ -680,6 +713,8 @@ class ServiceTests(unittest.TestCase):
         control._press("back")
         self.assertFalse(control.onscreen.showing())
         self.assertEqual(control.keys.sent, [], "the page stayed where it was")
+        control._press("back")
+        self.assertEqual(control.keys.sent, [], "still only one press since")
         control._press("back")
         self.assertEqual(control.keys.sent, ["page back"])
 

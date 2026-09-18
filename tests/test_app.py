@@ -140,6 +140,12 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/export/power?sample=not-a-number").status_code, 400)
 
     def test_cli_uses_one_process_without_debugger_or_reloader(self):
+        # Running it configures logging for the whole process; put that back,
+        # or every test after this one writes Piper's account to the screen.
+        root = logging.getLogger()
+        handlers, level = list(root.handlers), root.level
+        self.addCleanup(root.setLevel, level)
+        self.addCleanup(setattr, root, "handlers", handlers)
         with patch("pipertv.app.create_app", return_value=self.app), patch.object(self.app, "run") as run:
             main(["--demo", "--host", "127.0.0.1", "--port", "8765", "--data", str(self.path)])
         run.assert_called_once_with(host="127.0.0.1", port=8765, threaded=True,

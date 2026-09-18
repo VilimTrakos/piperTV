@@ -1,7 +1,8 @@
 import logging
 import unittest
 
-from pipertv.desktop import CLICKS, DesktopControl, choose_target
+from pipertv.desktop import (CLICKS, POINTER_DEFAULTS, DesktopControl,
+                             choose_target)
 
 # The desktop layer logs whenever it swallows a failure instead of raising into
 # the IR thread. These tests assert on health(), so keep that noise out of the
@@ -226,9 +227,38 @@ class ScrollTests(unittest.TestCase):
         control, _session = self.build()
         control.press("up")
         pointer = control._pointer
-        pointer.position_override = (960, 0)
+        pointer.position_override = (960, control.reserved_top_px)
         control.press("up")
         self.assertEqual(pointer.scrolls[-1], control.scroll_clicks)
+
+    def test_the_cursor_stops_below_the_strip_that_is_not_the_page(self):
+        # Measured on the Pi: the desktop's panel hides itself but keeps its
+        # whole height as an input region, and a wheel turned inside it reaches
+        # the panel rather than the page. Scrolling up did nothing at all.
+        control, _session = self.build()
+        control.press("up")
+        control._pointer._y = control.reserved_top_px + 4
+        for _ in range(6):
+            control.press("up")
+        self.assertGreaterEqual(control._pointer.position[1], control.reserved_top_px)
+        self.assertTrue(control._pointer.scrolls, "and it scrolled instead of stalling")
+
+    def test_the_strip_is_a_setting_a_pi_without_a_panel_can_drop(self):
+        control, _session = self.build()
+        control.configure(dict(POINTER_DEFAULTS, reserved_top_px=0))
+        control.press("up")
+        control._pointer._y = 8
+        control.press("up")
+        self.assertEqual(control._pointer.position[1], 0)
+
+    def test_a_control_under_the_strip_is_not_snapped_to(self):
+        # It is on the screen and cannot be clicked: the press would land on
+        # whatever owns the strip, so the page moves instead.
+        targets = FakeTargets([{"x": 400, "y": 10, "label": "under the panel"}])
+        control, _session = self.build(targets=targets, mode="snapping")
+        control.press("up")
+        self.assertNotEqual(control._pointer.position, (400, 10))
+        self.assertEqual(control._pointer.scrolls[-1], control.scroll_clicks)
 
     def test_the_cursor_still_moves_when_it_is_not_at_an_edge(self):
         control, _session = self.build()
