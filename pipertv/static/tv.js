@@ -58,7 +58,8 @@
   let pointingTimer = null;
   // What the options screen is showing, and what it is waiting for.
   const CAPTURE_DONE = ["captured", "timeout", "cancelled", "error"];
-  const OPTIONS = { rows: [], focus: 0, busy: "", loaded: false };
+  const OPTIONS = { rows: [], focus: 0, busy: "", loaded: false,
+    open: new Set(["piper"]), capture: null };
   let busyTimer = null;
 
   const unit = () => Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
@@ -325,7 +326,17 @@
     }
   }
 
-  // --- the options: the remote's own buttons, and the shape of the screen ---
+  // --- the options: the remote itself, and the shape of the screen --------
+
+  // Sections, so the whole remote fits on a television screen: everything is
+  // here, and only what was asked for is open. Nine presses reach the last of
+  // them, which is the point of collapsing them in the first place.
+  const SECTION_TITLES = {
+    piper: "what piper does", power: "power", numbers: "numbers",
+    colors: "colour keys", navigation: "navigation", controls: "volume & channels",
+    apps: "apps", playback: "playback", teletext: "picture & sound",
+  };
+  const VISIBLE_ROWS = 13;
 
   function say(message, forSeconds = 0) {
     clearTimeout(busyTimer);
@@ -336,43 +347,79 @@
     }
   }
 
+  function countSamples(recordings, id) {
+    const record = recordings[id];
+    return record && record.samples ? record.samples.length : 0;
+  }
+
   async function refreshOptions() {
     // Three things the Pi knows: which button carries each of Piper's roles,
-    // which buttons have actually been recorded, and whether Piper is filling
-    // the screen. They are read together so the list is never half true.
+    // what the remote's buttons are and which of them have been recorded, and
+    // whether Piper is filling the screen. Read together, so the list is
+    // never half true.
     const [roles, library, shape] = await Promise.all([
       get("/api/roles"), get("/api/state"), get("/api/window"),
     ]);
     const recordings = library.recordings || {};
-    const learned = new Set(Object.keys(recordings)
-      .filter((id) => (recordings[id].samples || []).length));
-    const labels = new Map((library.buttons || []).map((button) => [button.id, button.label]));
-    const rows = (roles.roles || []).map((entry) => ({
-      kind: "role",
-      role: entry.role,
-      button: entry.button,
-      buttonLabel: labels.get(entry.button) || entry.button,
-      learned: learned.has(entry.button),
-      rebound: !!entry.rebound,
-    }));
-    rows.push({ kind: "window", settings: shape.settings });
+    const buttons = library.buttons || [];
+    const labels = new Map(buttons.map((button) => [button.id, button.label]));
+    const rows = [{ kind: "window", settings: shape.settings, section: null }];
+
+    rows.push({ kind: "section", section: "piper" });
+    for (const entry of roles.roles || []) {
+      rows.push({
+        kind: "role", section: "piper", role: entry.role, button: entry.button,
+        buttonLabel: labels.get(entry.button) || entry.button,
+        rebound: !!entry.rebound, samples: countSamples(recordings, entry.button),
+      });
+    }
+
+    const sections = [];
+    for (const button of buttons) {
+      if (!sections.includes(button.section)) sections.push(button.section);
+    }
+    for (const section of sections) {
+      rows.push({ kind: "section", section });
+      for (const button of buttons.filter((entry) => entry.section === section)) {
+        rows.push({
+          kind: "button", section, button: button.id, buttonLabel: button.label,
+          samples: countSamples(recordings, button.id),
+        });
+      }
+    }
     OPTIONS.rows = rows;
-    OPTIONS.focus = Math.min(OPTIONS.focus, Math.max(0, rows.length - 1));
     OPTIONS.loaded = true;
+    OPTIONS.focus = Math.min(OPTIONS.focus, Math.max(0, visibleRows().length - 1));
     renderOptions();
+  }
+
+  function visibleRows() {
+    // A section's own row is always there; what is under it is there when the
+    // section has been opened.
+    return OPTIONS.rows.filter((row) => row.kind === "section" || row.kind === "window"
+      || OPTIONS.open.has(row.section));
+  }
+
+  function optionTitle(row) {
+    if (row.kind === "window") return "Display";
+    if (row.kind === "section") {
+      return `${OPTIONS.open.has(row.section) ? "▾" : "▸"} ${SECTION_TITLES[row.section] || row.section}`;
+    }
+    return row.kind === "role" ? row.role : row.buttonLabel;
   }
 
   function optionValue(row) {
     if (row.kind === "window") {
-      const shape = row.settings;
-      return shape.windowed ? `window · ${shape.width}×${shape.height}` : "full screen";
+      return row.settings.windowed
+        ? `window · ${row.settings.width}×${row.settings.height}` : "full screen";
     }
-    const where = row.rebound ? `${row.buttonLabel} (moved)` : row.buttonLabel;
-    return row.learned ? where : `${where} · not recorded`;
-  }
-
-  function optionTitle(row) {
-    return row.kind === "window" ? "Display" : row.role;
+    if (row.kind === "section") return "";
+    const recorded = row.samples
+      ? `${row.samples} ${row.samples === 1 ? "recording" : "recordings"}` : "not recorded";
+    if (row.kind === "role") {
+      return `${row.buttonLabel}${row.rebound ? " (moved)" : ""} · ${recorded}`;
+    }
+    return recorded;
   }
 
   function optionNote(row) {
@@ -381,17 +428,26 @@
         ? "OK fills the screen again · piper restarts"
         : "OK puts piper in a window, with the desktop around it · piper restarts";
     }
-    return row.learned
-      ? `OK records the ${row.buttonLabel} button again`
-      : `OK records the ${row.buttonLabel} button, which has no signal yet`;
+    if (row.kind === "section") {
+      return OPTIONS.open.has(row.section) ? "OK closes this group" : "OK opens this group";
+    }
+    const what = row.kind === "role" ? `the ${row.buttonLabel} button, which piper uses for ${row.role},` : `the ${row.buttonLabel} button`;
+    return row.samples
+      ? `OK records ${what} again · the old recording is kept as well`
+      : `OK records ${what} · it has no signal yet`;
   }
 
   function renderOptions() {
+    const rows = visibleRows();
     const list = $("options-list");
     list.replaceChildren();
-    OPTIONS.rows.forEach((row, index) => {
+    // Only a screenful is drawn, and the chosen row stays inside it.
+    const last = Math.max(0, rows.length - VISIBLE_ROWS);
+    const start = Math.max(0, Math.min(OPTIONS.focus - Math.floor(VISIBLE_ROWS / 2), last));
+    rows.slice(start, start + VISIBLE_ROWS).forEach((row, offset) => {
+      const index = start + offset;
       const item = document.createElement("li");
-      item.className = index === OPTIONS.focus ? "option is-focused" : "option";
+      item.className = `option option-${row.kind}${index === OPTIONS.focus ? " is-focused" : ""}`;
       const label = document.createElement("span");
       label.className = "option-label";
       label.textContent = optionTitle(row);
@@ -409,18 +465,21 @@
       });
       list.append(item);
     });
-    const row = OPTIONS.rows[OPTIONS.focus];
-    $("option-name").textContent = row ? optionTitle(row) : "";
+    const row = rows[OPTIONS.focus];
+    $("option-name").textContent = row ? optionTitle(row).replace(/^[▾▸] /, "") : "";
     $("option-note").textContent = row ? optionNote(row) : "reading the library…";
     const busy = $("option-busy");
     busy.textContent = OPTIONS.busy;
     busy.hidden = !OPTIONS.busy;
-    $("options-hint").textContent =
-      "▲ ▼ choose · OK · ▶ back to the wheel · ▲ at the top does the same";
+    $("options-count").textContent = rows.length
+      ? `${OPTIONS.focus + 1} of ${rows.length}` : "";
+    $("options-hint").textContent = OPTIONS.capture
+      ? "press the button on your remote · OK or back cancels"
+      : "▲ ▼ choose · OK · ▶ back to the wheel · ▲ at the top does the same";
   }
 
   function moveOption(step) {
-    const count = OPTIONS.rows.length;
+    const count = visibleRows().length;
     if (!count) return;
     OPTIONS.focus = (OPTIONS.focus + step + count) % count;
     renderOptions();
@@ -438,6 +497,7 @@
   }
 
   function closeOptions() {
+    if (OPTIONS.capture) { cancelCapture(); return; }
     clearTimeout(busyTimer);
     OPTIONS.busy = "";
     showScreen("home");
@@ -448,8 +508,8 @@
   async function waitForCapture(id) {
     // The gate is shut while a signal is being learned, so the press being
     // recorded does not also drive this page. Nothing arrives here until the
-    // Pi is finished either way.
-    for (let attempt = 0; attempt < 240; attempt += 1) {
+    // Pi is finished with it either way.
+    for (let attempt = 0; attempt < 480; attempt += 1) {
       const job = await get(`/api/captures/${id}`);
       if (CAPTURE_DONE.includes(job.status)) return job;
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -464,13 +524,34 @@
     return job.error || "the recording failed";
   }
 
-  async function learnRole(row) {
-    say(`press the ${row.buttonLabel} button on your remote now`);
+  async function cancelCapture() {
+    const id = OPTIONS.capture;
+    if (!id) return;
+    OPTIONS.capture = null;
     try {
-      const job = await send("POST", "/api/captures", { button_id: row.button });
+      await send("POST", `/api/captures/${id}/cancel`, {});
+    } catch {
+      // It finished on its own between the press and this request.
+    }
+    say("cancelled", 4);
+  }
+
+  async function learn(row) {
+    say(`press the ${row.buttonLabel} button on your remote now`);
+    let job;
+    try {
+      job = await send("POST", "/api/captures", { button_id: row.button });
+    } catch (error) {
+      say(String(error.message || error), 8);
+      return;
+    }
+    OPTIONS.capture = job.id;
+    try {
       const done = await waitForCapture(job.id);
+      OPTIONS.capture = null;
       say(outcome(done), 8);
     } catch (error) {
+      OPTIONS.capture = null;
       say(String(error.message || error), 8);
       return;
     }
@@ -493,16 +574,24 @@
   }
 
   function activateOption() {
-    const row = OPTIONS.rows[OPTIONS.focus];
-    if (!row || OPTIONS.busy.startsWith("press the")) return;
+    if (OPTIONS.capture) { cancelCapture(); return; }
+    const row = visibleRows()[OPTIONS.focus];
+    if (!row) return;
     if (row.kind === "window") { switchWindow(row); return; }
-    learnRole(row);
+    if (row.kind === "section") {
+      if (OPTIONS.open.has(row.section)) OPTIONS.open.delete(row.section);
+      else OPTIONS.open.add(row.section);
+      renderOptions();
+      return;
+    }
+    learn(row);
   }
 
   function pressOptions(button) {
     switch (button) {
       case "down": moveOption(1); break;
       case "up":
+        if (OPTIONS.capture) break;   // a recording is waiting for a press
         if (OPTIONS.focus === 0) closeOptions();
         else moveOption(-1);
         break;
@@ -637,6 +726,7 @@
     buildRing();
     renderFocus();
     $("options-corner").addEventListener("click", openOptions);
+    $("options-back").addEventListener("click", closeOptions);
     clock();
     setInterval(clock, 20000);
 
