@@ -24,7 +24,6 @@
     { id: "disney", name: "Disney+", letter: "D", colour: "#2F4A9C" },
     { id: "hbo", name: "HBO Max", letter: "H", colour: "#6B3FA0" },
     { id: "voyo", name: "Voyo", letter: "V", colour: "#A8385A" },
-    { id: "plex", name: "Plex", letter: "J", colour: "#C39A22" },
     { id: "kodi", name: "Kodi", letter: "K", colour: "#3B7A57" },
     { id: "browser", name: "Web browser", letter: "L", colour: "#5A6570" },
   ];
