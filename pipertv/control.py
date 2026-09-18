@@ -55,6 +55,10 @@ STEP_HOLD_DELAY_S = 0.65
 STEP_HOLD_INTERVAL_S = 0.25
 # Long enough to be a decision, short enough that a stray press expires.
 LEAVE_CONFIRM_S = 6.0
+# Back on a page is two presses, near enough together to be one gesture: the
+# first press is what takes the keyboard away, and a page nobody meant to leave
+# should not disappear under a press aimed at something else.
+BACK_AGAIN_S = 3.0
 
 
 class LeaveRequest:
@@ -120,6 +124,7 @@ class RemoteControl:
                         if watcher is None else watcher)
         self.port = port
         self.leaving = LeaveRequest()
+        self.going_back = LeaveRequest(window_s=BACK_AGAIN_S)
         self._input_context = None
         self._clicked_at = -float("inf")
         self.roles = self._load_roles()
@@ -410,11 +415,15 @@ class RemoteControl:
         through: its arrow keys do nothing, so the cursor jumps between the
         controls the page reports and OK clicks the one it landed on. Back
         differs too: an application closes what it has open, while a page has
-        nothing to close and goes back to the one before it instead.
+        nothing to close and goes back to the one before it instead -- and it
+        does that on the second press, because the first one is how a keyboard
+        is dismissed and a page should not vanish under a stray press.
         """
         running = self.launcher.running()
         if running is None:
             return
+        if action != "back":
+            self.going_back.disarm()
         driving = self._cursor_service()
         if driving is not None and (action in DIRECTIONS or action == "ok"):
             if action == "ok":
@@ -427,7 +436,8 @@ class RemoteControl:
             return
         if driving is not None and action == "back":
             # On a page, escape closes nothing and back means the page before.
-            self.keys.send(PAGE_BACK)
+            if self.going_back.press():
+                self.keys.send(PAGE_BACK)
             return
         self.keys.send(action)
 
@@ -442,8 +452,10 @@ class RemoteControl:
         either way: it moves no cursor and starts nothing.
         """
         if self.onscreen.showing() and action in ("back", "exit"):
-            # The keyboard is what is in the way; it goes first.
+            # The keyboard is what is in the way; it goes first, and that press
+            # is spent on it: it is not also half of a request to leave a page.
             self.leaving.disarm()
+            self.going_back.disarm()
             self.close_keyboard()
             return True
         if action not in RETURN_TO_PIPER:
