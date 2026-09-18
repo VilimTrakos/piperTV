@@ -437,3 +437,55 @@ body.is-pointing .back-button:hover { color: var(--ink); border-color: var(--ink
   font-size: calc(18 * var(--u));
   color: var(--ink-30);
 }
+
+/* --- the remote, drawn ------------------------------------------------- */
+
+/* The same arrangement as the workbench on a laptop, and the same
+ * arrangement as the thing in your hand: the rows come from the button
+ * library itself, so the drawing cannot drift from what can be recorded. */
+.remote-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(6 * var(--u));
+  padding: calc(18 * var(--u)) calc(24 * var(--u));
+  border: 1px solid var(--panel-edge);
+  border-radius: calc(28 * var(--u));
+  background: #0E1116;
+  overflow: hidden;
+}
+.remote-body[hidden] { display: none; }
+
+.key-row {
+  display: flex;
+  justify-content: center;
+  gap: calc(8 * var(--u));
+}
+
+.remote-key {
+  min-width: calc(92 * var(--u));
+  padding: calc(8 * var(--u)) calc(10 * var(--u));
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: calc(9 * var(--u));
+  background: #171B22;
+  color: var(--ink-45);
+  font-family: var(--mono);
+  font-size: calc(17 * var(--u));
+  line-height: 1.1;
+  text-align: center;
+  cursor: inherit;
+}
+/* A key with a signal behind it is the point of the whole screen. */
+.remote-key.is-saved { color: var(--ink); border-color: rgba(90, 169, 230, .35); }
+.remote-key.is-focused {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 0 0 calc(3 * var(--u)) var(--accent);
+}
+.remote-key.is-colour { min-width: calc(66 * var(--u)); }
+.remote-key.red { border-color: #A8382F; }
+.remote-key.green { border-color: #3B7A57; }
+.remote-key.yellow { border-color: #C39A22; }
+.remote-key.blue { border-color: #2F4A9C; }
+body.is-pointing .remote-key { cursor: pointer; }
+body.is-pointing .remote-key:hover { border-color: var(--ink-30); }
