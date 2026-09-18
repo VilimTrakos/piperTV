@@ -59,7 +59,20 @@
   // What the options screen is showing, and what it is waiting for.
   const CAPTURE_DONE = ["captured", "timeout", "cancelled", "error"];
   const OPTIONS = { rows: [], focus: 0, busy: "", loaded: false,
-    open: new Set(["piper"]), capture: null };
+    open: new Set(["piper"]), capture: null, view: "list",
+    remote: { rows: [], row: 0, col: 0 } };
+  // What a key says when it is drawn small and read from a sofa. Anything not
+  // named here keeps the label the library gave it.
+  const KEY_TEXT = {
+    power: "⏻", up: "▲", down: "▼", left: "◀", right: "▶", ok: "OK",
+    home: "⌂", back: "↩", exit: "EXIT", menu: "MENU", list: "LIST",
+    info: "i", help: "?", guide: "GUIDE", favorites: "FAV",
+    volume_up: "VOL +", volume_down: "VOL −", channel_up: "CH +",
+    channel_down: "CH −", mute: "MUTE", source: "SRC",
+    rewind: "◀◀", play: "▶", fast_forward: "▶▶", previous: "|◀",
+    pause: "❚❚", next: "▶|", record: "●", stop: "■", three_d: "3D",
+    tv_radio: "TV/RAD", audio: "AUDIO", format: "FORMAT",
+  };
   let busyTimer = null;
 
   const unit = () => Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
@@ -338,12 +351,17 @@
   };
   const VISIBLE_ROWS = 13;
 
+  function renderCurrent() {
+    if (OPTIONS.view === "remote") renderRemote();
+    else renderOptions();
+  }
+
   function say(message, forSeconds = 0) {
     clearTimeout(busyTimer);
     OPTIONS.busy = message;
-    renderOptions();
+    renderCurrent();
     if (message && forSeconds) {
-      busyTimer = setTimeout(() => { OPTIONS.busy = ""; renderOptions(); }, forSeconds * 1000);
+      busyTimer = setTimeout(() => { OPTIONS.busy = ""; renderCurrent(); }, forSeconds * 1000);
     }
   }
 
@@ -363,7 +381,8 @@
     const recordings = library.recordings || {};
     const buttons = library.buttons || [];
     const labels = new Map(buttons.map((button) => [button.id, button.label]));
-    const rows = [{ kind: "window", settings: shape.settings, section: null }];
+    const rows = [{ kind: "window", settings: shape.settings, section: null },
+                  { kind: "remote", section: null }];
 
     rows.push({ kind: "section", section: "piper" });
     for (const entry of roles.roles || []) {
@@ -388,9 +407,10 @@
       }
     }
     OPTIONS.rows = rows;
+    OPTIONS.remote.rows = buildRemote(buttons, recordings);
     OPTIONS.loaded = true;
     OPTIONS.focus = Math.min(OPTIONS.focus, Math.max(0, visibleRows().length - 1));
-    renderOptions();
+    renderCurrent();
   }
 
   function visibleRows() {
@@ -402,6 +422,7 @@
 
   function optionTitle(row) {
     if (row.kind === "window") return "Display";
+    if (row.kind === "remote") return "The remote";
     if (row.kind === "section") {
       return `${OPTIONS.open.has(row.section) ? "▾" : "▸"} ${SECTION_TITLES[row.section] || row.section}`;
     }
@@ -412,6 +433,10 @@
     if (row.kind === "window") {
       return row.settings.windowed
         ? `window · ${row.settings.width}×${row.settings.height}` : "full screen";
+    }
+    if (row.kind === "remote") {
+      const keys = OPTIONS.remote.rows.reduce((total, line) => total + line.keys.length, 0);
+      return `drawn · ${keys} keys`;
     }
     if (row.kind === "section") return "";
     const recorded = row.samples
@@ -427,6 +452,9 @@
       return row.settings.windowed
         ? "OK fills the screen again · piper restarts"
         : "OK puts piper in a window, with the desktop around it · piper restarts";
+    }
+    if (row.kind === "remote") {
+      return "OK draws the remote itself · pick a key with the arrows and record it";
     }
     if (row.kind === "section") {
       return OPTIONS.open.has(row.section) ? "OK closes this group" : "OK opens this group";
@@ -476,6 +504,130 @@
       : "▲ ▼ choose · OK · ▶ back to the wheel · ▲ at the top does the same";
   }
 
+  function keyText(button) {
+    if (KEY_TEXT[button.id]) return KEY_TEXT[button.id];
+    if (button.id.startsWith("digit_")) return button.id.slice(6);
+    return button.label;
+  }
+
+  function buildRemote(buttons, recordings) {
+    // The rows are the library's own: the arrangement is a property of the
+    // remote, not of this page, so the drawing cannot drift from the thing.
+    const rows = [];
+    for (const button of buttons) {
+      const index = rows.findIndex((row) => row.number === button.row);
+      const entry = { ...button, samples: countSamples(recordings, button.id) };
+      if (index < 0) rows.push({ number: button.row, keys: [entry] });
+      else rows[index].keys.push(entry);
+    }
+    for (const row of rows) row.keys.sort((one, other) => one.col - other.col);
+    return rows;
+  }
+
+  function focusedKey() {
+    const row = OPTIONS.remote.rows[OPTIONS.remote.row];
+    return row ? row.keys[Math.min(OPTIONS.remote.col, row.keys.length - 1)] : null;
+  }
+
+  function moveKey(dx, dy) {
+    const remote = OPTIONS.remote;
+    const rows = remote.rows;
+    if (!rows.length) return;
+    if (dx) {
+      const keys = rows[remote.row].keys;
+      remote.col = Math.max(0, Math.min(keys.length - 1, remote.col + dx));
+      renderRemote();
+      return;
+    }
+    // Between rows, the key nearest the same place across the width: down
+    // from the up arrow is OK, not whatever happens to be first in the row.
+    const here = rows[remote.row].keys;
+    const place = (Math.min(remote.col, here.length - 1) + 0.5) / here.length;
+    const next = Math.max(0, Math.min(rows.length - 1, remote.row + dy));
+    const keys = rows[next].keys;
+    let best = 0;
+    keys.forEach((_key, index) => {
+      const distance = Math.abs((index + 0.5) / keys.length - place);
+      if (distance < Math.abs((best + 0.5) / keys.length - place)) best = index;
+    });
+    remote.row = next;
+    remote.col = best;
+    renderRemote();
+  }
+
+  function renderRemote() {
+    const body = $("remote-body");
+    body.replaceChildren();
+    OPTIONS.remote.rows.forEach((row, rowIndex) => {
+      const line = document.createElement("div");
+      line.className = "key-row";
+      row.keys.forEach((button, colIndex) => {
+        const key = document.createElement("button");
+        key.type = "button";
+        const chosen = rowIndex === OPTIONS.remote.row
+          && colIndex === Math.min(OPTIONS.remote.col, row.keys.length - 1);
+        key.className = `remote-key ${button.id}`
+          + (button.section === "colors" ? " is-colour" : "")
+          + (button.samples ? " is-saved" : "")
+          + (chosen ? " is-focused" : "");
+        key.textContent = keyText(button);
+        key.setAttribute("aria-label",
+          `${button.label}${button.samples ? `, ${button.samples} recorded` : ", not recorded"}`);
+        key.addEventListener("click", () => {
+          OPTIONS.remote.row = rowIndex;
+          OPTIONS.remote.col = colIndex;
+          renderRemote();
+          learn({ button: button.id, buttonLabel: button.label });
+        });
+        line.append(key);
+      });
+      body.append(line);
+    });
+    const button = focusedKey();
+    $("option-name").textContent = button ? button.label : "";
+    $("option-note").textContent = button
+      ? (button.samples
+         ? `OK records it again · ${button.samples} already saved`
+         : "OK records it · it has no signal yet")
+      : "";
+    const busy = $("option-busy");
+    busy.textContent = OPTIONS.busy;
+    busy.hidden = !OPTIONS.busy;
+    $("options-count").textContent = button ? button.id.replace(/_/g, " ") : "";
+    $("options-hint").textContent = OPTIONS.capture
+      ? "press the button on your remote · OK or back cancels"
+      : "▲ ▼ ◀ ▶ choose a key · OK records it · back returns to the list";
+  }
+
+  function showRemote(show) {
+    OPTIONS.view = show ? "remote" : "list";
+    $("options-list").hidden = show;
+    $("remote-body").hidden = !show;
+    $("options-back").textContent = show ? "◀ back to the list" : "◀ back to the wheel";
+    if (show) renderRemote();
+    else renderOptions();
+  }
+
+  function pressRemote(button) {
+    switch (button) {
+      case "up": moveKey(0, -1); break;
+      case "down": moveKey(0, 1); break;
+      case "left": moveKey(-1, 0); break;
+      case "right": moveKey(1, 0); break;
+      case "ok": {
+        if (OPTIONS.capture) { cancelCapture(); break; }
+        const key = focusedKey();
+        if (key) learn({ button: key.id, buttonLabel: key.label });
+        break;
+      }
+      case "back": case "home":
+        if (OPTIONS.capture) cancelCapture();
+        else showRemote(false);
+        break;
+      default: break;
+    }
+  }
+
   function wheelOptions(event) {
     // A list this long is worth a wheel when there is a mouse on the desk.
     if (state.screen !== "options") return;
@@ -492,8 +644,8 @@
 
   async function openOptions() {
     showScreen("options");
+    showRemote(false);
     say("");
-    renderOptions();
     try {
       await refreshOptions();
     } catch (error) {
@@ -503,6 +655,7 @@
 
   function closeOptions() {
     if (OPTIONS.capture) { cancelCapture(); return; }
+    if (OPTIONS.view === "remote") { showRemote(false); return; }
     clearTimeout(busyTimer);
     OPTIONS.busy = "";
     showScreen("home");
@@ -583,6 +736,7 @@
     const row = visibleRows()[OPTIONS.focus];
     if (!row) return;
     if (row.kind === "window") { switchWindow(row); return; }
+    if (row.kind === "remote") { showRemote(true); return; }
     if (row.kind === "section") {
       if (OPTIONS.open.has(row.section)) OPTIONS.open.delete(row.section);
       else OPTIONS.open.add(row.section);
@@ -593,6 +747,7 @@
   }
 
   function pressOptions(button) {
+    if (OPTIONS.view === "remote") { pressRemote(button); return; }
     switch (button) {
       case "down": moveOption(1); break;
       case "up":
