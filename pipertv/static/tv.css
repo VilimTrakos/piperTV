@@ -436,7 +436,8 @@ body.is-pointing .exit-button { display: inline-block; }
 }
 .option-section.is-focused .option-label { color: var(--ink); }
 .option-role .option-label,
-.option-button .option-label { padding-left: calc(24 * var(--u)); }
+.option-button .option-label,
+.option-receiver .option-label { padding-left: calc(24 * var(--u)); }
 
 .option-count {
   margin: calc(20 * var(--u)) 0 0;
