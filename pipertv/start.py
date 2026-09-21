@@ -61,7 +61,10 @@ Icon={root}/pipertv/static/favicon.svg
 Terminal=false
 Categories=AudioVideo;Video;
 """
-PANEL_CONFIG = Path(".config") / "wf-panel-pi.ini"
+# The panel reads its user settings from a file in a folder of its own. A
+# wf-panel-pi.ini directly in ~/.config is an older place it no longer looks:
+# the autohide setting on this Pi sat there, and never took effect.
+PANEL_CONFIG = Path(".config") / "wf-panel-pi" / "wf-panel-pi.ini"
 PANEL_DEFAULTS = Path("/etc/xdg/wf-panel-pi/wf-panel-pi.ini")
 PANEL_FALLBACK = ("x-www-browser", "pcmanfm", "x-terminal-emulator")
 LAUNCHER = "pipertv"
@@ -264,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.install:
         for path in install():
             print(f"Wrote {path}")
+        print("The panel shows the icon the next time it starts.")
         return 0
     logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
