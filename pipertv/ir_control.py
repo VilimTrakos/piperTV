@@ -14,7 +14,8 @@ import struct
 import threading
 import time
 
-from .lirc import CaptureError, CaptureOptions, LircDevice, Mode2Capture
+from .gpio_ir import describe, open_receiver
+from .lirc import CaptureError, CaptureOptions, Mode2Capture
 
 LOG = logging.getLogger(__name__)
 FRAME_GAP_US = 10_000
@@ -114,7 +115,7 @@ class SignalMatcher:
         self.rc5 = {}
         for button_id, record in document.get("recordings", {}).items():
             for sample in record.get("samples", []):
-                if sample.get("source") != "lirc":
+                if sample.get("source") not in ("lirc", "gpio"):
                     continue  # Simulated recordings must never control a desktop.
                 for frame in split_frames(sample.get("durations_us", [])):
                     decoded = decode_rc5(frame)
@@ -244,13 +245,14 @@ class IRController:
     No input device is grabbed and all activity stops when the gate closes.
     """
     def __init__(self, recordingstore, on_button, enabled, device="/dev/lirc0",
-                 device_factory=LircDevice, clock=time.monotonic, is_direction=None,
+                 device_factory=open_receiver, clock=time.monotonic, is_direction=None,
                  pace=None):
         self.store, self.on_button, self.enabled = recordingstore, on_button, enabled
         self.device, self.device_factory, self.clock = device, device_factory, clock
         self.matcher = SignalMatcher(self.store.snapshot())
         self.repeat = RepeatFilter(is_direction=is_direction, pace=pace)
         self._stop, self._paused, self._released = threading.Event(), threading.Event(), threading.Event()
+        self._reopen = threading.Event()
         self._paused.set()
         self._released.set()
         self._thread = None
@@ -279,6 +281,17 @@ class IRController:
             self.matcher = SignalMatcher(self.store.snapshot())
             self.repeat.reset()
 
+    def use(self, device):
+        """Listen to another receiver from now on, without a restart.
+
+        The open device is closed at the next read and the new one opened in
+        its place, so a pin chosen on the screen is being read a moment later.
+        """
+        with self._lock:
+            self.device = device
+            self._error = None
+        self._reopen.set()
+
     def pause(self):
         self._paused.set()
         with self._lock:
@@ -296,6 +309,7 @@ class IRController:
         with self._lock:
             return {"ok": self._error is None, "listening": self._listening,
                     "paused": self._paused.is_set(), "device": self.device,
+                    "receiver": describe(self.device),
                     "learned_buttons": self.matcher.button_count,
                     "last_button": self._last_button, "error": self._error}
 
@@ -331,12 +345,14 @@ class IRController:
                 # released event while a new device is being opened.
                 if self._paused.is_set() or not self.enabled():
                     continue
+                self._reopen.clear()
                 with self.device_factory(self.device, FRAME_GAP_US) as device:
                     with self._lock:
                         self._listening, self._error = True, None
                         self.repeat.reset()
                     reader = FrameReader()
-                    while not self._stop.is_set() and not self._paused.is_set() and self.enabled():
+                    while (not self._stop.is_set() and not self._paused.is_set()
+                           and not self._reopen.is_set() and self.enabled()):
                         data = device.read(.025)
                         now = self.clock()
                         frames = reader.feed(data, now) if data else reader.idle(now)

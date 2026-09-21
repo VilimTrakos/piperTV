@@ -274,7 +274,7 @@ def capture_stream(device, options: CaptureOptions, cancelled: threading.Event,
             parser.feed(data, now)
         # First drain queued events; only infer quiet time when read found none.
         if parser.complete or (data is None and parser.finish_idle(now)):
-            return parser.result()
+            return parser.result(getattr(device, "source", "lirc"))
         if parser.started_at is None:
             if now - armed_at >= options.timeout_s:
                 raise CaptureTimeout()

@@ -60,7 +60,7 @@
   const CAPTURE_DONE = ["captured", "timeout", "cancelled", "error"];
   const OPTIONS = { rows: [], focus: 0, busy: "", loaded: false,
     open: new Set(["piper"]), capture: null, view: "list",
-    remote: { rows: [], row: 0, col: 0 } };
+    remote: { rows: [], row: 0, col: 0 }, receiverSummary: "", receiverError: "" };
   // What a key says when it is drawn small and read from a sofa. Anything not
   // named here keeps the label the library gave it.
   const KEY_TEXT = {
@@ -351,6 +351,7 @@
   // here, and only what was asked for is open. Nine presses reach the last of
   // them, which is the point of collapsing them in the first place.
   const SECTION_TITLES = {
+    receiver: "ir receiver",
     piper: "what piper does", power: "power", numbers: "numbers",
     colors: "colour keys", navigation: "navigation", controls: "volume & channels",
     apps: "apps", playback: "playback", teletext: "picture & sound",
@@ -381,14 +382,17 @@
     // what the remote's buttons are and which of them have been recorded, and
     // whether Piper is filling the screen. Read together, so the list is
     // never half true.
-    const [roles, library, shape] = await Promise.all([
+    const [roles, library, shape, receiver] = await Promise.all([
       get("/api/roles"), get("/api/state"), get("/api/window"),
+      // Optional: a server without GPIO still has everything else to offer.
+      get("/api/receiver").catch(() => null),
     ]);
     const recordings = library.recordings || {};
     const buttons = library.buttons || [];
     const labels = new Map(buttons.map((button) => [button.id, button.label]));
     const rows = [{ kind: "window", settings: shape.settings, section: null },
                   { kind: "remote", section: null }];
+    if (receiver) rows.push(...receiverRows(receiver));
 
     rows.push({ kind: "section", section: "piper" });
     for (const entry of roles.roles || []) {
@@ -419,6 +423,49 @@
     renderCurrent();
   }
 
+  function receiverRows(receiver) {
+    // Which pin the IR receiver is wired to: the kernel's own receiver, set in
+    // config.txt, or any free pin on the header, read by piper itself.
+    const chosen = receiver.settings || { kind: "lirc" };
+    const heard = receiver.listening;
+    OPTIONS.receiverSummary = `${chosen.kind === "gpio" ? `GPIO${chosen.pin}` : "kernel"}`
+      + (heard && heard.error ? " · not listening" : "");
+    OPTIONS.receiverError = heard && heard.error ? heard.error : "";
+    const kernel = receiver.kernel || {};
+    const rows = [{ kind: "section", section: "receiver" }, {
+      kind: "receiver", section: "receiver", choice: { kind: "lirc" }, free: true,
+      label: "kernel receiver",
+      value: kernel.gpio != null ? `GPIO${kernel.gpio} · pin ${kernel.header_pin}` : "/dev/lirc0",
+      current: chosen.kind !== "gpio",
+    }];
+    for (const line of receiver.lines || []) {
+      // The kernel receiver's own pin is offered above, under its own name.
+      if (line.gpio === kernel.gpio) continue;
+      rows.push({
+        kind: "receiver", section: "receiver", choice: { kind: "gpio", pin: line.gpio },
+        label: `GPIO${line.gpio}`, pin: line.header_pin, free: line.free,
+        value: `pin ${line.header_pin}${line.free ? "" : ` · used by ${line.consumer || "another driver"}`}`,
+        current: chosen.kind === "gpio" && chosen.pin === line.gpio,
+      });
+    }
+    return rows;
+  }
+
+  async function chooseReceiver(row) {
+    if (row.current) { say("the remote is already read here", 3); return; }
+    if (!row.free) { say(`${row.label} is in use · choose a free pin`, 4); return; }
+    say(`listening on ${row.label}…`);
+    try {
+      const result = await send("PUT", "/api/receiver", row.choice);
+      const heard = result.listening;
+      say(heard && heard.error ? `not listening: ${heard.error}`
+        : `listening on ${result.receiver} · press a button on the remote to try it`, 6);
+    } catch (error) {
+      say(error.message, 6);
+    }
+    refreshOptions().catch(() => {});
+  }
+
   function visibleRows() {
     // A section's own row is always there, and so is anything that belongs to
     // no section; what is under a section is there once it has been opened.
@@ -432,6 +479,7 @@
     if (row.kind === "section") {
       return `${OPTIONS.open.has(row.section) ? "▾" : "▸"} ${SECTION_TITLES[row.section] || row.section}`;
     }
+    if (row.kind === "receiver") return row.label;
     return row.kind === "role" ? row.role : row.buttonLabel;
   }
 
@@ -444,7 +492,8 @@
       const keys = OPTIONS.remote.rows.reduce((total, line) => total + line.keys.length, 0);
       return `drawn · ${keys} keys`;
     }
-    if (row.kind === "section") return "";
+    if (row.kind === "section") return row.section === "receiver" ? OPTIONS.receiverSummary : "";
+    if (row.kind === "receiver") return `${row.value}${row.current ? " · ● in use" : ""}`;
     const recorded = row.samples
       ? `${row.samples} ${row.samples === 1 ? "recording" : "recordings"}` : "not recorded";
     if (row.kind === "role") {
@@ -463,7 +512,15 @@
       return "OK draws the remote itself · pick a key with the arrows and record it";
     }
     if (row.kind === "section") {
+      if (row.section === "receiver" && OPTIONS.receiverError) return OPTIONS.receiverError;
       return OPTIONS.open.has(row.section) ? "OK closes this group" : "OK opens this group";
+    }
+    if (row.kind === "receiver") {
+      if (row.current) return "the remote is read here now";
+      if (!row.free) return `${row.label} is taken by ${row.value.split("used by ")[1]} · choose another pin`;
+      return row.choice.kind === "gpio"
+        ? `OK reads the remote from ${row.label} from now on · wire the receiver's OUT to pin ${row.pin}`
+        : "OK goes back to the kernel's receiver, the pin set in config.txt";
     }
     const what = row.kind === "role" ? `the ${row.buttonLabel} button, which piper uses for ${row.role},` : `the ${row.buttonLabel} button`;
     return row.samples
@@ -743,6 +800,7 @@
     if (!row) return;
     if (row.kind === "window") { switchWindow(row); return; }
     if (row.kind === "remote") { showRemote(true); return; }
+    if (row.kind === "receiver") { chooseReceiver(row); return; }
     if (row.kind === "section") {
       if (OPTIONS.open.has(row.section)) OPTIONS.open.delete(row.section);
       else OPTIONS.open.add(row.section);
