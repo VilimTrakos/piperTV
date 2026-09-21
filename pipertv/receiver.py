@@ -8,8 +8,9 @@ import threading
 import uuid
 from dataclasses import asdict
 
-from .lirc import (CaptureCancelled, CaptureOptions, CaptureTimeout, LircDevice,
-                   capture_stream, demo_signal, utc_now)
+from .gpio_ir import CHIP, describe, open_receiver
+from .lirc import (CaptureCancelled, CaptureOptions, CaptureTimeout, capture_stream,
+                   demo_signal, utc_now)
 
 TERMINAL = {"captured", "timeout", "cancelled", "error"}
 
@@ -28,11 +29,21 @@ class CaptureManager:
 
     def health(self) -> dict:
         with self._lock:
+            # A pin is read through the GPIO chip; the kernel's receiver is its
+            # own device. Either way, what matters is whether it can be opened.
+            path = CHIP if isinstance(self.device, dict) and self.device.get("kind") == "gpio" \
+                else self.device if isinstance(self.device, str) else "/dev/lirc0"
             return {"ok": True, "mode": "demo" if self.demo else "hardware",
-                    "device": None if self.demo else self.device,
-                    "device_exists": self.demo or os.path.exists(self.device),
-                    "device_readable": self.demo or os.access(self.device, os.R_OK),
+                    "device": None if self.demo else path,
+                    "receiver": None if self.demo else describe(self.device),
+                    "device_exists": self.demo or os.path.exists(path),
+                    "device_readable": self.demo or os.access(path, os.R_OK),
                     "active_capture_id": self._active}
+
+    def use(self, device) -> None:
+        """Record from another receiver, starting with the next capture."""
+        with self._lock:
+            self.device = device
 
     def start(self, options: dict) -> dict:
         parsed = CaptureOptions.parse(options)
@@ -70,7 +81,9 @@ class CaptureManager:
                     raise CaptureTimeout()
                 result = {"status": "captured", "signal": demo_signal(options.gap_us)}
             else:
-                with LircDevice(self.device, options.gap_us) as device:
+                with self._lock:
+                    source = self.device
+                with open_receiver(source, options.gap_us) as device:
                     self._listening(job_id, cancelled)
                     result = {"status": "captured",
                               "signal": capture_stream(device, options, cancelled)}

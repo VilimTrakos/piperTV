@@ -1,5 +1,6 @@
 import struct
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -228,6 +229,47 @@ class FakeStore:
 
     def snapshot(self):
         return self.doc
+
+
+class ReceiverChoiceTests(unittest.TestCase):
+    def test_a_press_recorded_from_a_pin_drives_the_desktop(self):
+        matcher = SignalMatcher(document({"down": rc5_frame(0, 23, 0)}, source="gpio"))
+        self.assertEqual(matcher.match(rc5_frame(0, 23, 0)).button_id, "down")
+
+    def test_choosing_another_receiver_reopens_on_it_at_once(self):
+        opened = []
+
+        class Device:
+            def __init__(self, device, _gap):
+                opened.append(device)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def read(self, timeout):
+                time.sleep(min(timeout, 0.01))
+                return None
+
+        controller = IRController(FakeStore(document({})), lambda _button: None,
+                                  lambda: True, device="/dev/lirc0", device_factory=Device)
+        self.addCleanup(controller.close)
+        controller.resume()
+        self.assertTrue(wait_for(lambda: opened == ["/dev/lirc0"]))
+        controller.use({"kind": "gpio", "pin": 18})
+        self.assertTrue(wait_for(lambda: opened[-1] == {"kind": "gpio", "pin": 18}))
+        self.assertEqual(controller.health()["receiver"], "GPIO18 (pin 12)")
+
+
+def wait_for(condition, seconds=2.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return False
 
 
 class ControllerTests(unittest.TestCase):
