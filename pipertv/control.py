@@ -60,6 +60,20 @@ LEAVE_CONFIRM_S = 6.0
 # first press is what takes the keyboard away, and a page nobody meant to leave
 # should not disappear under a press aimed at something else.
 BACK_AGAIN_S = 3.0
+# A service's window takes a few seconds to appear on a Pi 3B+. The interface
+# stays until then, so opening something never shows the bare desktop, and
+# goes once it is covered: a second browser drawing a page nobody can see is
+# the largest thing in memory after the service itself, and on a Pi with less
+# than a gigabyte it is the difference between playing and swapping.
+STEP_ASIDE_AFTER_S = 6.0
+
+
+def _later(delay, action):
+    """Run action once, delay seconds from now, on a thread of its own."""
+    timer = threading.Timer(delay, action)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 class LeaveRequest:
@@ -106,7 +120,7 @@ class RemoteControl:
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
                  buttons=None, launcher=None, browser=None, interface=None, port=8765,
-                 keys=None, watcher=None, onscreen=None):
+                 keys=None, watcher=None, onscreen=None, later=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -125,6 +139,11 @@ class RemoteControl:
         self.watcher = (FocusWatcher(on_text_field=self._text_field_focused)
                         if watcher is None else watcher)
         self.port = port
+        self.later = _later if later is None else later
+        # The service the interface was closed for, while it is closed for one.
+        # Piper only brings back what it sent away itself.
+        self._aside_for: str | None = None
+        self._screen_lock = threading.RLock()
         self.leaving = LeaveRequest()
         self.going_back = LeaveRequest(window_s=BACK_AGAIN_S)
         self._input_context = None
@@ -195,22 +214,55 @@ class RemoteControl:
         """Take the saved window shape, and show the interface in it."""
         with self._source_lock:
             self.window = self._load_window()
-        self.show_interface()
+        with self._screen_lock:
+            # Closed behind a service, it comes back in the new shape anyway.
+            if self._aside_for is None:
+                self.show_interface()
         return dict(self.window)
 
-    def show_interface(self) -> dict:
+    def show_interface(self, focus=None) -> dict:
         """Put the interface back on the screen, in the shape that is set.
 
         A shape that produces no window falls back to the one that always
         works. Nobody at the television can undo a setting that left them with
         a black screen, so a failed window is not allowed to be the end of it.
         """
-        result = self.interface.open(self.window)
-        if not result.get("showing") and self.window.get("windowed"):
-            LOG.warning("A window did not appear; filling the screen instead")
-            self.window = validate_window({})
-            result = self.interface.open(self.window)
-        return result
+        with self._screen_lock:
+            self._aside_for = None
+            result = self.interface.open(self.window, focus)
+            if not result.get("showing") and self.window.get("windowed"):
+                LOG.warning("A window did not appear; filling the screen instead")
+                self.window = validate_window({})
+                result = self.interface.open(self.window, focus)
+            return result
+
+    def _step_aside(self, opened) -> None:
+        """Close the interface once the service it opened is covering it."""
+        try:
+            with self._screen_lock:
+                running = self.launcher.running()
+                if (running is None or running.get("id") != opened.get("id")
+                        or running.get("started_at") != opened.get("started_at")):
+                    return  # it has gone already, or something else took its place
+                if self._aside_for is not None:
+                    self._aside_for = running["id"]  # already out of the way
+                    return
+                if not self.interface.showing():
+                    return  # not Piper's to bring back afterwards
+                if not self.interface.close().get("showing"):
+                    self._aside_for = running["id"]
+                    LOG.info("%s covers the interface; closed it to free memory",
+                             running.get("name", running["id"]))
+        except Exception as exc:  # noqa: BLE001 - a timer must not raise
+            LOG.warning("Closing the interface behind a service: %s", exc)
+
+    def _come_back(self) -> None:
+        """Put the interface back once nothing is covering it any more."""
+        with self._screen_lock:
+            if self._aside_for is None or self.launcher.running() is not None:
+                return
+            LOG.info("Nothing covers the interface any more; opening it again")
+            self.show_interface(focus=self._aside_for)
 
     def reload_pointer(self) -> dict:
         with self._source_lock:
@@ -540,6 +592,10 @@ class RemoteControl:
                 self.keys.release()
             if self.launcher.running() is None and self.onscreen.health().get("ready"):
                 self.onscreen.close()
+            # Whatever ended the service -- the remote, a page, the service
+            # itself -- the interface it was covering comes back.
+            if self._aside_for is not None and self.launcher.running() is None:
+                self._come_back()
         except Exception as exc:  # noqa: BLE001 - the gate must keep running
             LOG.warning("Control supervisor: %s", exc)
 
@@ -561,6 +617,12 @@ class RemoteControl:
                 part.close()
             except Exception as exc:  # noqa: BLE001 - shutdown must finish
                 LOG.warning("Closing control: %s", exc)
+        try:
+            # The service went with the app; the interface it was covering has
+            # to come back, or a restart leaves the television on the desktop.
+            self._come_back()
+        except Exception as exc:  # noqa: BLE001 - shutdown must finish
+            LOG.warning("Putting the interface back: %s", exc)
         self.session.stop()
 
     # --- the browser's actions ------------------------------------------
@@ -600,6 +662,9 @@ class RemoteControl:
                 raise RuntimeError("That belongs to an earlier visit to the Pi's input. "
                                    "Reload the interface on the TV.")
         state = self.launcher.launch(service)
+        opened = state.get("running")
+        if opened:
+            self.later(STEP_ASIDE_AFTER_S, lambda: self._step_aside(opened))
         if self.launcher.policy(service) == SNAP:
             # Ready and out of sight: a keyboard that takes ten seconds to
             # appear is one nobody waits for.
@@ -683,7 +748,7 @@ class RemoteControl:
         state["detection"] = detection
         state["roles"] = self.roles.describe()
         state["services"] = self.launcher.snapshot()
-        state["interface"] = self.interface.snapshot()
+        state["interface"] = self._interface_state()
         state["keys"] = self.keys.health()
         state["focus"] = self.watcher.health()
         state["keyboard"] = self.onscreen.health()
@@ -701,5 +766,8 @@ class RemoteControl:
                 "receiver": self.controller.health(), "desktop": self.desktop.health(),
                 "targets": targets, "detection": self.monitor.snapshot(),
                 "services": self.launcher.snapshot(),
-                "interface": self.interface.snapshot(),
+                "interface": self._interface_state(),
                 "keys": self.keys.health()}
+
+    def _interface_state(self) -> dict:
+        return dict(self.interface.snapshot(), closed_for=self._aside_for)

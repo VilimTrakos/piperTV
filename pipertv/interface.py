@@ -29,6 +29,7 @@ import shutil
 import signal
 import subprocess
 import time
+from urllib.parse import quote
 
 from .window import geometry, validate_window
 
@@ -42,7 +43,11 @@ POLL_S = 0.1
 INTERFACE_ARGS = ("--disable-gpu", "--password-store=basic", "--no-first-run",
                   "--noerrdialogs", "--no-default-browser-check",
                   "--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
-                  "--force-renderer-accessibility")
+                  "--force-renderer-accessibility",
+                  # Chromium's own setting for a device short of memory: smaller
+                  # caches and a JavaScript heap that is collected sooner. A Pi
+                  # 3B+ has less than a gigabyte, and the page is a dial.
+                  "--enable-low-end-device-mode")
 PROFILE = "/tmp/kiosk-gpu-off"
 BROWSERS = ("chromium", "chromium-browser", "google-chrome")
 # Long enough for a browser on a Pi 3B+ to have a window, short enough that a
@@ -152,8 +157,12 @@ class Interface:
 
     # --- opening it -------------------------------------------------------
 
-    def command(self, window=None) -> list[str]:
-        """The browser command that puts the interface on this Pi's screen."""
+    def command(self, window=None, focus=None) -> list[str]:
+        """The browser command that puts the interface on this Pi's screen.
+
+        focus names the tile to start on: the service that was just closed,
+        so coming back lands where the person left rather than at the start.
+        """
         if not self.browser:
             raise RuntimeError("No chromium browser was found on this Pi, so the "
                                "interface cannot be put on the screen.")
@@ -164,6 +173,8 @@ class Interface:
             # server or $DISPLAY" on a Wayland session such as this Pi's labwc.
             command.append("--ozone-platform=wayland")
         address = f"http://127.0.0.1:{self.port}/tv?boot=0"
+        if focus:
+            address += f"&focus={quote(str(focus), safe='')}"
         if not settings["windowed"]:
             command += ["--kiosk", "--start-fullscreen", address]
             return command
@@ -174,7 +185,7 @@ class Interface:
                     f"--window-position={left},{top}", f"--app={address}"]
         return command
 
-    def open(self, window=None) -> dict:
+    def open(self, window=None, focus=None) -> dict:
         """Put the interface on the screen, replacing any window already showing it.
 
         Replacing rather than leaving it be, because the one reason to ask for
@@ -183,7 +194,7 @@ class Interface:
         """
         self.close()
         try:
-            command = self.command(window)
+            command = self.command(window, focus)
         except RuntimeError as exc:
             self._error = str(exc)
             LOG.warning("%s", self._error)

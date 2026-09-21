@@ -127,6 +127,18 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("--window-position=320,180", command)
         self.assertEqual(command[-1], "--app=http://127.0.0.1:8765/tv?boot=0")
 
+    def test_coming_back_from_a_service_starts_on_its_tile(self):
+        interface = self.build({})
+        self.assertEqual(interface.command({}, focus="prime")[-1],
+                         "http://127.0.0.1:8765/tv?boot=0&focus=prime")
+
+    def test_a_window_opened_on_a_tile_is_still_recognised_as_the_interface(self):
+        interface = self.build({4242: KIOSK[:-1] + ["http://127.0.0.1:8765/tv?boot=0&focus=prime"]})
+        self.assertEqual(interface.windows(), [4242])
+
+    def test_the_interface_is_told_it_is_on_a_small_computer(self):
+        self.assertIn("--enable-low-end-device-mode", self.build({}).command({}))
+
     def test_an_x11_session_is_left_to_chromium_s_default(self):
         interface = self.build({}, environ={"DISPLAY": ":0"})
         self.assertNotIn("--ozone-platform=wayland", interface.command({}))

@@ -22,8 +22,10 @@ itself needs synthesised key presses, which this project does not do yet.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -100,7 +102,60 @@ KIOSK_ARGS = ("--disable-gpu", "--password-store=basic",
               "--no-first-run", "--no-default-browser-check",
               "--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
               "--disable-features=Translate",
-              "--autoplay-policy=no-user-gesture-required")
+              "--autoplay-policy=no-user-gesture-required",
+              # Chromium's own setting for a device short of memory: smaller
+              # caches and a JavaScript heap that is collected sooner. On a Pi
+              # 3B+ the alternative is not a faster page but a swapping one.
+              "--enable-low-end-device-mode")
+
+# Firefox has no single low-memory switch, so the browser tile's profile is
+# given the preferences that add up to one. Every one is either a process that
+# would otherwise sit in memory doing nothing for someone on a sofa, or a cache
+# sized for a desktop. Site isolation is deliberately left alone: this is the
+# one window that goes anywhere on the web.
+FIREFOX_PREFS = {
+    # Nothing to confirm with a remote.
+    "browser.shell.checkDefaultBrowser": False,
+    "browser.aboutwelcome.enabled": False,
+    "browser.startup.homepage_override.mstone": "ignore",
+    # One process for pages rather than eight, and none started in advance.
+    "dom.ipc.processCount": 1,
+    "dom.ipc.processCount.webIsolated": 1,
+    "dom.ipc.processPrelaunch.enabled": False,
+    # A new tab page kept loaded in the background, in a process of its own.
+    "browser.newtab.preload": False,
+    "browser.newtabpage.enabled": False,
+    # Whole pages kept in memory so Back is instant.
+    "browser.sessionhistory.max_total_viewers": 0,
+    # The on-device AI features load a model and a process to run it in.
+    "browser.ml.enable": False,
+    "browser.ml.chat.enabled": False,
+    # Studies and reports: background work nobody here asked for.
+    "app.normandy.enabled": False,
+    "app.shield.optoutstudies.enabled": False,
+    "datareporting.healthreport.uploadEnabled": False,
+    # The session is written to the SD card every 15 seconds by default.
+    "browser.sessionstore.interval": 60000,
+}
+PREFS_HEADER = "// PiperTV sets the lines below every time the browser tile opens."
+_PREF_NAME = re.compile(r'^\s*user_pref\(\s*"([^"]+)"')
+
+
+def firefox_preferences(existing: str = "") -> str:
+    """user.js with Piper's preferences, keeping every line that is not Piper's.
+
+    Rewritten on each launch, so a changed preference reaches a profile made by
+    an earlier version. Lines someone added by hand -- the one that lets a
+    copied-in extension load, for instance -- stay exactly as they were.
+    """
+    kept = [line for line in existing.splitlines()
+            if line.strip() != PREFS_HEADER
+            and not ((match := _PREF_NAME.match(line)) and match.group(1) in FIREFOX_PREFS)]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    ours = [PREFS_HEADER] + [f"user_pref({json.dumps(name)}, {json.dumps(value)});"
+                             for name, value in FIREFOX_PREFS.items()]
+    return "\n".join(kept + ([""] if kept else []) + ours) + "\n"
 
 # Closing runs on the IR reader thread, so waiting for the browser to go is
 # bounded. Chromium leaves well within this on SIGTERM.
@@ -246,13 +301,14 @@ By typing at it, or by snapping the cursor through it.
         # the window, so Exit/Home can close it without closing another browser.
         profile = self.profiles / f"{service['id']}-firefox"
         profile.mkdir(parents=True, exist_ok=True)
+        prefs = profile / "user.js"
         try:
-            with (profile / "user.js").open("x", encoding="utf-8") as prefs:
-                prefs.write('user_pref("browser.shell.checkDefaultBrowser", false);\n'
-                            'user_pref("browser.aboutwelcome.enabled", false);\n'
-                            'user_pref("browser.startup.homepage_override.mstone", "ignore");\n')
-        except FileExistsError:
-            pass
+            existing = prefs.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            existing = ""
+        wanted = firefox_preferences(existing)
+        if wanted != existing:
+            prefs.write_text(wanted, encoding="utf-8")
         (width, height), _ = geometry(self.window, self.screen)
         # A normal window leaves the on-screen keyboard usable. Firefox keeps
         # its navigation toolbar; placement is left to the Wayland compositor.
