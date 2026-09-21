@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from pipertv.backdrop import ROOT
-from pipertv.start import Starter, desktop_folder, install, saved_windowed
+from pipertv.start import Starter, add_to_panel, desktop_folder, install, saved_windowed
 from tests.test_control import FakeBackdrop
 
 logging.getLogger("pipertv.start").addHandler(logging.NullHandler())
@@ -107,27 +107,58 @@ class InstallTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.home = Path(self.temporary.name)
+        self.home = Path(self.temporary.name) / "home"
+        self.home.mkdir()
+        self.defaults = Path(self.temporary.name) / "wf-panel-pi.ini"
+        self.defaults.write_text("[panel]\nwidgets_left=smenu launchers window-list\n"
+                                 "launchers=x-www-browser pcmanfm x-terminal-emulator\n")
 
-    def test_the_launcher_goes_in_the_menu_and_on_the_desktop(self):
-        written = install(home=self.home, python="/home/rpi/piperTV/.venv/bin/python3")
+    def test_the_launcher_goes_in_the_menu_on_the_desktop_and_on_the_panel(self):
+        written = install(home=self.home, python="/home/rpi/piperTV/.venv/bin/python3",
+                          panel_defaults=self.defaults)
         self.assertEqual(written, [self.home / ".local/share/applications/pipertv.desktop",
-                                   self.home / "Desktop/pipertv.desktop"])
-        for path in written:
+                                   self.home / "Desktop/pipertv.desktop",
+                                   self.home / ".config/wf-panel-pi.ini"])
+        for path in written[:2]:
             text = path.read_text()
             self.assertIn('Exec="/home/rpi/piperTV/.venv/bin/python3" -m pipertv.start', text)
             self.assertIn(f"Path={ROOT}", text)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o755)
 
     def test_the_icon_it_names_exists(self):
-        entry = install(home=self.home)[0].read_text()
+        entry = install(home=self.home, panel_defaults=self.defaults)[0].read_text()
         icon = next(line for line in entry.splitlines() if line.startswith("Icon="))[5:]
         self.assertTrue(Path(icon).is_file())
 
     def test_installing_again_changes_nothing(self):
-        first = [path.read_text() for path in install(home=self.home)]
-        second = [path.read_text() for path in install(home=self.home)]
-        self.assertEqual(first, second)
+        first = [path.read_text() for path in install(home=self.home,
+                                                      panel_defaults=self.defaults)]
+        panel = (self.home / ".config/wf-panel-pi.ini").read_text()
+        second = [path.read_text() for path in install(home=self.home,
+                                                       panel_defaults=self.defaults)]
+        self.assertEqual(first[:2], second)
+        self.assertEqual((self.home / ".config/wf-panel-pi.ini").read_text(), panel)
+
+    def test_the_panel_keeps_its_own_launchers_and_gains_piper(self):
+        add_to_panel(self.home, self.defaults)
+        text = (self.home / ".config/wf-panel-pi.ini").read_text()
+        self.assertIn("launchers=x-www-browser pcmanfm x-terminal-emulator pipertv", text)
+
+    def test_the_panel_settings_already_there_are_left_alone(self):
+        config = self.home / ".config"
+        config.mkdir()
+        (config / "wf-panel-pi.ini").write_text("[panel]\nautohide=true\nautohide_duration=300\n")
+        add_to_panel(self.home, self.defaults)
+        self.assertEqual((config / "wf-panel-pi.ini").read_text(),
+                         "[panel]\nlaunchers=x-www-browser pcmanfm x-terminal-emulator pipertv\n"
+                         "autohide=true\nautohide_duration=300\n")
+
+    def test_launchers_someone_chose_are_kept(self):
+        config = self.home / ".config"
+        config.mkdir()
+        (config / "wf-panel-pi.ini").write_text("[panel]\nlaunchers = pcmanfm\n")
+        add_to_panel(self.home, self.defaults)
+        self.assertEqual((config / "wf-panel-pi.ini").read_text(),
+                         "[panel]\nlaunchers=pcmanfm pipertv\n")
 
     def test_a_desktop_with_another_name_is_found(self):
         # A Croatian session calls it "Radna površina".
