@@ -70,6 +70,10 @@ class LauncherTests(unittest.TestCase):
         self.browser = self.root / "chromium"
         self.browser.write_text("#!/bin/sh\n")
         self.browser.chmod(0o755)
+        self.firefox = self.root / "firefox"
+        self.firefox.write_text("#!/bin/sh\n")
+        self.firefox.chmod(0o755)
+        self.enterContext(patch.dict(os.environ, {"PATH": f"{self.root}:{os.environ.get('PATH', '')}"}))
         self.spawn = Spawn()
         self.clock = Clock()
 
@@ -154,24 +158,83 @@ class LauncherTests(unittest.TestCase):
         # window: it opens where someone would start.
         launcher = self.build()
         launcher.launch("browser")
-        self.assertEqual(self.spawn.started[0].command[-1], "--app=https://www.google.com")
+        command = self.spawn.started[0].command
+        self.assertEqual(command[0], str(self.firefox))
+        self.assertEqual(command[-2:], ["--new-window", "https://www.google.com"])
+        self.assertIn("--no-remote", command)
+        profile = self.root / "profiles" / "browser-firefox"
+        self.assertEqual(command[command.index("--profile") + 1], str(profile))
+        self.assertTrue(profile.is_dir())
+        self.assertFalse([arg for arg in command if arg.startswith(("--app=", "--user-agent=",
+                                                                   "--user-data-dir=", "--ozone-"))])
+        self.assertEqual(self.spawn.started[0].kwargs["env"]["MOZ_ENABLE_WAYLAND"], "1")
 
-    def test_a_windowed_service_opens_centred_rather_than_filling_the_screen(self):
+    def test_a_windowed_firefox_uses_the_requested_size(self):
         # The same Pi seen over VNC has work going on around Piper.
         launcher = self.build(window={"windowed": True, "width": 1280, "height": 720})
         launcher.launch("browser")
         command = self.spawn.started[0].command
-        self.assertIn("--window-size=1280,720", command)
-        self.assertIn("--window-position=320,180", command)
+        self.assertEqual(command[command.index("--width") + 1], "1280")
+        self.assertEqual(command[command.index("--height") + 1], "720")
+        self.assertNotIn("--kiosk", command)
+
+    def test_a_windowed_chromium_service_is_still_centred(self):
+        launcher = self.build(window={"windowed": True, "width": 1280, "height": 720})
+        launcher.launch("prime")
+        self.assertIn("--window-size=1280,720", self.spawn.started[0].command)
+        self.assertIn("--window-position=320,180", self.spawn.started[0].command)
 
     def test_the_shape_can_be_changed_without_a_restart(self):
         launcher = self.build()
         launcher.launch("browser")
-        self.assertIn("--window-size=1920,1080", self.spawn.started[0].command)
+        self.assertIn("1920", self.spawn.started[0].command)
         launcher.configure({"windowed": True, "width": 1024, "height": 768})
         launcher.stop()
         launcher.launch("browser")
-        self.assertIn("--window-size=1024,768", self.spawn.started[-1].command)
+        command = self.spawn.started[-1].command
+        self.assertEqual(command[command.index("--width") + 1], "1024")
+        self.assertEqual(command[command.index("--height") + 1], "768")
+
+    def test_firefox_opens_without_chromium_and_closes_only_its_own_process(self):
+        with patch("pipertv.launcher.shutil.which", side_effect=lambda name:
+                   str(self.firefox) if name == "firefox" else None):
+            launcher = self.build(browser="auto")
+            launcher.launch("browser")
+        self.assertEqual(launcher.running()["id"], "browser")
+        launcher.stop()
+        self.assertEqual(self.spawn.started[0].signals, ["terminate"])
+        self.assertIsNone(launcher.running())
+
+    def test_missing_firefox_does_not_close_the_current_service(self):
+        launcher = self.build()
+        launcher.launch("youtube")
+        with patch("pipertv.launcher.shutil.which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "Firefox is not installed"):
+                launcher.launch("browser")
+        self.assertEqual(launcher.running()["id"], "youtube")
+        self.assertEqual(self.spawn.started[0].signals, [])
+
+    def test_firefox_esr_is_supported(self):
+        launcher = self.build()
+        with patch("pipertv.launcher.shutil.which", side_effect=lambda name:
+                   "/usr/bin/firefox-esr" if name == "firefox-esr" else None):
+            launcher.launch("browser")
+        self.assertEqual(self.spawn.started[0].command[0], "/usr/bin/firefox-esr")
+
+    def test_firefox_still_needs_a_desktop_session(self):
+        launcher = self.build(environ={})
+        with self.assertRaisesRegex(RuntimeError, "desktop session"):
+            launcher.launch("browser")
+        self.assertEqual(self.spawn.started, [])
+
+    def test_existing_firefox_preferences_survive_a_relaunch(self):
+        launcher = self.build()
+        launcher.launch("browser")
+        launcher.stop()
+        prefs = self.root / "profiles" / "browser-firefox" / "user.js"
+        prefs.write_text('// user preferences\n')
+        launcher.launch("browser")
+        self.assertEqual(prefs.read_text(), '// user preferences\n')
 
     def test_voyo_opens_the_croatian_service(self):
         launcher = self.build()

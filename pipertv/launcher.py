@@ -38,6 +38,7 @@ LOG = logging.getLogger(__name__)
 
 # Raspberry Pi OS and Debian ship the same browser under different names.
 BROWSERS = ("chromium-browser", "chromium")
+FIREFOX_BROWSERS = ("firefox", "firefox-esr")
 
 # YouTube decides which of three interfaces to serve from this string, and the
 # difference is not cosmetic. A Chromecast identity (CrKey) returns the cast
@@ -73,7 +74,7 @@ SERVICES = {
     # guess: what is worth a tile depends on where the television is.
     "voyo": {"name": "Voyo", "url": "https://voyo.hr", "control": SNAP},
     "browser": {"name": "Web browser", "url": "https://www.google.com",
-                "control": SNAP},
+                "browser": "firefox", "control": SNAP},
     # Not a page at all: Kodi decodes video in the Pi's own hardware, which is
     # the difference between watching a film here and watching it stutter. Its
     # interface is built for a remote, so it is typed at rather than pointed at.
@@ -161,12 +162,22 @@ class ServiceLauncher:
     def _missing(self, service_id: str) -> str | None:
         """Why this particular service cannot be opened, if it cannot."""
         service = self.services.get(service_id) or {}
+        if service.get("browser") == "firefox" and not self._find_firefox():
+            return "Firefox is not installed on this Pi. Install firefox or firefox-esr first."
         own = service.get("command")
         if not own:
             return None  # a page: the browser answers for it
         if shutil.which(own[0]) is None:
             return (f"{service.get('name', service_id)} is not installed on this Pi. "
                     f"Install it first: sudo apt install {own[0]}")
+        return None
+
+    @staticmethod
+    def _find_firefox():
+        for name in FIREFOX_BROWSERS:
+            found = shutil.which(name)
+            if found:
+                return found
         return None
 
     def _unavailable(self) -> str | None:
@@ -211,6 +222,8 @@ By typing at it, or by snapping the cursor through it.
         own = service.get("command")
         if own:
             return list(own)
+        if service.get("browser") == "firefox":
+            return self._firefox_command(service)
         profile = self.profiles / service["id"]
         profile.mkdir(parents=True, exist_ok=True)
         (width, height), (left, top) = geometry(self.window, self.screen)
@@ -226,6 +239,26 @@ By typing at it, or by snapping the cursor through it.
         # made kiosk mode worth having, and it can still be drawn over.
         command.append(f"--app={service['url']}")
         return command
+
+    def _firefox_command(self, service: dict) -> list[str]:
+        # Keep Firefox's files separate from both desktop Firefox and the old
+        # Chromium profile. No remote reuse: the process we own must also own
+        # the window, so Exit/Home can close it without closing another browser.
+        profile = self.profiles / f"{service['id']}-firefox"
+        profile.mkdir(parents=True, exist_ok=True)
+        try:
+            with (profile / "user.js").open("x", encoding="utf-8") as prefs:
+                prefs.write('user_pref("browser.shell.checkDefaultBrowser", false);\n'
+                            'user_pref("browser.aboutwelcome.enabled", false);\n'
+                            'user_pref("browser.startup.homepage_override.mstone", "ignore");\n')
+        except FileExistsError:
+            pass
+        (width, height), _ = geometry(self.window, self.screen)
+        # A normal window leaves the on-screen keyboard usable. Firefox keeps
+        # its navigation toolbar; placement is left to the Wayland compositor.
+        return [self._find_firefox(), "--no-remote", "--profile", str(profile),
+                "--width", str(width), "--height", str(height),
+                "--new-window", service["url"]]
 
     # --- opening and closing ---------------------------------------------
 
@@ -243,7 +276,8 @@ By typing at it, or by snapping the cursor through it.
                 raise RuntimeError(missing)
             # A service with its own program needs no browser, so the browser's
             # absence must not stand in its way; the desktop session still must.
-            reason = self._unavailable() if not service.get("command") else self._session_missing()
+            independent = service.get("command") or service.get("browser") == "firefox"
+            reason = self._session_missing() if independent else self._unavailable()
             if reason:
                 raise RuntimeError(reason)
             if self._running and self._running["id"] == service_id:
@@ -252,10 +286,16 @@ By typing at it, or by snapping the cursor through it.
             self._close()
             started = self.clock()
             try:
+                browser_env = {}
+                if service.get("browser") == "firefox":
+                    env = dict(os.environ, **self.environ)
+                    if env.get("WAYLAND_DISPLAY"):
+                        env["MOZ_ENABLE_WAYLAND"] = "1"
+                    browser_env["env"] = env
                 self._process = self.spawn(
                     self.command(service), stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    start_new_session=True, close_fds=True)
+                    start_new_session=True, close_fds=True, **browser_env)
             except OSError as exc:
                 self._process = None
                 self._error = f"Could not open {service['name']}: {exc}"

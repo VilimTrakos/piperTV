@@ -97,6 +97,23 @@ Start with `--no-control` to learn buttons without ever driving the desktop.
 
 ## Open a service from the interface on the TV
 
+On the experimental `experiment/firefox-yify` branch, **Web browser** opens
+Firefox (or Firefox ESR) with a separate profile in
+`~/.cache/pipertv/services/browser-firefox`. Install either browser before using
+that tile. Exit/Home close only the Firefox instance opened by Piper. The TV
+interface and the other web services continue to use Chromium.
+
+Firefox uses a normal window with its navigation toolbar, so the on-screen
+keyboard can appear above it. Piper passes the requested window size; the
+desktop compositor decides its position. First-run welcome/default-browser
+prompts are suppressed only in Piper's Firefox profile. Existing desktop and
+Chromium profiles are not changed.
+
+On 2026-09-19, Firefox 151.0.3 on the Raspberry Pi loaded
+`https://yifydigital.com/` and displayed the catalogue in a fresh profile without
+the Cloudflare block seen previously in Chromium. This is a successful access
+test, not evidence of which Cloudflare rule caused the earlier block.
+
 The Piper interface is a page served at `http://PI_ADDRESS:8765/tv`, meant to be
 shown full screen on the Pi's own HDMI output. Choose **Piper interface** for the
 visit and the learned remote moves the dial on the TV instead of the cursor.
