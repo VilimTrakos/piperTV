@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pipertv.launcher import ServiceLauncher
+from pipertv.launcher import (FIREFOX_PREFS, PREFS_HEADER, ServiceLauncher,
+                              firefox_preferences)
 
 logging.getLogger("pipertv.launcher").addHandler(logging.NullHandler())
 
@@ -232,9 +233,26 @@ class LauncherTests(unittest.TestCase):
         launcher.launch("browser")
         launcher.stop()
         prefs = self.root / "profiles" / "browser-firefox" / "user.js"
-        prefs.write_text('// user preferences\n')
+        prefs.write_text('user_pref("extensions.autoDisableScopes", 0);\n')
         launcher.launch("browser")
-        self.assertEqual(prefs.read_text(), '// user preferences\n')
+        written = prefs.read_text()
+        self.assertTrue(written.startswith('user_pref("extensions.autoDisableScopes", 0);\n'))
+        self.assertIn('user_pref("dom.ipc.processCount", 1);', written)
+
+    def test_firefox_is_told_it_is_on_a_small_computer(self):
+        launcher = self.build()
+        launcher.launch("browser")
+        written = (self.root / "profiles" / "browser-firefox" / "user.js").read_text()
+        for line in ('user_pref("dom.ipc.processCount", 1);',
+                     'user_pref("browser.newtab.preload", false);',
+                     'user_pref("browser.ml.enable", false);'):
+            self.assertIn(line, written)
+
+    def test_chromium_services_are_told_they_are_on_a_small_computer(self):
+        launcher = self.build()
+        launcher.launch("prime")
+        self.assertIn("--enable-low-end-device-mode", self.spawn.started[0].command)
+
 
     def test_voyo_opens_the_croatian_service(self):
         launcher = self.build()
@@ -429,6 +447,28 @@ class LauncherTests(unittest.TestCase):
         launcher.launch("youtube")
         self.assertIn(f"--user-data-dir={self.root / 'cache' / 'pipertv' / 'services' / 'youtube'}",
                       self.spawn.started[0].command)
+
+
+class FirefoxPreferenceTests(unittest.TestCase):
+    def test_an_empty_profile_gets_every_one_of_piper_s_preferences(self):
+        written = firefox_preferences("")
+        self.assertTrue(written.startswith(PREFS_HEADER))
+        for name in FIREFOX_PREFS:
+            self.assertIn(f'user_pref("{name}", ', written)
+
+    def test_a_profile_from_an_earlier_version_is_brought_up_to_date(self):
+        # The first version wrote three lines once and never touched the file
+        # again, so nothing it left there may be doubled or kept stale.
+        earlier = ('user_pref("browser.shell.checkDefaultBrowser", true);\n'
+                   'user_pref("extensions.autoDisableScopes", 0);\n')
+        written = firefox_preferences(earlier)
+        self.assertEqual(written.count('"browser.shell.checkDefaultBrowser"'), 1)
+        self.assertIn('user_pref("browser.shell.checkDefaultBrowser", false);', written)
+        self.assertIn('user_pref("extensions.autoDisableScopes", 0);', written)
+
+    def test_writing_it_twice_changes_nothing_the_second_time(self):
+        once = firefox_preferences('// mine\nuser_pref("a.b", 1);\n')
+        self.assertEqual(firefox_preferences(once), once)
 
 
 if __name__ == "__main__":

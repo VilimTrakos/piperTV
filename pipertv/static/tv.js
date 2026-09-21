@@ -882,6 +882,12 @@
   document.addEventListener("visibilitychange", () => { state.primed = false; });
 
   function initialize() {
+    const params = new URLSearchParams(window.location.search);
+    // Piper closes this page while a service is on the screen and opens it
+    // again afterwards; it comes back on the tile that was just closed, as if
+    // it had been waiting behind it the whole time.
+    const returning = SERVICES.findIndex((service) => service.id === params.get("focus"));
+    if (returning >= 0) state.focus = returning;
     renderHistory();
     buildRing();
     renderFocus();
@@ -893,7 +899,7 @@
 
     // A kiosk that reloads should not replay the splash every time, and it is
     // the only way to look at the dial in a renderer that cannot wait.
-    const skipBoot = new URLSearchParams(window.location.search).get("boot") === "0";
+    const skipBoot = params.get("boot") === "0";
     $("boot-fill").style.width = "62%";
     $("boot-status").textContent = "starting · reading the remote";
     if (skipBoot) {
