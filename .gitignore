@@ -6,3 +6,6 @@ data/
 build/
 dist/
 .pytest_cache/
+# Written on the Pi by the app and by its desktop launcher.
+pipertv.log
+.start.lock
