@@ -7,7 +7,8 @@ import unittest
 from pathlib import Path
 
 from pipertv.backdrop import ROOT
-from pipertv.start import Starter, add_to_panel, desktop_folder, install, saved_windowed
+from pipertv.start import (Starter, add_to_panel, desktop_folder, install,
+                           launch_without_asking, saved_windowed)
 from tests.test_control import FakeBackdrop
 
 logging.getLogger("pipertv.start").addHandler(logging.NullHandler())
@@ -30,7 +31,8 @@ class FakeApi:
         if path == "/api/tv/interface":
             return {"showing": self.showing, "error": None if self.showing else "no window"}
         if path.startswith("/api/tv/events"):
-            return {"control": self.control, "mode": self.mode}
+            return {"control": self.control, "mode": self.mode,
+                    "session_id": "visit-0" if self.control == "on" else None}
         if path == "/api/control/manual":
             return {"session": {"id": "visit-1"}}
         return {}
@@ -39,7 +41,7 @@ class FakeApi:
         return [path for _method, path, _payload in self.calls if path != "/api/health"]
 
 
-class StarterTests(unittest.TestCase):
+class StarterCase(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -59,6 +61,8 @@ class StarterTests(unittest.TestCase):
                        windowed=lambda: windowed,
                        log_file=Path(self.temporary.name) / "pipertv.log")
 
+
+class StarterTests(StarterCase):
     def test_a_running_piper_is_only_brought_to_the_screen(self):
         api = FakeApi()
         self.assertIsNone(self.build(api).run())
@@ -102,6 +106,44 @@ class StarterTests(unittest.TestCase):
         api = FakeApi(showing=False)
         self.assertEqual(self.build(api).run(), "no window")
 
+    def test_the_remote_is_taken_back_from_the_mouse_in_the_same_visit(self):
+        # After leaving Piper the remote moved the mouse; starting Piper hands
+        # it back to the interface without opening a visit of its own.
+        api = FakeApi(control="on", mode="pointer")
+        self.assertIsNone(self.build(api).run())
+        self.assertEqual(api.calls[-1], ("POST", "/api/control/mode",
+                                         {"mode": "piper", "session_id": "visit-0"}))
+        self.assertNotIn("/api/control/manual", api.paths())
+
+
+class RemoteOnlyTests(StarterCase):
+    """At login: the remote as the mouse, and Piper itself left off the screen."""
+
+    def test_a_login_starts_the_app_and_gives_the_remote_the_mouse(self):
+        api = FakeApi(up=False, control="off", mode=None)
+        self.assertIsNone(self.build(api).remote())
+        self.assertEqual(self.started[0][0], [sys.executable, "main.py", "--port", "8765"])
+        self.assertEqual(self.backdrop.calls, [], "nothing black goes up at login")
+        self.assertNotIn("/api/tv/interface", api.paths())
+        self.assertEqual(api.calls[-1], ("POST", "/api/control/mode",
+                                         {"mode": "pointer", "session_id": "visit-1"}))
+
+    def test_a_visit_that_already_chose_is_left_alone(self):
+        api = FakeApi(control="on", mode="piper")
+        self.assertIsNone(self.build(api).remote())
+        self.assertEqual(api.paths(), ["/api/tv/events?after=0"])
+
+    def test_an_open_visit_without_a_mode_gets_the_mouse(self):
+        api = FakeApi(control="on", mode=None)
+        self.build(api).remote()
+        self.assertEqual(api.calls[-1], ("POST", "/api/control/mode",
+                                         {"mode": "pointer", "session_id": "visit-0"}))
+
+    def test_an_app_that_never_answers_at_login_is_reported(self):
+        api = FakeApi(up=False)
+        self.assertIn("did not start", self.build(api, starts_app=False).remote())
+        self.assertEqual(self.backdrop.calls, [])
+
 
 class InstallTests(unittest.TestCase):
     def setUp(self):
@@ -112,30 +154,58 @@ class InstallTests(unittest.TestCase):
         self.defaults = Path(self.temporary.name) / "wf-panel-pi.ini"
         self.defaults.write_text("[panel]\nwidgets_left=smenu launchers window-list\n"
                                  "launchers=x-www-browser pcmanfm x-terminal-emulator\n")
+        self.libfm = Path(self.temporary.name) / "libfm.conf"
+        self.libfm.write_text("[config]\nsingle_click=0\nterminal=x-terminal-emulator %s\n"
+                              "\n[ui]\nbig_icon_size=48\n")
+
+    def install(self, **kwargs):
+        return install(home=self.home, panel_defaults=self.defaults,
+                       libfm_defaults=self.libfm, **kwargs)
 
     def test_the_launcher_goes_in_the_menu_on_the_desktop_and_on_the_panel(self):
-        written = install(home=self.home, python="/home/rpi/piperTV/.venv/bin/python3",
-                          panel_defaults=self.defaults)
+        written = self.install(python="/home/rpi/piperTV/.venv/bin/python3")
         self.assertEqual(written, [self.home / ".local/share/applications/pipertv.desktop",
                                    self.home / "Desktop/pipertv.desktop",
-                                   self.home / ".config/wf-panel-pi/wf-panel-pi.ini"])
+                                   self.home / ".config/autostart/pipertv-remote.desktop",
+                                   self.home / ".config/wf-panel-pi/wf-panel-pi.ini",
+                                   self.home / ".config/libfm/libfm.conf"])
         for path in written[:2]:
             text = path.read_text()
-            self.assertIn('Exec="/home/rpi/piperTV/.venv/bin/python3" -m pipertv.start', text)
+            self.assertIn('Exec="/home/rpi/piperTV/.venv/bin/python3" -m pipertv.start\n', text)
             self.assertIn(f"Path={ROOT}", text)
 
+    def test_at_login_only_the_remote_starts(self):
+        # Piper itself stays off the screen until someone opens it.
+        self.install(python="/usr/bin/python3")
+        entry = (self.home / ".config/autostart/pipertv-remote.desktop").read_text()
+        self.assertIn('Exec="/usr/bin/python3" -m pipertv.start --remote', entry)
+
+    def test_the_desktop_opens_a_launcher_without_asking(self):
+        launch_without_asking(self.home, self.libfm)
+        text = (self.home / ".config/libfm/libfm.conf").read_text()
+        # A copy of the system file with one line added, and nothing else changed.
+        self.assertEqual(text, "[config]\nquick_exec=1\nsingle_click=0\n"
+                               "terminal=x-terminal-emulator %s\n\n[ui]\nbig_icon_size=48\n")
+        self.assertIsNone(launch_without_asking(self.home, self.libfm), "and only once")
+
+    def test_a_file_manager_setting_of_the_user_s_own_is_kept(self):
+        config = self.home / ".config" / "libfm"
+        config.mkdir(parents=True)
+        (config / "libfm.conf").write_text("[config]\nquick_exec=0\nsingle_click=1\n")
+        launch_without_asking(self.home, self.libfm)
+        self.assertEqual((config / "libfm.conf").read_text(),
+                         "[config]\nquick_exec=1\nsingle_click=1\n")
+
     def test_the_icon_it_names_exists(self):
-        entry = install(home=self.home, panel_defaults=self.defaults)[0].read_text()
+        entry = self.install()[0].read_text()
         icon = next(line for line in entry.splitlines() if line.startswith("Icon="))[5:]
         self.assertTrue(Path(icon).is_file())
 
     def test_installing_again_changes_nothing(self):
-        first = [path.read_text() for path in install(home=self.home,
-                                                      panel_defaults=self.defaults)]
+        first = [path.read_text() for path in self.install()]
         panel = (self.home / ".config/wf-panel-pi/wf-panel-pi.ini").read_text()
-        second = [path.read_text() for path in install(home=self.home,
-                                                       panel_defaults=self.defaults)]
-        self.assertEqual(first[:2], second)
+        second = [path.read_text() for path in self.install()]
+        self.assertEqual(first[:3], second)
         self.assertEqual((self.home / ".config/wf-panel-pi/wf-panel-pi.ini").read_text(), panel)
 
     def test_the_panel_keeps_its_own_launchers_and_gains_piper(self):

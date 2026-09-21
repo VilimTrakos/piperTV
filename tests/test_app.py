@@ -182,6 +182,10 @@ class FakeRemote:
     def stop_service(self):
         return self.launcher.stop()
 
+    def leave(self):
+        self.left = getattr(self, "left", 0) + 1
+        return {"mode": "pointer", "interface": {"showing": False}}
+
     def open_keyboard(self):
         self.keyboard_opened = getattr(self, "keyboard_opened", 0) + 1
         return {"showing": True}
@@ -504,6 +508,12 @@ class TvInterfaceTests(unittest.TestCase):
         self.assertEqual(closed.status_code, 200)
         self.assertIsNone(closed.get_json()["running"])
 
+    def test_the_mouse_can_leave_piper(self):
+        response = self.client.post("/api/tv/leave", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["mode"], "pointer")
+        self.assertEqual(self.remote.left, 1)
+
     def test_a_service_piper_cannot_open_is_not_found(self):
         state = self.client.post("/api/control/manual", json={"confirmed": True}).get_json()
         visit = state["session"]["id"]
@@ -563,6 +573,7 @@ class ControlDisabledTests(unittest.TestCase):
                  self.client.get("/api/tv/events"),
                  self.client.post("/api/tv/launch", json={"service": "youtube", "session_id": "x"}),
                  self.client.post("/api/tv/close", json={}),
+                 self.client.post("/api/tv/leave", json={}),
                  self.client.post("/api/tv/keyboard", json={})]
         for response in cases:
             with self.subTest(path=response.request.path):

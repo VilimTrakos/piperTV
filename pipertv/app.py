@@ -307,6 +307,12 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         body()
         return jsonify(desktop().stop_service())
 
+    @app.post("/api/tv/leave")
+    def tv_leave():
+        # The mouse's way out of Piper, as exit pressed twice is the remote's.
+        body()
+        return jsonify(desktop().leave())
+
     @app.post("/api/tv/keyboard")
     def tv_keyboard():
         # Shown when a page's search box is chosen, and here for a browser that
