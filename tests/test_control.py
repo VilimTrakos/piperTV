@@ -2,8 +2,8 @@ import logging
 import time
 import unittest
 
-from pipertv.control import (BACK_AGAIN_S, STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S,
-                             RemoteControl)
+from pipertv.control import (BACK_AGAIN_S, STEP_ASIDE_AFTER_S, STEP_HOLD_DELAY_S,
+                             STEP_HOLD_INTERVAL_S, RemoteControl)
 
 SCREEN = (1920, 1080)
 
@@ -250,17 +250,38 @@ class FakeInterface:
     def __init__(self):
         self.closed = 0
         self.visible = True
+        self.opened = []
 
     def close(self):
         self.closed += 1
         self.visible = False
         return {"closed": [4242], "showing": False, "error": None}
 
+    def open(self, window=None, focus=None):
+        self.opened.append(focus)
+        self.visible = True
+        return self.snapshot()
+
     def showing(self):
         return self.visible
 
     def snapshot(self):
         return {"port": 8765, "showing": self.visible, "error": None}
+
+
+class Later:
+    """Stands in for the timer: keeps what was scheduled until told to run it."""
+
+    def __init__(self):
+        self.pending = []
+
+    def __call__(self, delay, action):
+        self.pending.append((delay, action))
+
+    def run(self):
+        pending, self.pending = self.pending, []
+        for _delay, action in pending:
+            action()
 
 
 class FakeStore:
@@ -277,6 +298,7 @@ def build(state="unknown", **kwargs):
     kwargs.setdefault("keys", FakeKeys())
     kwargs.setdefault("watcher", FakeWatcher())
     kwargs.setdefault("onscreen", FakeOnScreen())
+    kwargs.setdefault("later", Later())
     control = RemoteControl(FakeStore(), screen=SCREEN, monitor=monitor,
                             controller=controller, targets=targets,
                             desktop=FakeDesktop(), **kwargs)
@@ -924,6 +946,97 @@ class WayOutTests(unittest.TestCase):
                 control._press(button)
                 control._press(button)
                 self.assertEqual(control.interface.closed, 0)
+
+
+class SteppingAsideTests(unittest.TestCase):
+    """The interface leaves memory to the service covering it, and comes back."""
+
+    def opened(self, service="prime"):
+        control, _monitor, _controller, _targets = build("active")
+        visit = select(control, "piper")["session"]["id"]
+        control.launch(service, visit)
+        return control
+
+    def test_the_interface_stays_until_the_service_has_had_time_to_appear(self):
+        # Closing it at once would show the bare desktop while the service
+        # is still starting.
+        control = self.opened()
+        self.assertEqual(control.interface.closed, 0)
+        self.assertEqual([delay for delay, _ in control.later.pending], [STEP_ASIDE_AFTER_S])
+
+    def test_the_interface_closes_once_the_service_covers_it(self):
+        control = self.opened()
+        control.later.run()
+        self.assertEqual(control.interface.closed, 1)
+        self.assertEqual(control.snapshot()["interface"]["closed_for"], "prime")
+
+    def test_leaving_the_service_brings_the_interface_back_on_its_tile(self):
+        control = self.opened()
+        control.later.run()
+        control._press("exit")
+        control._tick()
+        self.assertEqual(control.interface.opened, ["prime"])
+        self.assertIsNone(control.snapshot()["interface"]["closed_for"])
+
+    def test_a_service_that_ends_by_itself_brings_the_interface_back(self):
+        # Closed from the desktop, or crashed: either way the remote needs
+        # something on the screen to talk to.
+        control = self.opened()
+        control.later.run()
+        control.launcher.open = None
+        control._tick()
+        self.assertEqual(control.interface.opened, ["prime"])
+
+    def test_it_comes_back_once_however_many_passes_see_it_gone(self):
+        control = self.opened()
+        control.later.run()
+        control.launcher.stop()
+        control._tick()
+        control._tick()
+        self.assertEqual(control.interface.opened, ["prime"])
+
+    def test_a_service_closed_before_it_appeared_leaves_the_interface_alone(self):
+        control = self.opened()
+        control._press("exit")
+        control.later.run()
+        control._tick()
+        self.assertEqual(control.interface.closed, 0)
+        self.assertEqual(control.interface.opened, [])
+
+    def test_the_timer_of_a_replaced_service_does_not_close_for_the_next(self):
+        control = self.opened("prime")
+        first = control.later.pending[0][1]
+        control.launcher.stop()
+        control.launcher.launch("youtube")
+        first()
+        self.assertEqual(control.interface.closed, 0)
+
+    def test_piper_brings_back_only_what_it_sent_away(self):
+        # With no interface on the Pi -- someone driving /tv from a laptop --
+        # closing a service must not start a browser on the television.
+        control = self.opened()
+        control.interface.visible = False
+        control.later.run()
+        control.launcher.stop()
+        control._tick()
+        self.assertEqual(control.interface.opened, [])
+
+    def test_a_new_window_shape_waits_for_the_service_to_end(self):
+        control = self.opened()
+        control.later.run()
+        control.reload_window()
+        self.assertEqual(control.interface.opened, [])
+        control.launcher.stop()
+        control._tick()
+        self.assertEqual(control.interface.opened, ["prime"])
+
+    def test_shutting_down_leaves_the_interface_on_the_television(self):
+        # The service goes with the app; without this a restart would leave
+        # the TV on the desktop, with nothing for the remote to talk to.
+        control = self.opened()
+        control.later.run()
+        control.close()
+        self.assertEqual(control.interface.opened, ["prime"])
 
 
 class KeyboardTests(unittest.TestCase):
