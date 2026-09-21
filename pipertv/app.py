@@ -16,12 +16,33 @@ from werkzeug.exceptions import HTTPException
 
 from .control import RemoteControl
 from .desktop import DRIVES, POINTER_DEFAULTS, POINTER_LIMITS, validate_pointer
+from .gpio_ir import LIRC, describe, list_lines, validate_receiver
 from .learner import Workbench
 from .roles import SUGGESTED, RoleMap
 from .storage import RecordingStore
 from .window import WINDOW_DEFAULTS, WINDOW_LIMITS, validate_window
 
 STATIC = Path(__file__).parent / "static"
+LOG = logging.getLogger("pipertv.app")
+# What the Pi's own receiver is called by the GPIO chip that lends it a pin:
+# the gpio-ir overlay's device-tree node, "ir-receiver@11" for GPIO17.
+KERNEL_RECEIVER = "ir-receiver"
+# Piper's own name on a line it is reading, so its current pin reads as free.
+OURS = "piper-ir"
+
+
+def chosen_receiver(store, fallback):
+    """The receiver to listen on: a pin chosen on the screen, or the kernel's.
+
+    A saved choice that no longer makes sense falls back to the kernel's
+    receiver rather than stopping the app: the remote is how it gets fixed.
+    """
+    try:
+        saved = validate_receiver(store.receiver() or {})
+    except ValueError as exc:
+        LOG.warning("Ignoring the saved receiver: %s", exc)
+        return fallback
+    return saved if saved["kind"] == "gpio" else fallback
 
 
 def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
@@ -36,12 +57,16 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
     if workbench is None:
         path = data or Path("data/demo-recordings.json" if demo else "data/recordings.json")
         store = RecordingStore(path)
+        kernel_device = device
+        device = chosen_receiver(store, device)
         if remote is None and control and not demo:
             # The port identifies this app's own interface window, which the
             # remote can ask to close.
             remote = RemoteControl(store, device=device, browser=browser, port=port)
         # The gate stands the desktop down while a button is being learned.
         workbench = Workbench(store, device=device, demo=demo, gate=remote)
+    else:
+        kernel_device = device
     app = Flask(__name__, static_folder=str(STATIC), static_url_path="/static")
     app.config.update(MAX_CONTENT_LENGTH=32768, JSON_SORT_KEYS=False)
     app.json.sort_keys = False
@@ -268,6 +293,52 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
             # browser cannot be talked out of the shape it was started with.
             remote.reload_window()
         return jsonify(window_state())
+
+    def receiver_state():
+        try:
+            lines, error = list_lines(), None
+        except OSError as exc:
+            lines, error = [], f"This machine's GPIO pins cannot be read: {exc}"
+        try:
+            settings = validate_receiver(workbench.store.receiver() or {})
+        except ValueError:
+            settings = validate_receiver({})
+        kernel = next((line for line in lines
+                       if (line["consumer"] or "").startswith(KERNEL_RECEIVER)), None)
+        for line in lines:
+            # Free to choose: nothing holds it, or Piper itself is reading it.
+            line["free"] = not line["used"] or line["consumer"] == OURS
+        heard = remote.controller.health() if remote is not None else None
+        return {"settings": settings, "receiver": describe(settings),
+                "kernel": {"device": LIRC, "gpio": kernel["gpio"] if kernel else None,
+                           "header_pin": kernel["header_pin"] if kernel else None},
+                "lines": lines, "error": error, "listening": heard}
+
+    @app.get("/api/receiver")
+    def get_receiver():
+        return jsonify(receiver_state())
+
+    @app.put("/api/receiver")
+    def set_receiver():
+        # Taking effect at once: the pin chosen is being read a moment later,
+        # by the remote and by the next recording alike.
+        checked = validate_receiver(body())
+        if checked["kind"] == "gpio":
+            try:
+                line = next((line for line in list_lines() if line["gpio"] == checked["pin"]), None)
+            except OSError:
+                line = None
+            if line and line["used"] and line["consumer"] != OURS:
+                raise RuntimeError(f"GPIO{checked['pin']} is already in use by "
+                                   f"{line['consumer'] or 'another driver'}. Choose a free pin.")
+        saved = workbench.store.set_receiver(checked)
+        listen_on = saved if saved["kind"] == "gpio" else kernel_device
+        if hasattr(workbench.backend, "use"):
+            workbench.backend.use(listen_on)
+        if remote is not None:
+            remote.use_receiver(listen_on)
+        LOG.info("The IR receiver is now %s", describe(listen_on))
+        return jsonify(receiver_state())
 
     def desktop() -> RemoteControl:
         if remote is None:

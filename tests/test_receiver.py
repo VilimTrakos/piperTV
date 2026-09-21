@@ -223,6 +223,25 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(manager.get(job["id"])["status"], "error")
         self.assertIn("/missing/ir/device", manager.get(job["id"])["error"])
 
+    def test_the_next_capture_listens_on_the_chosen_receiver(self):
+        manager = CaptureManager(device="/dev/lirc0")
+        self.addCleanup(manager.close)
+        manager.use({"kind": "gpio", "pin": 18})
+        health = manager.health()
+        self.assertEqual(health["receiver"], "GPIO18 (pin 12)")
+        self.assertEqual(health["device"], "/dev/gpiochip0")
+        opened = []
+
+        def refuse(source, _gap):
+            opened.append(source)
+            raise lirc.CaptureError("no receiver in a test")
+
+        with patch("pipertv.receiver.open_receiver", side_effect=refuse):
+            job = manager.start({})
+            manager._thread.join(1)
+        self.assertEqual(opened, [{"kind": "gpio", "pin": 18}])
+        self.assertEqual(manager.get(job["id"])["status"], "error")
+
     def test_completed_jobs_are_bounded(self):
         manager = CaptureManager(demo=True)
         self.addCleanup(manager.close)

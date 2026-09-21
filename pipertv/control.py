@@ -283,6 +283,11 @@ class RemoteControl:
             LOG.info("Nothing covers the interface any more; opening it again")
             self.show_interface(focus=self._aside_for)
 
+    def use_receiver(self, device) -> dict:
+        """Listen for the remote on another receiver, from this moment on."""
+        self.controller.use(device)
+        return self.controller.health()
+
     def reload_pointer(self) -> dict:
         with self._source_lock:
             self.pointer = self._load_pointer()

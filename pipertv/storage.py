@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from .buttons import BUTTONS, BUTTON_IDS
 from .desktop import validate_pointer
+from .gpio_ir import validate_receiver
 from .roles import ROLES, validate_roles
 from .window import validate_window
 
@@ -31,7 +32,9 @@ def validate_signal(signal):
         raise ValueError("The signal has an invalid carrier frequency.")
     if signal.get("carrier_source") not in ("assumed", "measured"):
         raise ValueError("The signal must say whether its carrier was assumed or measured.")
-    if signal.get("source") not in ("lirc", "demo"):
+    # lirc is the kernel's receiver, gpio a pin Piper reads itself: both are
+    # the Pi's own hardware, timed by the kernel.
+    if signal.get("source") not in ("lirc", "gpio", "demo"):
         raise ValueError("The signal must identify its hardware or demo source.")
     if not isinstance(signal.get("captured_at"), str):
         raise ValueError("The signal has no capture timestamp.")
@@ -213,6 +216,19 @@ class RecordingStore:
         with self.lock:
             updated = copy.deepcopy(self.document)
             updated["window"] = checked
+            self._commit(updated)
+            return dict(checked)
+
+    def receiver(self):
+        with self.lock:
+            return dict(self.document.get("receiver", {}))
+
+    def set_receiver(self, values):
+        """Keep which pin the IR receiver is on, beside what it has recorded."""
+        checked = validate_receiver(values)
+        with self.lock:
+            updated = copy.deepcopy(self.document)
+            updated["receiver"] = checked
             self._commit(updated)
             return dict(checked)
 
