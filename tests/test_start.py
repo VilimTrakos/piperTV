@@ -118,7 +118,7 @@ class InstallTests(unittest.TestCase):
                           panel_defaults=self.defaults)
         self.assertEqual(written, [self.home / ".local/share/applications/pipertv.desktop",
                                    self.home / "Desktop/pipertv.desktop",
-                                   self.home / ".config/wf-panel-pi.ini"])
+                                   self.home / ".config/wf-panel-pi/wf-panel-pi.ini"])
         for path in written[:2]:
             text = path.read_text()
             self.assertIn('Exec="/home/rpi/piperTV/.venv/bin/python3" -m pipertv.start', text)
@@ -132,29 +132,38 @@ class InstallTests(unittest.TestCase):
     def test_installing_again_changes_nothing(self):
         first = [path.read_text() for path in install(home=self.home,
                                                       panel_defaults=self.defaults)]
-        panel = (self.home / ".config/wf-panel-pi.ini").read_text()
+        panel = (self.home / ".config/wf-panel-pi/wf-panel-pi.ini").read_text()
         second = [path.read_text() for path in install(home=self.home,
                                                        panel_defaults=self.defaults)]
         self.assertEqual(first[:2], second)
-        self.assertEqual((self.home / ".config/wf-panel-pi.ini").read_text(), panel)
+        self.assertEqual((self.home / ".config/wf-panel-pi/wf-panel-pi.ini").read_text(), panel)
 
     def test_the_panel_keeps_its_own_launchers_and_gains_piper(self):
         add_to_panel(self.home, self.defaults)
-        text = (self.home / ".config/wf-panel-pi.ini").read_text()
+        text = (self.home / ".config/wf-panel-pi/wf-panel-pi.ini").read_text()
         self.assertIn("launchers=x-www-browser pcmanfm x-terminal-emulator pipertv", text)
 
     def test_the_panel_settings_already_there_are_left_alone(self):
-        config = self.home / ".config"
-        config.mkdir()
+        config = self.home / ".config" / "wf-panel-pi"
+        config.mkdir(parents=True)
         (config / "wf-panel-pi.ini").write_text("[panel]\nautohide=true\nautohide_duration=300\n")
         add_to_panel(self.home, self.defaults)
         self.assertEqual((config / "wf-panel-pi.ini").read_text(),
                          "[panel]\nlaunchers=x-www-browser pcmanfm x-terminal-emulator pipertv\n"
                          "autohide=true\nautohide_duration=300\n")
 
+    def test_the_empty_file_a_new_desktop_starts_with_is_filled_in(self):
+        # What this Pi had: the file exists from the first login, with nothing in it.
+        config = self.home / ".config" / "wf-panel-pi"
+        config.mkdir(parents=True)
+        (config / "wf-panel-pi.ini").write_text("")
+        add_to_panel(self.home, self.defaults)
+        self.assertEqual((config / "wf-panel-pi.ini").read_text(),
+                         "[panel]\nlaunchers=x-www-browser pcmanfm x-terminal-emulator pipertv\n")
+
     def test_launchers_someone_chose_are_kept(self):
-        config = self.home / ".config"
-        config.mkdir()
+        config = self.home / ".config" / "wf-panel-pi"
+        config.mkdir(parents=True)
         (config / "wf-panel-pi.ini").write_text("[panel]\nlaunchers = pcmanfm\n")
         add_to_panel(self.home, self.defaults)
         self.assertEqual((config / "wf-panel-pi.ini").read_text(),
