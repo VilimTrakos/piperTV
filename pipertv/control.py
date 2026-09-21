@@ -584,8 +584,7 @@ class RemoteControl:
             return False
         # Nothing is open, so this is about Piper itself. Ask, then act.
         if self.leaving.press():
-            self.interface.close()
-            self.backdrop.close()
+            self.leave()
         return True
 
     def _tick(self) -> None:
@@ -700,6 +699,30 @@ class RemoteControl:
     def stop_service(self) -> dict:
         """Give the screen back to the interface. Always allowed: it is the way out."""
         return self.launcher.stop()
+
+    def leave(self) -> dict:
+        """Take Piper off the screen and hand the remote to the desktop's mouse.
+
+        Leaving used to leave a remote that did nothing: the visit still
+        belonged to an interface nobody could see, and the way back was a
+        keyboard. Now the remote moves the mouse, and a double OK on the
+        PiperTV icon brings Piper back.
+        """
+        if self.launcher.running() is not None:
+            self.launcher.stop()
+            self.onscreen.close()
+            self.keys.release()
+        with self._screen_lock:
+            self._aside_for = None
+            self.interface.close()
+            self.backdrop.close()
+        with self._source_lock:
+            state = self.session.snapshot()
+            if state["session"] and state["mode"] != "pointer":
+                self.session.choose("pointer", state["session"]["id"])
+            state = self._sync_input_context()
+        LOG.info("Left Piper; the remote moves the desktop's mouse")
+        return dict(state, interface=self._interface_state())
 
     def manual(self, confirmed) -> dict:
         with self._source_lock:

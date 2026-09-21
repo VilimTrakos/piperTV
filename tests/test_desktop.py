@@ -1,8 +1,8 @@
 import logging
 import unittest
 
-from pipertv.desktop import (CLICKS, POINTER_DEFAULTS, DesktopControl,
-                             choose_target)
+from pipertv.desktop import (CLICKS, DOUBLE_CLICK_GAP_S, DOUBLE_OK_S, POINTER_DEFAULTS,
+                             DesktopControl, choose_target)
 
 # The desktop layer logs whenever it swallows a failure instead of raising into
 # the IR thread. These tests assert on health(), so keep that noise out of the
@@ -223,12 +223,15 @@ class ScrollTests(unittest.TestCase):
         control.press("down")
         self.assertEqual(pointer.scrolls[-1], -control.scroll_clicks)
 
+    # A mode handed to press() is how a service on the screen is driven; the
+    # strip along the top is reserved only then.
+
     def test_pushing_up_at_the_top_scrolls_the_other_way(self):
         control, _session = self.build()
-        control.press("up")
+        control.press("up", mode="pointer")
         pointer = control._pointer
         pointer.position_override = (960, control.reserved_top_px)
-        control.press("up")
+        control.press("up", mode="pointer")
         self.assertEqual(pointer.scrolls[-1], control.scroll_clicks)
 
     def test_the_cursor_stops_below_the_strip_that_is_not_the_page(self):
@@ -236,19 +239,19 @@ class ScrollTests(unittest.TestCase):
         # whole height as an input region, and a wheel turned inside it reaches
         # the panel rather than the page. Scrolling up did nothing at all.
         control, _session = self.build()
-        control.press("up")
+        control.press("up", mode="pointer")
         control._pointer._y = control.reserved_top_px + 4
         for _ in range(6):
-            control.press("up")
+            control.press("up", mode="pointer")
         self.assertGreaterEqual(control._pointer.position[1], control.reserved_top_px)
         self.assertTrue(control._pointer.scrolls, "and it scrolled instead of stalling")
 
     def test_the_strip_is_a_setting_a_pi_without_a_panel_can_drop(self):
         control, _session = self.build()
         control.configure(dict(POINTER_DEFAULTS, reserved_top_px=0))
-        control.press("up")
+        control.press("up", mode="pointer")
         control._pointer._y = 8
-        control.press("up")
+        control.press("up", mode="pointer")
         self.assertEqual(control._pointer.position[1], 0)
 
     def test_a_control_under_the_strip_is_not_snapped_to(self):
@@ -256,9 +259,24 @@ class ScrollTests(unittest.TestCase):
         # whatever owns the strip, so the page moves instead.
         targets = FakeTargets([{"x": 400, "y": 10, "label": "under the panel"}])
         control, _session = self.build(targets=targets, mode="snapping")
-        control.press("up")
+        control.press("up", mode="snapping")
         self.assertNotEqual(control._pointer.position, (400, 10))
         self.assertEqual(control._pointer.scrolls[-1], control.scroll_clicks)
+
+    def test_on_the_desktop_the_cursor_reaches_the_panel(self):
+        # With nothing open the strip is the panel -- the PiperTV launcher,
+        # the network, the clock -- and the remote has to get there.
+        control, _session = self.build()
+        control.press("up")
+        control._pointer._y = 30
+        control.press("up")
+        self.assertLess(control._pointer.position[1], control.reserved_top_px)
+
+    def test_a_panel_icon_on_the_desktop_can_be_snapped_to(self):
+        targets = FakeTargets([{"x": 400, "y": 10, "label": "PiperTV"}])
+        control, _session = self.build(targets=targets, mode="snapping")
+        control.press("up")
+        self.assertEqual(control._pointer.position, (400, 10))
 
     def test_the_cursor_still_moves_when_it_is_not_at_an_edge(self):
         control, _session = self.build()
@@ -367,6 +385,49 @@ class SnappingModeTests(unittest.TestCase):
         desktop, _session, _made = control("snapping", targets=FakeTargets([], fail=True))
         self.assertIsNone(desktop.press("right"))
         self.assertFalse(desktop.health()["ok"])
+
+
+class DoubleOkTests(unittest.TestCase):
+    """An icon on the desktop opens on a double-click, and so from the sofa too."""
+
+    def build(self, tick=0.3):
+        slept = []
+        desktop, session, made = control(tick=tick, sleep=slept.append)
+        return desktop, made, slept
+
+    def test_a_second_ok_on_the_same_spot_is_a_double_click(self):
+        desktop, made, slept = self.build()
+        desktop.press("ok")
+        desktop.press("ok")
+        self.assertEqual(made[0].clicks, ["left", "left", "left"])
+        self.assertEqual(slept, [DOUBLE_CLICK_GAP_S])
+
+    def test_two_presses_far_apart_are_two_clicks(self):
+        desktop, made, _slept = self.build(tick=DOUBLE_OK_S + 0.5)
+        desktop.press("ok")
+        desktop.press("ok")
+        self.assertEqual(made[0].clicks, ["left", "left"])
+
+    def test_moving_between_the_presses_makes_them_two_clicks(self):
+        desktop, made, _slept = self.build()
+        desktop.press("ok")
+        desktop.press("right")
+        desktop.press("ok")
+        self.assertEqual(made[0].clicks, ["left", "left"])
+
+    def test_a_third_press_starts_over(self):
+        desktop, made, _slept = self.build()
+        for _ in range(3):
+            desktop.press("ok")
+        self.assertEqual(made[0].clicks, ["left"] * 4)
+
+    def test_a_service_gets_exactly_the_clicks_that_were_pressed(self):
+        # Two quick presses on a page's button are two presses of it; a third
+        # click would press it a third time.
+        desktop, made, _slept = self.build()
+        desktop.press("ok", mode="snapping")
+        desktop.press("ok", mode="snapping")
+        self.assertEqual(made[0].clicks, ["left", "left"])
 
 
 class ClickAndGateTests(unittest.TestCase):
