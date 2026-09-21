@@ -4,6 +4,7 @@ import unittest
 
 from pipertv.control import (BACK_AGAIN_S, STEP_ASIDE_AFTER_S, STEP_HOLD_DELAY_S,
                              STEP_HOLD_INTERVAL_S, RemoteControl)
+from pipertv.window import validate_window
 
 SCREEN = (1920, 1080)
 
@@ -269,6 +270,31 @@ class FakeInterface:
         return {"port": 8765, "showing": self.visible, "error": None}
 
 
+class FakeBackdrop:
+    """Stands in for the black window behind the interface."""
+
+    def __init__(self, visible=True, calls=None, fails=False):
+        self.visible = visible
+        self.calls = [] if calls is None else calls
+        self.fails = fails
+
+    def show(self):
+        self.calls.append("backdrop up")
+        self.visible = self.visible or not self.fails
+        return self.snapshot()
+
+    def close(self):
+        self.calls.append("backdrop down")
+        self.visible = False
+        return self.snapshot()
+
+    def showing(self):
+        return self.visible
+
+    def snapshot(self):
+        return {"showing": self.visible, "error": None}
+
+
 class Later:
     """Stands in for the timer: keeps what was scheduled until told to run it."""
 
@@ -299,6 +325,7 @@ def build(state="unknown", **kwargs):
     kwargs.setdefault("watcher", FakeWatcher())
     kwargs.setdefault("onscreen", FakeOnScreen())
     kwargs.setdefault("later", Later())
+    kwargs.setdefault("backdrop", FakeBackdrop())
     control = RemoteControl(FakeStore(), screen=SCREEN, monitor=monitor,
                             controller=controller, targets=targets,
                             desktop=FakeDesktop(), **kwargs)
@@ -1037,6 +1064,72 @@ class SteppingAsideTests(unittest.TestCase):
         control.later.run()
         control.close()
         self.assertEqual(control.interface.opened, ["prime"])
+
+
+class BackdropTests(unittest.TestCase):
+    """What the television shows while the interface is away is Piper's too."""
+
+    def build(self, backdrop_visible=True, windowed=False, fails=False):
+        calls = []
+        backdrop = FakeBackdrop(visible=backdrop_visible, calls=calls, fails=fails)
+        control, _monitor, _controller, _targets = build("active", backdrop=backdrop)
+        opened = control.interface.open
+
+        def open_interface(window=None, focus=None):
+            calls.append("interface open")
+            return opened(window, focus)
+
+        control.interface.open = open_interface
+        if windowed:
+            control.window = validate_window({"windowed": True})
+        return control, calls
+
+    def test_the_backdrop_goes_up_before_the_interface(self):
+        # Whatever maps last is on top: the other way round, the backdrop
+        # would cover the interface it is meant to be behind.
+        control, calls = self.build(backdrop_visible=False)
+        control.show_interface()
+        self.assertEqual(calls, ["backdrop up", "interface open"])
+
+    def test_a_window_on_the_desktop_has_no_backdrop_behind_it(self):
+        control, calls = self.build(windowed=True)
+        control.show_interface()
+        self.assertEqual(calls, ["backdrop down", "interface open"])
+
+    def test_a_missing_backdrop_is_put_up_before_the_service_opens(self):
+        # After it, it would land on top of the service.
+        control, calls = self.build(backdrop_visible=False)
+        control.launch("prime", select(control, "piper")["session"]["id"])
+        self.assertEqual(calls, ["backdrop up"])
+        control.later.run()
+        self.assertEqual(control.interface.closed, 1)
+
+    def test_the_interface_stays_when_nothing_would_take_its_place(self):
+        # Without the backdrop, the desktop panel would sit across the top
+        # of the service and the return would show the desktop.
+        control, _calls = self.build(backdrop_visible=False, fails=True)
+        control.launch("prime", select(control, "piper")["session"]["id"])
+        control.later.run()
+        self.assertEqual(control.interface.closed, 0)
+        self.assertIsNone(control.snapshot()["interface"]["closed_for"])
+
+    def test_a_window_on_the_desktop_steps_aside_without_one(self):
+        control, _calls = self.build(backdrop_visible=False, windowed=True)
+        control.launch("prime", select(control, "piper")["session"]["id"])
+        control.later.run()
+        self.assertEqual(control.interface.closed, 1)
+
+    def test_leaving_piper_takes_the_backdrop_with_it(self):
+        control, calls = self.build()
+        select(control, "piper")
+        control._press("exit")
+        control._press("exit")
+        self.assertEqual(control.interface.closed, 1)
+        self.assertEqual(calls[-1], "backdrop down")
+
+    def test_the_backdrop_is_reported_with_the_interface(self):
+        control, _calls = self.build()
+        self.assertEqual(control.snapshot()["interface"]["backdrop"]["showing"], True)
 
 
 class KeyboardTests(unittest.TestCase):
