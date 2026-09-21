@@ -15,8 +15,13 @@ The black backdrop goes up first, so a double-click is answered within a
 second or two rather than after the half-minute a cold start takes; a second,
 impatient double-click then finds a start already under way and leaves it be.
 
+The icon that needs no second thought is the one on the panel, beside the
+browser: this Pi's file manager asks "Execute?" of every launcher on the
+desktop, whatever its permissions, and the only way to stop it asking is a
+setting that would run any file on a USB stick as a program.
+
     python -m pipertv.start             put Piper on the screen
-    python -m pipertv.start --install   add the icon to the desktop and the menu
+    python -m pipertv.start --install   add the icon to the panel, menu and desktop
 """
 
 from __future__ import annotations
@@ -34,7 +39,8 @@ from pathlib import Path
 
 from .backdrop import ROOT, Backdrop
 
-LOG = logging.getLogger(__name__)
+# Named rather than __name__, which is "__main__" when run with -m.
+LOG = logging.getLogger("pipertv.start")
 
 # The app loads the accessibility bus and the receiver before it answers; just
 # after a boot a Pi 3B+ takes a while over that, and a minute means it is not
@@ -55,6 +61,10 @@ Icon={root}/pipertv/static/favicon.svg
 Terminal=false
 Categories=AudioVideo;Video;
 """
+PANEL_CONFIG = Path(".config") / "wf-panel-pi.ini"
+PANEL_DEFAULTS = Path("/etc/xdg/wf-panel-pi/wf-panel-pi.ini")
+PANEL_FALLBACK = ("x-www-browser", "pcmanfm", "x-terminal-emulator")
+LAUNCHER = "pipertv"
 
 
 def ask(port: int, method: str, path: str, payload=None, timeout: float = 5.0) -> dict:
@@ -152,8 +162,67 @@ def desktop_folder(home: Path) -> Path:
     return Path(match.group(1).replace("$HOME", str(home)))
 
 
-def install(home: Path | None = None, python: str = sys.executable) -> list[Path]:
-    """Put the PiperTV launcher in the menu and on the desktop."""
+def _panel_launchers(text: str) -> list[str] | None:
+    """The launchers named in the [panel] section of the panel's ini, if any."""
+    section = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip()
+        elif section == "panel" and stripped.split("=", 1)[0].strip() == "launchers":
+            return stripped.split("=", 1)[1].split()
+    return None
+
+
+def _with_panel_launchers(text: str, launchers: list[str]) -> str:
+    """The same ini with its launchers set, and every other line as it was."""
+    wanted = "launchers=" + " ".join(launchers)
+    lines = text.splitlines()
+    section, panel_at = None, None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip()
+            if section == "panel":
+                panel_at = index
+        elif section == "panel" and stripped.split("=", 1)[0].strip() == "launchers":
+            lines[index] = wanted
+            return "\n".join(lines) + "\n"
+    if panel_at is None:
+        lines += ([""] if lines else []) + ["[panel]", wanted]
+    else:
+        lines.insert(panel_at + 1, wanted)
+    return "\n".join(lines) + "\n"
+
+
+def add_to_panel(home: Path, defaults: Path = PANEL_DEFAULTS) -> Path | None:
+    """Put PiperTV beside the browser, the files and the terminal on the panel.
+
+    The user's own ini overrides the system one key by key, so the list written
+    there is the one the panel shows now, with PiperTV added at its end.
+    """
+    config = home / PANEL_CONFIG
+    try:
+        text = config.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    launchers = _panel_launchers(text)
+    if launchers is None:
+        try:
+            launchers = _panel_launchers(defaults.read_text(encoding="utf-8"))
+        except OSError:
+            launchers = None
+    launchers = list(launchers if launchers is not None else PANEL_FALLBACK)
+    if LAUNCHER in launchers:
+        return None
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(_with_panel_launchers(text, launchers + [LAUNCHER]), encoding="utf-8")
+    return config
+
+
+def install(home: Path | None = None, python: str = sys.executable,
+            panel_defaults: Path = PANEL_DEFAULTS) -> list[Path]:
+    """Put the PiperTV launcher in the menu, on the desktop and on the panel."""
     home = Path.home() if home is None else home
     entry = DESKTOP_ENTRY.format(python=python, root=ROOT)
     written = []
@@ -161,9 +230,11 @@ def install(home: Path | None = None, python: str = sys.executable) -> list[Path
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / ENTRY
         path.write_text(entry, encoding="utf-8")
-        # The desktop runs a launcher only if it may be executed.
-        path.chmod(0o755)
+        path.chmod(0o644)
         written.append(path)
+    panel = add_to_panel(home, panel_defaults)
+    if panel is not None:
+        written.append(panel)
     return written
 
 
