@@ -55,11 +55,15 @@ LOG_FILE = ROOT / "pipertv.log"
 LOCK_FILE = ROOT / ".start.lock"
 STORE = ROOT / "data" / "recordings.json"
 ENTRY = "pipertv.desktop"
+# The command finds the package by itself rather than through Path=: the
+# login's autostart reads Exec and nothing about a working directory, and from
+# the home folder "-m pipertv.start" would not import at all.
+COMMAND = 'env "PYTHONPATH={root}" "{python}" -m pipertv.start'
 DESKTOP_ENTRY = """[Desktop Entry]
 Type=Application
 Name=PiperTV
 Comment=Put Piper on the television and let the remote drive it
-Exec="{python}" -m pipertv.start
+Exec=""" + COMMAND + """
 Path={root}
 Icon={root}/pipertv/static/favicon.svg
 Terminal=false
@@ -70,10 +74,8 @@ AUTOSTART_ENTRY = """[Desktop Entry]
 Type=Application
 Name=PiperTV remote
 Comment=The remote moves the mouse from login; Piper waits for its icon
-Exec="{python}" -m pipertv.start --remote
-Path={root}
+Exec=""" + COMMAND + """ --remote
 Terminal=false
-NoDisplay=true
 """
 # The panel reads its user settings from a file in a folder of its own. A
 # wf-panel-pi.ini directly in ~/.config is an older place it no longer looks:
