@@ -171,14 +171,22 @@ class InstallTests(unittest.TestCase):
                                    self.home / ".config/libfm/libfm.conf"])
         for path in written[:2]:
             text = path.read_text()
-            self.assertIn('Exec="/home/rpi/piperTV/.venv/bin/python3" -m pipertv.start\n', text)
-            self.assertIn(f"Path={ROOT}", text)
+            self.assertIn(f'Exec=env "PYTHONPATH={ROOT}" '
+                          '"/home/rpi/piperTV/.venv/bin/python3" -m pipertv.start\n', text)
 
     def test_at_login_only_the_remote_starts(self):
         # Piper itself stays off the screen until someone opens it.
         self.install(python="/usr/bin/python3")
         entry = (self.home / ".config/autostart/pipertv-remote.desktop").read_text()
-        self.assertIn('Exec="/usr/bin/python3" -m pipertv.start --remote', entry)
+        self.assertIn('"/usr/bin/python3" -m pipertv.start --remote\n', entry)
+
+    def test_the_login_entry_needs_no_working_directory(self):
+        # The Pi's autostart reads Exec and ignores Path=; from the home folder
+        # the package would not import, and the remote would never start.
+        self.install()
+        entry = (self.home / ".config/autostart/pipertv-remote.desktop").read_text()
+        self.assertIn(f'env "PYTHONPATH={ROOT}"', entry)
+        self.assertNotIn("Path=", entry)
 
     def test_the_desktop_opens_a_launcher_without_asking(self):
         launch_without_asking(self.home, self.libfm)
