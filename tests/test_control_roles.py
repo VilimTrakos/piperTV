@@ -5,8 +5,8 @@ import unittest
 
 from pipertv.control import RemoteControl
 
-from tests.test_control import (FakeController, FakeDesktop, FakeInterface, FakeKeys,
-                                FakeLauncher, FakeMonitor, FakeTargets, select)
+from tests.test_control import (FakeBackdrop, FakeController, FakeDesktop, FakeInterface,
+                                FakeKeys, FakeLauncher, FakeMonitor, FakeTargets, select)
 
 SCREEN = (1920, 1080)
 
@@ -29,7 +29,7 @@ def build(roles=None, state="active"):
                             monitor=FakeMonitor(state), controller=FakeController(),
                             targets=FakeTargets(), desktop=FakeDesktop(),
                             launcher=FakeLauncher(), interface=FakeInterface(),
-                            keys=FakeKeys())
+                            keys=FakeKeys(), backdrop=FakeBackdrop())
     return control
 
 
