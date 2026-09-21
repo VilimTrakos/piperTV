@@ -422,6 +422,12 @@ body.is-pointing .corner:hover { border-color: var(--ink-30); }
 body.is-pointing .back-button { cursor: pointer; }
 body.is-pointing .back-button:hover { color: var(--ink); border-color: var(--ink-30); }
 
+/* Leaving Piper with a mouse; the remote's way is exit pressed twice. Shown
+   only while a mouse is moving, so the television is not left with a button
+   on it that the remote cannot reach. */
+.exit-button { display: none; }
+body.is-pointing .exit-button { display: inline-block; }
+
 .option-section .option-label {
   font-size: calc(20 * var(--u));
   letter-spacing: calc(2 * var(--u));

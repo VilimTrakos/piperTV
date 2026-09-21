@@ -965,6 +965,31 @@ class WayOutTests(unittest.TestCase):
         self.assertEqual(control.interface.closed, 0)
         self.assertFalse(control.leaving.armed())
 
+    def test_leaving_piper_gives_the_remote_to_the_desktop_mouse(self):
+        # Otherwise the visit still belongs to an interface nobody can see,
+        # and the remote does nothing at all.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control._press("exit")
+        control._press("exit")
+        self.assertEqual(control.session.snapshot()["mode"], "pointer")
+        control._press("ok")
+        self.assertEqual(control.desktop.presses, ["ok"])
+
+    def test_leaving_with_a_service_open_closes_it_too(self):
+        control, _monitor, _controller, _targets = build("active")
+        control.launch("prime", self.visit(control))
+        result = control.leave()
+        self.assertEqual(control.launcher.stopped, 1)
+        self.assertEqual(control.interface.closed, 1)
+        self.assertEqual(result["mode"], "pointer")
+
+    def test_leaving_without_a_visit_still_closes_the_screen(self):
+        control, _monitor, _controller, _targets = build("unknown")
+        result = control.leave()
+        self.assertEqual(control.interface.closed, 1)
+        self.assertIsNone(result["mode"])
+
     def test_back_and_home_never_close_the_interface(self):
         for button in ("back", "home"):  # only exit is the door out of Piper
             with self.subTest(button=button):

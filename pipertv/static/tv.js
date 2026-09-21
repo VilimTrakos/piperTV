@@ -295,6 +295,12 @@
   // the service's window. This covers a keyboard, and a second press does no harm.
   const closeService = () => ask("/api/tv/close", {}, "Could not close the open service.");
 
+  // The mouse's way out of Piper. The Pi closes this page in answering, and
+  // the remote goes on to move the desktop's mouse.
+  function leavePiper() {
+    send("POST", "/api/tv/leave", {}).catch((error) => notify(`Could not leave Piper. ${error.message}`));
+  }
+
   function press(button) {
     if (state.screen === "options") { pressOptions(button); return; }
     if (state.screen !== "home") return;
@@ -893,6 +899,7 @@
     renderFocus();
     $("options-corner").addEventListener("click", openOptions);
     $("options-back").addEventListener("click", closeOptions);
+    $("home-exit").addEventListener("click", leavePiper);
     $("options-list").addEventListener("wheel", wheelOptions, { passive: false });
     clock();
     setInterval(clock, 20000);
