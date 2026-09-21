@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 
+from .backdrop import Backdrop
 from .cec import CecMonitor
 from .desktop import POINTER_DEFAULTS, DesktopControl, validate_pointer
 from .interface import Interface
@@ -120,7 +121,7 @@ class RemoteControl:
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
                  buttons=None, launcher=None, browser=None, interface=None, port=8765,
-                 keys=None, watcher=None, onscreen=None, later=None):
+                 keys=None, watcher=None, onscreen=None, later=None, backdrop=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -134,6 +135,7 @@ class RemoteControl:
                          if launcher is None else launcher)
         self.interface = (Interface(port=port, screen=self.screen)
                           if interface is None else interface)
+        self.backdrop = Backdrop() if backdrop is None else backdrop
         self.keys = ServiceKeys() if keys is None else keys
         self.onscreen = OnScreenKeyboard() if onscreen is None else onscreen
         self.watcher = (FocusWatcher(on_text_field=self._text_field_focused)
@@ -229,12 +231,25 @@ class RemoteControl:
         """
         with self._screen_lock:
             self._aside_for = None
+            self._backdrop_for(self.window)
             result = self.interface.open(self.window, focus)
             if not result.get("showing") and self.window.get("windowed"):
                 LOG.warning("A window did not appear; filling the screen instead")
                 self.window = validate_window({})
+                self._backdrop_for(self.window)
                 result = self.interface.open(self.window, focus)
             return result
+
+    def _backdrop_for(self, window) -> None:
+        """Black behind a full-screen Piper; the desktop around a window of it.
+
+        Up before the interface opens, so that the interface, and everything
+        opened from it afterwards, lands on top of it rather than under it.
+        """
+        if window.get("windowed"):
+            self.backdrop.close()
+        else:
+            self.backdrop.show()
 
     def _step_aside(self, opened) -> None:
         """Close the interface once the service it opened is covering it."""
@@ -249,6 +264,10 @@ class RemoteControl:
                     return
                 if not self.interface.showing():
                     return  # not Piper's to bring back afterwards
+                if not self.window.get("windowed") and not self.backdrop.showing():
+                    # Without it the desktop panel would sit across the top of
+                    # the service, and the return would show the desktop.
+                    return
                 if not self.interface.close().get("showing"):
                     self._aside_for = running["id"]
                     LOG.info("%s covers the interface; closed it to free memory",
@@ -566,6 +585,7 @@ class RemoteControl:
         # Nothing is open, so this is about Piper itself. Ask, then act.
         if self.leaving.press():
             self.interface.close()
+            self.backdrop.close()
         return True
 
     def _tick(self) -> None:
@@ -661,6 +681,12 @@ class RemoteControl:
             if session_id != state["session"]["id"]:
                 raise RuntimeError("That belongs to an earlier visit to the Pi's input. "
                                    "Reload the interface on the TV.")
+        with self._screen_lock:
+            if not self.window.get("windowed") and self.interface.showing():
+                # Normally already behind the interface. If it is not, it has to
+                # be on the screen before the service is, or it would land on
+                # top of it.
+                self.backdrop.show()
         state = self.launcher.launch(service)
         opened = state.get("running")
         if opened:
@@ -770,4 +796,5 @@ class RemoteControl:
                 "keys": self.keys.health()}
 
     def _interface_state(self) -> dict:
-        return dict(self.interface.snapshot(), closed_for=self._aside_for)
+        return dict(self.interface.snapshot(), closed_for=self._aside_for,
+                    backdrop=self.backdrop.snapshot())
