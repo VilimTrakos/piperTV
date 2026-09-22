@@ -424,28 +424,33 @@
   }
 
   function receiverRows(receiver) {
-    // Which pin the IR receiver is wired to: the kernel's own receiver, set in
-    // config.txt, or any free pin on the header, read by piper itself.
-    const chosen = receiver.settings || { kind: "lirc" };
+    // Which pin the IR receiver's OUT wire is on -- the same setting as the
+    // pin line in pipertv.conf. Piper works out how to read it: through the
+    // kernel's receiver when that already holds the pin, directly otherwise.
+    const pin = receiver.pin;
     const heard = receiver.listening;
-    OPTIONS.receiverSummary = `${chosen.kind === "gpio" ? `GPIO${chosen.pin}` : "kernel"}`
+    const kernel = receiver.kernel || {};
+    const lines = receiver.lines || [];
+    const onHeader = (gpio) => (lines.find((line) => line.gpio === gpio) || {}).header_pin;
+    OPTIONS.receiverSummary = (pin === "auto" ? "auto" : `GPIO${pin}`)
       + (heard && heard.error ? " · not listening" : "");
     OPTIONS.receiverError = heard && heard.error ? heard.error : "";
-    const kernel = receiver.kernel || {};
+    const automatic = kernel.gpio != null
+      ? `kernel receiver · GPIO${kernel.gpio}`
+      : `GPIO${receiver.default_pin} · pin ${onHeader(receiver.default_pin) || "?"}`;
     const rows = [{ kind: "section", section: "receiver" }, {
-      kind: "receiver", section: "receiver", choice: { kind: "lirc" }, free: true,
-      label: "kernel receiver",
-      value: kernel.gpio != null ? `GPIO${kernel.gpio} · pin ${kernel.header_pin}` : "/dev/lirc0",
-      current: chosen.kind !== "gpio",
+      kind: "receiver", section: "receiver", choice: "auto", free: true,
+      label: "automatic", value: automatic, current: pin === "auto",
     }];
-    for (const line of receiver.lines || []) {
-      // The kernel receiver's own pin is offered above, under its own name.
-      if (line.gpio === kernel.gpio) continue;
+    for (const line of lines) {
+      const notes = [`pin ${line.header_pin}`];
+      if (line.kernel) notes.push("kernel receiver");
+      else if (!line.free) notes.push(`used by ${line.consumer || "another driver"}`);
       rows.push({
-        kind: "receiver", section: "receiver", choice: { kind: "gpio", pin: line.gpio },
-        label: `GPIO${line.gpio}`, pin: line.header_pin, free: line.free,
-        value: `pin ${line.header_pin}${line.free ? "" : ` · used by ${line.consumer || "another driver"}`}`,
-        current: chosen.kind === "gpio" && chosen.pin === line.gpio,
+        kind: "receiver", section: "receiver", choice: line.gpio, free: line.free,
+        label: `GPIO${line.gpio}`, pin: line.header_pin, viaKernel: !!line.kernel,
+        holder: line.consumer || "another driver",
+        value: notes.join(" · "), current: pin === line.gpio,
       });
     }
     return rows;
@@ -456,10 +461,10 @@
     if (!row.free) { say(`${row.label} is in use · choose a free pin`, 4); return; }
     say(`listening on ${row.label}…`);
     try {
-      const result = await send("PUT", "/api/receiver", row.choice);
+      const result = await send("PUT", "/api/receiver", { pin: row.choice });
       const heard = result.listening;
       say(heard && heard.error ? `not listening: ${heard.error}`
-        : `listening on ${result.receiver} · press a button on the remote to try it`, 6);
+        : `reading ${result.reading} · press a button on the remote to try it`, 6);
     } catch (error) {
       say(error.message, 6);
     }
@@ -516,11 +521,17 @@
       return OPTIONS.open.has(row.section) ? "OK closes this group" : "OK opens this group";
     }
     if (row.kind === "receiver") {
-      if (row.current) return "the remote is read here now";
-      if (!row.free) return `${row.label} is taken by ${row.value.split("used by ")[1]} · choose another pin`;
-      return row.choice.kind === "gpio"
-        ? `OK reads the remote from ${row.label} from now on · wire the receiver's OUT to pin ${row.pin}`
-        : "OK goes back to the kernel's receiver, the pin set in config.txt";
+      if (row.current) return "the remote is read here now · kept in pipertv.conf";
+      if (!row.free) return `${row.label} is taken by ${row.holder} · choose another pin`;
+      if (row.choice === "auto") {
+        return "OK finds the receiver by itself: the kernel's, if config.txt sets one up,"
+          + " otherwise GPIO17 · kept in pipertv.conf";
+      }
+      if (row.viaKernel) {
+        return `OK reads ${row.label} through the kernel's receiver, which already holds it`;
+      }
+      return `OK reads the remote from ${row.label} from now on · the receiver's OUT goes to`
+        + ` pin ${row.pin} · kept in pipertv.conf`;
     }
     const what = row.kind === "role" ? `the ${row.buttonLabel} button, which piper uses for ${row.role},` : `the ${row.buttonLabel} button`;
     return row.samples

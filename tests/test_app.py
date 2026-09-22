@@ -286,57 +286,80 @@ LINES = [{"gpio": 17, "header_pin": 11, "name": "GPIO17", "used": True,
 
 
 class ReceiverSettingTests(unittest.TestCase):
-    """Which pin the IR receiver is on, chosen on the screen and read at once."""
+    """Which pin the IR receiver is on: chosen on the screen or in a file."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "recordings.json"
-        self.remote = FakeRemote()
-        self.app = create_app(data=self.path, demo=True, remote=self.remote)
-        self.client = self.app.test_client()
-        workbench = self.app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        self.config = Path(self.temporary.name) / "pipertv.conf"
         lines = patch("pipertv.app.list_lines", side_effect=lambda: [dict(line) for line in LINES])
         lines.start()
         self.addCleanup(lines.stop)
+        self.remote = FakeRemote()
+        self.app = self.build(remote=self.remote)
+        self.client = self.app.test_client()
+
+    def build(self, **kwargs):
+        app = create_app(data=self.path, demo=True, config=self.config, **kwargs)
+        workbench = app.extensions["pipertv"]
+        self.addCleanup(workbench.backend.close)
+        self.addCleanup(workbench.close)
+        return app
 
     def test_the_pins_are_offered_with_what_holds_them(self):
         result = self.client.get("/api/receiver").get_json()
-        self.assertEqual(result["settings"], {"kind": "lirc", "pin": None})
+        self.assertEqual(result["pin"], "auto")
         self.assertEqual(result["kernel"]["gpio"], 17)
-        free = {line["gpio"]: line["free"] for line in result["lines"]}
-        self.assertEqual(free, {17: False, 18: True, 4: False})
+        self.assertIn("/dev/lirc0", result["automatic"])
+        lines = {line["gpio"]: line for line in result["lines"]}
+        # The kernel's receiver reads its pin for Piper, so that pin is free.
+        self.assertTrue(lines[17]["free"] and lines[17]["kernel"])
+        self.assertTrue(lines[18]["free"])
+        self.assertFalse(lines[4]["free"])
 
     def test_a_free_pin_is_read_from_the_moment_it_is_chosen(self):
-        answer = self.client.put("/api/receiver", json={"kind": "gpio", "pin": 18})
+        answer = self.client.put("/api/receiver", json={"pin": 18})
         self.assertEqual(answer.status_code, 200)
-        self.assertEqual(answer.get_json()["receiver"], "GPIO18 (pin 12)")
+        self.assertEqual(answer.get_json()["reading"], "GPIO18 (pin 12)")
         self.assertEqual(self.remote.listening_on, {"kind": "gpio", "pin": 18})
         self.assertEqual(self.app.extensions["pipertv"].backend.device,
                          {"kind": "gpio", "pin": 18})
+        self.assertIn("pin = 18", self.config.read_text())
+
+    def test_the_kernel_s_own_pin_is_read_through_it(self):
+        answer = self.client.put("/api/receiver", json={"pin": 17})
+        self.assertEqual(answer.status_code, 200)
+        self.assertEqual(self.remote.listening_on, "/dev/lirc0")
+
+    def test_auto_finds_it_again(self):
+        self.client.put("/api/receiver", json={"pin": 18})
+        self.client.put("/api/receiver", json={"pin": "auto"})
+        self.assertEqual(self.remote.listening_on, "/dev/lirc0")
+        self.assertIn("pin = auto", self.config.read_text())
 
     def test_the_choice_survives_a_restart(self):
-        self.client.put("/api/receiver", json={"kind": "gpio", "pin": 18})
-        again = create_app(data=self.path, demo=True)
-        self.addCleanup(again.extensions["pipertv"].close)
+        self.client.put("/api/receiver", json={"pin": 18})
+        again = self.build()
         self.assertEqual(again.extensions["pipertv"].backend.device, {"kind": "gpio", "pin": 18})
+        self.assertEqual(again.test_client().get("/api/receiver").get_json()["pin"], 18)
+
+    def test_a_pin_written_in_the_file_by_hand_is_used_from_the_start(self):
+        self.config.write_text("[ir]\npin = GPIO22\n")
+        again = self.build()
+        self.assertEqual(again.extensions["pipertv"].backend.device, {"kind": "gpio", "pin": 22})
 
     def test_a_pin_something_else_holds_is_refused_with_its_name(self):
-        answer = self.client.put("/api/receiver", json={"kind": "gpio", "pin": 4})
+        answer = self.client.put("/api/receiver", json={"pin": 4})
         self.assertEqual(answer.status_code, 409)
         self.assertIn("w1-gpio", answer.get_json()["error"])
         self.assertFalse(hasattr(self.remote, "listening_on"))
-
-    def test_going_back_to_the_kernel_receiver_listens_there(self):
-        self.client.put("/api/receiver", json={"kind": "gpio", "pin": 18})
-        self.client.put("/api/receiver", json={"kind": "lirc"})
-        self.assertEqual(self.remote.listening_on, "/dev/lirc0")
+        self.assertFalse(self.config.exists())
 
     def test_a_nonsense_pin_is_refused(self):
-        answer = self.client.put("/api/receiver", json={"kind": "gpio", "pin": 99})
-        self.assertEqual(answer.status_code, 400)
+        for payload in ({"pin": 99}, {"pin": "eighteen"}, {"kind": "gpio", "pin": 18}):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.client.put("/api/receiver", json=payload).status_code, 400)
 
     def test_a_machine_without_gpio_still_answers(self):
         with patch("pipertv.app.list_lines", side_effect=FileNotFoundError("/dev/gpiochip0")):

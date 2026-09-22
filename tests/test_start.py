@@ -244,8 +244,9 @@ class InstallTests(unittest.TestCase):
         config.mkdir(parents=True)
         (config / "wf-panel-pi.ini").write_text("[panel]\nlaunchers = pcmanfm\n")
         add_to_panel(self.home, self.defaults)
+        # Changed the way the person wrote it, spaces and all.
         self.assertEqual((config / "wf-panel-pi.ini").read_text(),
-                         "[panel]\nlaunchers=pcmanfm pipertv\n")
+                         "[panel]\nlaunchers = pcmanfm pipertv\n")
 
     def test_a_desktop_with_another_name_is_found(self):
         # A Croatian session calls it "Radna površina".

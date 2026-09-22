@@ -3,10 +3,10 @@ import struct
 import threading
 import unittest
 
-from pipertv.gpio_ir import (CHIP_INFO, GPIO_GET_CHIPINFO_IOCTL, GPIO_V2_GET_LINE_IOCTL,
-                             GPIO_V2_GET_LINEINFO_IOCTL, HEADER, LINE_EVENT, LINE_INFO,
-                             LINE_REQUEST, RECEIVER_DEFAULTS, EdgeTimeline, GpioIrDevice,
-                             describe, open_receiver, validate_receiver)
+from pipertv.gpio_ir import (AUTO, CHIP_INFO, DEFAULT_PIN, GPIO_GET_CHIPINFO_IOCTL,
+                             GPIO_V2_GET_LINE_IOCTL, GPIO_V2_GET_LINEINFO_IOCTL, HEADER,
+                             LINE_EVENT, LINE_INFO, LINE_REQUEST, EdgeTimeline, GpioIrDevice,
+                             describe, kernel_line, open_receiver, resolve, validate_pin)
 from pipertv.ir_control import FrameReader
 from pipertv.lirc import (OVERFLOW, PULSE, SPACE, TIMEOUT, CaptureError, CaptureOptions,
                           LircDevice, Mode2Capture, capture_stream)
@@ -39,29 +39,50 @@ def words_for(durations, gap_us, start_ns=1_000_000_000):
     return words
 
 
-class ReceiverSettingTests(unittest.TestCase):
-    def test_nothing_chosen_is_the_kernel_receiver(self):
-        self.assertEqual(validate_receiver({}), RECEIVER_DEFAULTS)
-        self.assertEqual(validate_receiver({"kind": "lirc", "pin": 18}),
-                         {"kind": "lirc", "pin": None})
-
-    def test_a_header_pin_can_be_chosen(self):
-        self.assertEqual(validate_receiver({"kind": "gpio", "pin": 18}),
-                         {"kind": "gpio", "pin": 18})
+class PinSettingTests(unittest.TestCase):
+    def test_a_pin_is_read_the_way_a_person_writes_it(self):
+        for value in (18, "18", " 18 ", "GPIO18", "gpio18"):
+            with self.subTest(value=value):
+                self.assertEqual(validate_pin(value), 18)
+        self.assertEqual(validate_pin(" Auto "), AUTO)
 
     def test_only_a_pin_on_the_header_is_accepted(self):
-        for pin in (0, 1, 28, 40, "18", True, None, 18.0):
-            with self.subTest(pin=pin), self.assertRaises(ValueError):
-                validate_receiver({"kind": "gpio", "pin": pin})
+        for value in (0, 1, 28, 40, True, None, 18.0, "pin 18", "", "GPIO", "eighteen"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_pin(value)
 
-    def test_anything_else_is_refused_and_says_what_is_allowed(self):
-        with self.assertRaises(ValueError) as refused:
-            validate_receiver({"kind": "gpio", "pin": 18, "chip": "/dev/gpiochip1"})
-        self.assertIn("kind, pin", str(refused.exception))
-        for values in ({"kind": "usb"}, "gpio", None):
-            with self.subTest(values=values), self.assertRaises(ValueError):
-                validate_receiver(values)
 
+class ResolveTests(unittest.TestCase):
+    """The setting is where the wire is; how to read it is Piper's business."""
+
+    KERNEL_ON_17 = [{"gpio": 17, "consumer": "ir-receiver@11"},
+                    {"gpio": 18, "consumer": None}]
+
+    def test_the_kernel_s_receiver_is_found_by_its_holder(self):
+        self.assertEqual(kernel_line(self.KERNEL_ON_17)["gpio"], 17)
+        self.assertIsNone(kernel_line([{"gpio": 4, "consumer": "w1-gpio"}]))
+
+    def test_auto_uses_the_receiver_config_txt_set_up(self):
+        self.assertEqual(resolve(AUTO, self.KERNEL_ON_17), "/dev/lirc0")
+
+    def test_auto_without_one_reads_the_pin_in_the_wiring_guide(self):
+        self.assertEqual(resolve(AUTO, [], exists=lambda _path: False),
+                         {"kind": "gpio", "pin": DEFAULT_PIN})
+        self.assertEqual(DEFAULT_PIN, 17)
+
+    def test_a_pin_the_kernel_holds_is_read_through_the_kernel(self):
+        # The kernel is reading that very wire; asking it is the same thing.
+        self.assertEqual(resolve(17, self.KERNEL_ON_17), "/dev/lirc0")
+
+    def test_any_other_pin_is_read_directly(self):
+        self.assertEqual(resolve(18, self.KERNEL_ON_17), {"kind": "gpio", "pin": 18})
+
+    def test_a_kernel_receiver_at_another_path_is_kept(self):
+        self.assertEqual(resolve(AUTO, [], lirc="/dev/lirc1",
+                                 exists=lambda path: path == "/dev/lirc1"), "/dev/lirc1")
+
+
+class ReceiverDeviceTests(unittest.TestCase):
     def test_a_pin_is_described_as_it_is_wired(self):
         self.assertEqual(describe({"kind": "gpio", "pin": 18}), "GPIO18 (pin 12)")
         self.assertIn("/dev/lirc0", describe({"kind": "lirc"}))
