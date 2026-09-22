@@ -43,6 +43,7 @@ from pathlib import Path
 
 from .backdrop import ROOT, Backdrop
 from .ini import ini_get, ini_set
+from .labwc import SYSTEM_ENVIRONMENT, SYSTEM_RC, add_window_rules, allow_accessibility
 
 # Named rather than __name__, which is "__main__" when run with -m.
 LOG = logging.getLogger("pipertv.start")
@@ -263,10 +264,26 @@ def desktop_folder(home: Path) -> Path:
     return Path(match.group(1).replace("$HOME", str(home)))
 
 
+def accessibility_setting(run=subprocess.run) -> bool:
+    """Turn on the desktop's accessibility toolkit setting, where it exists."""
+    try:
+        run(["gsettings", "set", "org.gnome.desktop.interface", "toolkit-accessibility",
+             "true"], check=True, capture_output=True, timeout=10)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def install(home: Path | None = None, python: str = sys.executable,
             panel_defaults: Path = PANEL_DEFAULTS,
-            libfm_defaults: Path = LIBFM_DEFAULTS) -> list[Path]:
-    """The icons, the remote at login, and a desktop that does not ask."""
+            libfm_defaults: Path = LIBFM_DEFAULTS,
+            labwc_defaults: tuple[Path, Path] = (SYSTEM_RC, SYSTEM_ENVIRONMENT),
+            run=subprocess.run) -> list[Path]:
+    """Everything in the user's own folder: icons, the remote at login, the desktop.
+
+    The icons and the login entry are rewritten every time; the other
+    programs' settings are only added to, and only when something is missing.
+    """
     home = Path.home() if home is None else home
     written = []
     entry = DESKTOP_ENTRY.format(python=python, root=ROOT)
@@ -280,10 +297,14 @@ def install(home: Path | None = None, python: str = sys.executable,
     autostart.parent.mkdir(parents=True, exist_ok=True)
     autostart.write_text(AUTOSTART_ENTRY.format(python=python, root=ROOT), encoding="utf-8")
     written.append(autostart)
+    rc, environment = labwc_defaults
     for changed in (add_to_panel(home, panel_defaults),
-                    launch_without_asking(home, libfm_defaults)):
+                    launch_without_asking(home, libfm_defaults),
+                    add_window_rules(home, rc),
+                    allow_accessibility(home, environment)):
         if changed is not None:
             written.append(changed)
+    accessibility_setting(run)
     return written
 
 

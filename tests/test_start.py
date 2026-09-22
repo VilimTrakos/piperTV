@@ -157,10 +157,19 @@ class InstallTests(unittest.TestCase):
         self.libfm = Path(self.temporary.name) / "libfm.conf"
         self.libfm.write_text("[config]\nsingle_click=0\nterminal=x-terminal-emulator %s\n"
                               "\n[ui]\nbig_icon_size=48\n")
+        self.rc = Path(self.temporary.name) / "rc.xml"
+        self.rc.write_text("<openbox_config>\n  <windowRules>\n"
+                           '    <windowRule identifier="Kodi" serverDecoration="yes" />\n'
+                           "  </windowRules>\n</openbox_config>\n")
+        self.environment = Path(self.temporary.name) / "environment"
+        self.environment.write_text("XKB_DEFAULT_LAYOUT=gb\n")
+        self.ran = []
 
     def install(self, **kwargs):
+        # Never the real gsettings: a test must not change this machine's desktop.
         return install(home=self.home, panel_defaults=self.defaults,
-                       libfm_defaults=self.libfm, **kwargs)
+                       libfm_defaults=self.libfm, labwc_defaults=(self.rc, self.environment),
+                       run=lambda command, **_kwargs: self.ran.append(command), **kwargs)
 
     def test_the_launcher_goes_in_the_menu_on_the_desktop_and_on_the_panel(self):
         written = self.install(python="/home/rpi/piperTV/.venv/bin/python3")
@@ -168,7 +177,11 @@ class InstallTests(unittest.TestCase):
                                    self.home / "Desktop/pipertv.desktop",
                                    self.home / ".config/autostart/pipertv-remote.desktop",
                                    self.home / ".config/wf-panel-pi/wf-panel-pi.ini",
-                                   self.home / ".config/libfm/libfm.conf"])
+                                   self.home / ".config/libfm/libfm.conf",
+                                   self.home / ".config/labwc/rc.xml",
+                                   self.home / ".config/labwc/environment"])
+        self.assertEqual(self.ran, [["gsettings", "set", "org.gnome.desktop.interface",
+                                     "toolkit-accessibility", "true"]])
         for path in written[:2]:
             text = path.read_text()
             self.assertIn(f'Exec=env "PYTHONPATH={ROOT}" '
