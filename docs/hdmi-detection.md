@@ -66,10 +66,9 @@ The mode choice is authorization for the current session; it does not prove that
 
 ## What this Pi actually reports
 
-The earlier deployment notes in [`ClaudeChanges.md`](../ClaudeChanges.md) report
-checks on Raspberry Pi OS (Debian 13, aarch64) running Wayland under labwc.
-These observations do not replace testing the current installation; repeat the
-checks if the desktop session or installed packages change.
+The checks below were made on Raspberry Pi OS (Debian 13, aarch64) running
+Wayland under labwc. They do not replace testing the current installation;
+repeat them if the desktop session or installed packages change.
 
 **CEC monitoring needs a capability, not a group.** `/dev/cec0` is `root:video`
 and the desktop account is already in `video`, which is enough to *open* the
