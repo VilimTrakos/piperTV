@@ -82,9 +82,12 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$DIRTY" = 1 ]; then
-  rsync -a --exclude=__pycache__ pipertv main.py requirements.txt "$STAGE/"
+  rsync -a --exclude=__pycache__ pipertv main.py requirements.txt install.sh "$STAGE/"
 else
-  git archive "$REF" pipertv main.py requirements.txt | tar -x -C "$STAGE"
+  # install.sh travels with the program since it existed; an older commit,
+  # deployed to go back, simply has none.
+  EXTRA=(); git cat-file -e "$REF:install.sh" 2>/dev/null && EXTRA=(install.sh)
+  git archive "$REF" pipertv main.py requirements.txt "${EXTRA[@]}" | tar -x -C "$STAGE"
 fi
 
 # --- one connection, one password -------------------------------------------
@@ -146,8 +149,9 @@ WAS_SHOWING=$(pi "cd $DIR && $PAGES" 2>/dev/null || echo "")
 say "Sending $VERSION"
 rsync -az --delete --exclude=__pycache__ -e "ssh -S $CONTROL -o BatchMode=yes" \
   "$STAGE/pipertv/" "$LOGIN@$HOST:$DIR/pipertv/"
-rsync -az -e "ssh -S $CONTROL -o BatchMode=yes" \
-  "$STAGE/main.py" "$STAGE/requirements.txt" "$LOGIN@$HOST:$DIR/"
+ROOT_FILES=("$STAGE/main.py" "$STAGE/requirements.txt")
+[ -f "$STAGE/install.sh" ] && ROOT_FILES+=("$STAGE/install.sh")
+rsync -az -e "ssh -S $CONTROL -o BatchMode=yes" "${ROOT_FILES[@]}" "$LOGIN@$HOST:$DIR/"
 
 # LC_ALL=C on both sides: the two machines collate '/' differently, which
 # reorders the list and would fail this check on identical files.

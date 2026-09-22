@@ -4,7 +4,28 @@ Run this **Python/Flask app on your Raspberry Pi 3B+**, then open its remote con
 
 The interface follows the supplied One For All remote photo. Some small symbols are approximate; button names can be edited. Your PC needs only a browser. Recording works without a Pi desktop; controlling the Pi's mouse requires a running desktop session.
 
-## Set up the Pi
+## Install on a Raspberry Pi
+
+On the Pi (Raspberry Pi OS with its desktop), in a terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/VilimTrakos/piperTV/main/install.sh | bash
+```
+
+It asks for the sudo password once, and one question: which GPIO the IR
+receiver's OUT wire is on (Enter means GPIO17, physical pin 11). Everything
+else is done for you: the programs Piper runs on, the permissions, Piper's
+Python environment, and the desktop, down to the PiperTV icon on the panel.
+Wire the receiver as the [setup guide](docs/raspberry-pi.md#2-wire-the-tsop2238) shows.
+
+Running it again is safe, and only does what is missing. `./install.sh` does
+the same from a copy of the project. Its options:
+
+- `--pin 27`: the receiver is on GPIO27; no question asked
+- `--yes`: take every default
+- `--dry-run`: list everything it would do, and change nothing
+
+## Set up the Pi by hand
 
 Follow the [Raspberry Pi setup and wiring guide](docs/raspberry-pi.md) to copy the project and connect the receiver. With the receiver's OUT on GPIO17 (physical pin 11), there is nothing else to configure. On another pin, name it in `pipertv.conf` (`pin = 27`, preferably one of the plain pins 5, 6, 16, 17 or 22 to 27) or choose it on the TV under **options › ir receiver**.
 
