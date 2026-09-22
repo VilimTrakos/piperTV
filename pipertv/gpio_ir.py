@@ -55,6 +55,20 @@ EVENT_BUFFER = 1024
 HEADER = {2: 3, 3: 5, 4: 7, 5: 29, 6: 31, 7: 26, 8: 24, 9: 21, 10: 19, 11: 23,
           12: 32, 13: 33, 14: 8, 15: 10, 16: 36, 17: 11, 18: 12, 19: 35, 20: 38,
           21: 40, 22: 15, 23: 16, 24: 18, 25: 22, 26: 37, 27: 13}
+# The second name a pin carries on the Pi's pinout, and what it is there for.
+# Such a pin still works as the receiver's input while that job is switched
+# off -- GPIO18 is even the kernel IR driver's own default -- but a pin with
+# no second name is one nothing added later will want back.
+FUNCTIONS = {2: ("SDA", "I2C"), 3: ("SCL", "I2C"),
+             4: ("GPCLK0", "1-Wire and the clock output"),
+             7: ("CE1", "SPI"), 8: ("CE0", "SPI"), 9: ("MISO", "SPI"),
+             10: ("MOSI", "SPI"), 11: ("SCLK", "SPI"),
+             12: ("PWM0", "PWM audio and fans"), 13: ("PWM1", "PWM audio and fans"),
+             14: ("TXD", "the serial port"), 15: ("RXD", "the serial port"),
+             18: ("PCM_CLK", "I2S audio, such as a sound card hat"),
+             19: ("PCM_FS", "I2S audio, such as a sound card hat"),
+             20: ("PCM_DIN", "I2S audio, such as a sound card hat"),
+             21: ("PCM_DOUT", "I2S audio, such as a sound card hat")}
 
 # One question matters to whoever wires the receiver: which pin its OUT is on.
 # "auto" answers it for them -- the kernel's receiver when config.txt sets one
@@ -139,10 +153,12 @@ def list_lines(chip: str = CHIP) -> list[dict]:
             buffer = bytearray(LINE_INFO.pack(b"", b"", offset, 0, 0, b"", b""))
             fcntl.ioctl(fd, GPIO_V2_GET_LINEINFO_IOCTL, buffer, True)
             name, consumer, _offset, _attrs, flags, _values, _pad = LINE_INFO.unpack(buffer)
+            function, purpose = FUNCTIONS.get(offset, (None, None))
             lines.append({"gpio": offset, "header_pin": HEADER[offset],
                           "name": _text(name) or f"GPIO{offset}",
                           "used": bool(flags & FLAG_USED),
-                          "consumer": _text(consumer) or None})
+                          "consumer": _text(consumer) or None,
+                          "function": function, "purpose": purpose})
         return lines
     finally:
         os.close(fd)
@@ -252,7 +268,8 @@ class GpioIrDevice:
         self._buffer.extend(data)
         words = []
         while len(self._buffer) >= LINE_EVENT.size:
-            timestamp, kind, _offset, seqno, _line_seqno, _pad = LINE_EVENT.unpack_from(self._buffer)
+            timestamp, kind, _offset, seqno, _line_seqno, _pad = \
+                LINE_EVENT.unpack_from(self._buffer)
             del self._buffer[:LINE_EVENT.size]
             if self._seqno and seqno != self._seqno + 1:
                 # The kernel's buffer filled and edges were dropped: the timing

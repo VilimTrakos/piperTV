@@ -61,13 +61,20 @@ If OUT is on another pin, name it in `~/piperTV/pipertv.conf`, then restart Pipe
 
 ```ini
 [ir]
-pin = 18
+pin = 27
 ```
 
 `pin` is the **BCM GPIO number** (2 to 27), not the position on the header:
-GPIO18 is physical pin 12. `GPIO18` is accepted too. The default,
+GPIO27 is physical pin 13. `GPIO27` is accepted too. The default,
 `pin = auto`, means the kernel's receiver if one is set up (below), and
 otherwise GPIO17.
+
+Prefer a pin with no second name on the pinout: **GPIO5, 6, 16, 17 and 22 to
+27**. The others (SDA/SCL, TXD/RXD, the SPI pins, PWM0/1, GPCLK0 and the PCM
+pins 18 to 21) also work while their other job is off, but they are the ones
+I2C, SPI, the serial port, PWM, 1-Wire or an I2S sound card would need. The
+TV's list names each pin's second job, the way the pinout does, and puts the
+plain pins first.
 
 The same setting is on the TV, under **options › ir receiver**. Choosing a pin
 there writes that line to `pipertv.conf` and takes effect at once. Piper
