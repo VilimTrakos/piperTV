@@ -25,16 +25,6 @@ class StoreTests(unittest.TestCase):
         self.path = Path(self.temp.name) / "recordings.json"
         self.store = RecordingStore(self.path)
 
-    def test_the_receiver_pin_is_kept_with_the_recordings(self):
-        self.assertEqual(self.store.receiver(), {})
-        self.store.set_receiver({"kind": "gpio", "pin": 18})
-        self.assertEqual(RecordingStore(self.path).receiver(), {"kind": "gpio", "pin": 18})
-
-    def test_a_pin_off_the_header_is_not_saved(self):
-        with self.assertRaises(ValueError):
-            self.store.set_receiver({"kind": "gpio", "pin": 40})
-        self.assertEqual(self.store.receiver(), {})
-
     def test_a_capture_from_a_gpio_pin_is_hardware(self):
         self.assertEqual(validate_signal(dict(SIGNAL, source="gpio"))["source"], "gpio")
 

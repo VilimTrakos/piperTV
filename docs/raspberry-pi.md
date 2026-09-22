@@ -50,42 +50,53 @@ Identify the numbered leads using the package drawing on page 2 of the [Vishay d
 
 Use **3.3 V** for this circuit. The TSOP2238 supports it, and this keeps its output compatible with the Pi's GPIO. Check header orientation against the [official Raspberry Pi GPIO documentation](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#gpio). Keep the wires short; a 100 nF ceramic capacitor close to the receiver between VS and GND can help with supply noise.
 
-## 3. Enable the GPIO receiver
+## 3. Tell Piper which pin the receiver is on
 
-Power the Pi on. Open its boot configuration:
+Wired as above, with OUT on **GPIO17 (physical pin 11)**? Then there is nothing
+to do: Piper reads that pin itself. There is no boot configuration to edit and
+no restart. Your account needs to be in the `gpio` group, which the Pi's first
+user already is (`id` lists it).
 
-```bash
-sudo nano /boot/firmware/config.txt
+If OUT is on another pin, name it in `~/piperTV/pipertv.conf`, then restart Piper:
+
+```ini
+[ir]
+pin = 18
 ```
 
-Current Raspberry Pi OS uses `/boot/firmware/config.txt`; older installations may use `/boot/config.txt`. Edit the file your installation actually uses. See [Raspberry Pi's configuration documentation](https://www.raspberrypi.com/documentation/computers/config_txt.html).
+`pin` is the **BCM GPIO number** (2 to 27), not the position on the header:
+GPIO18 is physical pin 12. `GPIO18` is accepted too. The default,
+`pin = auto`, means the kernel's receiver if one is set up (below), and
+otherwise GPIO17.
 
-Add this setting under an applicable section such as `[all]`:
+The same setting is on the TV, under **options › ir receiver**. Choosing a pin
+there writes that line to `pipertv.conf` and takes effect at once. Piper
+creates the file, with an explanation, the first time a pin is chosen that
+way. A pin already used by something else (1-Wire, SPI, …) is shown with its
+user's name and cannot be chosen.
+
+Piper times every edge with the kernel's own timestamp, taken in the
+interrupt, so a pin read this way is measured as exactly as the kernel's
+receiver measures it.
+
+### Optional: the kernel's receiver
+
+A Pi set up for the kernel's IR driver keeps working unchanged. Piper uses it
+whenever `pin = auto`, and whenever the pin named is the one the kernel
+holds. To set one up, add this to `/boot/firmware/config.txt` (older
+installations: `/boot/config.txt`) under `[all]`, then reboot:
 
 ```ini
 [all]
 dtoverlay=gpio-ir,gpio_pin=17
 ```
 
-If a `gpio-ir` setting already exists, edit it instead of creating a duplicate. GPIO17 must be free for this receiver. `gpio_pin=17` is the **BCM GPIO number**, not physical pin 17. The overlay defaults to active-low reception with a pull-up, which suits the TSOP2238. See the [official overlay reference](https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README).
+`gpio_pin` is the BCM number, as above. The receiver appears as `/dev/lirc0`
+(`ls -l /dev/lirc*`), and the kernel then holds that pin. See the
+[official overlay reference](https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README).
 
-Save the file, reboot, and check for the receiver:
-
-```bash
-sudo reboot
-```
-
-After reconnecting:
-
-```bash
-ls -l /dev/lirc*
-```
-
-The device normally appears as `/dev/lirc0`. The app reads raw timings through the kernel's LIRC interface; it does not need a `lircd` daemon or Python GPIO package. See the [Linux IR interface documentation](https://docs.kernel.org/userspace-api/media/rc/lirc-dev-intro.html).
-
-## 4. Grant your account access
-
-If your account can already read `/dev/lirc0`, skip this step. Otherwise, run these commands **on the Pi** to create a receiver group and persistent device permissions:
+The kernel receiver's device also needs its own permission. Skip this if your
+account can already read `/dev/lirc0`:
 
 ```bash
 sudo groupadd --force ircapture
@@ -97,17 +108,9 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=lirc
 ```
 
-Here `$USER` is the current Pi account, supplied by the shell. Log out and back in so the new group membership takes effect. Check:
+Log out and back in so the group membership takes effect.
 
-```bash
-id
-ls -l /dev/lirc0
-test -r /dev/lirc0 && echo 'Receiver is readable'
-```
-
-Run the app as your normal account.
-
-## 5. Start learning
+## 4. Start learning
 
 On the **Pi**:
 
@@ -126,7 +129,7 @@ python3 -m pipertv
 
 Recordings are saved on the Pi in `~/piperTV/data/recordings.json` when started as above. Use the interface's JSON export to download them to your PC, or copy the file using your usual file transfer method. For a different location, start with `python3 -m pipertv --data ~/tv-remotes/living-room.json`.
 
-## 6. Let PiperTV move the desktop cursor
+## 5. Let PiperTV move the desktop cursor
 
 Desktop control needs access to CEC and a virtual input device. The earlier
 deployment notes describe Raspberry Pi OS (Debian 13, aarch64) with a Wayland

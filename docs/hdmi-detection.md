@@ -32,7 +32,7 @@ ls -l /dev/cec*
 
 An adapter node confirms that the kernel exposes CEC support; it is not a successful selected-input test. Test with the actual TV by switching between the Pi input and another source. The Pi's address in the CEC topology also must not be guessed from an example label such as “HDMI 2”.
 
-The detector passively monitors `cec-ctl` output. If the app starts while the TV already shows the Pi, it may remain Unknown until a new source report arrives. Switch to another input and back to perform the first test. Device access and monitor permissions are covered in [section 6 of the setup guide](raspberry-pi.md#6-let-pipertv-move-the-desktop-cursor).
+The detector passively monitors `cec-ctl` output. If the app starts while the TV already shows the Pi, it may remain Unknown until a new source report arrives. Switch to another input and back to perform the first test. Device access and monitor permissions are covered in [section 5 of the setup guide](raspberry-pi.md#5-let-pipertv-move-the-desktop-cursor).
 
 ## Choosing the control mode
 
