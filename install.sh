@@ -274,7 +274,8 @@ step "Desktop"
 if [ "$DRY" = 1 ]; then
   act .venv/bin/python3 -m pipertv.start --install
 else
-  .venv/bin/python3 -m pipertv.start --install | sed "s/^Wrote /  $GREEN✓$OFF wrote /"
+  .venv/bin/python3 -m pipertv.start --install \
+    | sed -e "s/^Wrote /  $GREEN✓$OFF wrote /" -e t -e "s/^/  /"
   # The window rules take effect at once; the rest at the next login.
   pkill -HUP -x labwc 2>/dev/null || true
 fi

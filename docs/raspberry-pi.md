@@ -2,6 +2,9 @@
 
 The Flask app, receiver, and saved recordings all run on the Pi. Your PC opens the interface at `http://PI_ADDRESS:8765`. This guide assumes Raspberry Pi OS, Python 3.10 or newer, and a bare **Vishay TSOP2238** receiver.
 
+`install.sh` does all of this on its own; see the README. This guide shows
+the same steps by hand, for when you want to see or change what it does.
+
 ## 1. Copy and install the app
 
 Copy this project folder to the Pi, for example to `~/piperTV`, using your usual file transfer method. If you use SSH, run these commands from the project folder on your PC, replacing `USER` and `PI_ADDRESS` with your Pi login and address:
