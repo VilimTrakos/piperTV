@@ -42,6 +42,7 @@ import urllib.request
 from pathlib import Path
 
 from .backdrop import ROOT, Backdrop
+from .ini import ini_get, ini_set
 
 # Named rather than __name__, which is "__main__" when run with -m.
 LOG = logging.getLogger("pipertv.start")
@@ -196,41 +197,6 @@ class Starter:
         return self._visit("pointer", feed)
 
 
-def _ini_get(text: str, section: str, key: str) -> str | None:
-    """One value from an ini file's text, if that section sets it."""
-    current = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current = stripped[1:-1].strip()
-        elif current == section and "=" in stripped \
-                and stripped.split("=", 1)[0].strip() == key:
-            return stripped.split("=", 1)[1].strip()
-    return None
-
-
-def _ini_set(text: str, section: str, key: str, value: str) -> str:
-    """The same ini with one value set, and every other line as it was."""
-    wanted = f"{key}={value}"
-    lines = text.splitlines()
-    current, section_at = None, None
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current = stripped[1:-1].strip()
-            if current == section and section_at is None:
-                section_at = index
-        elif current == section and "=" in stripped \
-                and stripped.split("=", 1)[0].strip() == key:
-            lines[index] = wanted
-            return "\n".join(lines) + "\n"
-    if section_at is None:
-        lines += ([""] if lines else []) + [f"[{section}]", wanted]
-    else:
-        lines.insert(section_at + 1, wanted)
-    return "\n".join(lines) + "\n"
-
-
 def _read(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
@@ -246,17 +212,17 @@ def add_to_panel(home: Path, defaults: Path = PANEL_DEFAULTS) -> Path | None:
     """
     config = home / PANEL_CONFIG
     text = _read(config) or ""
-    listed = _ini_get(text, "panel", "launchers")
+    listed = ini_get(text, "panel", "launchers")
     if listed is None:
         try:
-            listed = _ini_get(defaults.read_text(encoding="utf-8"), "panel", "launchers")
+            listed = ini_get(defaults.read_text(encoding="utf-8"), "panel", "launchers")
         except OSError:
             listed = None
     launchers = listed.split() if listed is not None else list(PANEL_FALLBACK)
     if LAUNCHER in launchers:
         return None
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(_ini_set(text, "panel", "launchers", " ".join(launchers + [LAUNCHER])),
+    config.write_text(ini_set(text, "panel", "launchers", " ".join(launchers + [LAUNCHER])),
                       encoding="utf-8")
     return config
 
@@ -278,10 +244,10 @@ def launch_without_asking(home: Path, defaults: Path = LIBFM_DEFAULTS) -> Path |
             text = defaults.read_text(encoding="utf-8")
         except OSError:
             text = ""
-    if _ini_get(text, "config", "quick_exec") == "1":
+    if ini_get(text, "config", "quick_exec") == "1":
         return None
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(_ini_set(text, "config", "quick_exec", "1"), encoding="utf-8")
+    config.write_text(ini_set(text, "config", "quick_exec", "1"), encoding="utf-8")
     return config
 
 

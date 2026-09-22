@@ -56,26 +56,50 @@ HEADER = {2: 3, 3: 5, 4: 7, 5: 29, 6: 31, 7: 26, 8: 24, 9: 21, 10: 19, 11: 23,
           12: 32, 13: 33, 14: 8, 15: 10, 16: 36, 17: 11, 18: 12, 19: 35, 20: 38,
           21: 40, 22: 15, 23: 16, 24: 18, 25: 22, 26: 37, 27: 13}
 
-RECEIVER_DEFAULTS = {"kind": "lirc", "pin": None}
+# One question matters to whoever wires the receiver: which pin its OUT is on.
+# "auto" answers it for them -- the kernel's receiver when config.txt sets one
+# up, and otherwise GPIO17, the pin the wiring guide uses.
+AUTO = "auto"
+DEFAULT_PIN = 17
+# What the GPIO chip calls a line lent to the kernel's receiver: the gpio-ir
+# overlay's device-tree node, "ir-receiver@11" for GPIO17.
+KERNEL_RECEIVER = "ir-receiver"
 
 
-def validate_receiver(values) -> dict:
-    """Check a receiver choice: the kernel's receiver, or one header pin."""
-    if not isinstance(values, dict):
-        raise ValueError("Receiver settings must be a JSON object.")
-    unknown = set(values) - set(RECEIVER_DEFAULTS)
-    if unknown:
-        raise ValueError(f"Unknown receiver setting {sorted(unknown)[0]!r}. "
-                         "Settings are: kind, pin.")
-    settings = dict(RECEIVER_DEFAULTS, **values)
-    if settings["kind"] == "lirc":
-        return {"kind": "lirc", "pin": None}
-    if settings["kind"] != "gpio":
-        raise ValueError("kind is either lirc (the kernel's receiver) or gpio.")
-    pin = settings["pin"]
-    if isinstance(pin, bool) or not isinstance(pin, int) or pin not in HEADER:
-        raise ValueError("pin must be a GPIO number on the 40-pin header "
-                         f"({min(HEADER)} to {max(HEADER)}).")
+def validate_pin(value) -> str | int:
+    """A receiver pin as a person might write it: auto, 18, "18" or "GPIO18"."""
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text == AUTO:
+            return AUTO
+        text = text[4:] if text.startswith("gpio") else text
+        value = int(text) if text.isdigit() else value
+    if isinstance(value, bool) or not isinstance(value, int) or value not in HEADER:
+        raise ValueError(f"The IR pin is auto or a GPIO number on the header, "
+                         f"{min(HEADER)} to {max(HEADER)}; {value!r} is neither.")
+    return value
+
+
+def kernel_line(lines) -> dict | None:
+    """The pin the kernel's own receiver holds, if config.txt set one up."""
+    return next((line for line in lines
+                 if (line.get("consumer") or "").startswith(KERNEL_RECEIVER)), None)
+
+
+def resolve(pin, lines, lirc: str = LIRC, exists=os.path.exists):
+    """How to read the pin the receiver is on: through the kernel, or here.
+
+    A pin the kernel's receiver already holds cannot be watched from here,
+    and has no need to be: the kernel is reading that very wire, so asking it
+    is the same thing. Every other pin is read directly.
+    """
+    held = kernel_line(lines)
+    if pin == AUTO:
+        if held is not None or exists(lirc):
+            return lirc
+        return {"kind": "gpio", "pin": DEFAULT_PIN}
+    if held is not None and held["gpio"] == pin:
+        return lirc
     return {"kind": "gpio", "pin": pin}
 
 

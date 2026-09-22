@@ -6,7 +6,7 @@ The interface follows the supplied One For All remote photo. Some small symbols 
 
 ## Set up the Pi
 
-Follow the [Raspberry Pi setup and wiring guide](docs/raspberry-pi.md) to copy the project, connect the receiver, enable GPIO reception, and grant your account access to `/dev/lirc0`.
+Follow the [Raspberry Pi setup and wiring guide](docs/raspberry-pi.md) to copy the project and connect the receiver. With the receiver's OUT on GPIO17 (physical pin 11), there is nothing else to configure. On another pin, name it in `pipertv.conf` (`pin = 18`) or choose it on the TV under **options › ir receiver**.
 
 From the project directory **on the Pi**, with Python 3.10 or newer:
 
@@ -30,14 +30,16 @@ On your PC, open **`http://PI_ADDRESS:8765`**, replacing `PI_ADDRESS` with the P
 
 ## Learn the real remote
 
-After completing the GPIO setup, start the app **on the Pi**:
+Once the receiver is wired, start the app **on the Pi**:
 
 ```bash
 source .venv/bin/activate
-python3 -m pipertv --device /dev/lirc0
+python3 -m pipertv
 ```
 
-`python3 main.py` starts the same app with the default receiver device.
+`python3 main.py` starts the same app. It reads the pin set in `pipertv.conf`
+(GPIO17 unless you changed it), or the kernel's `/dev/lirc0` receiver if one
+is set up. `--device` names a different kernel receiver.
 
 Open `http://PI_ADDRESS:8765` in your PC browser. The Pi captures the timing locally, so network latency does not determine pulse lengths.
 
@@ -77,7 +79,7 @@ The demo exercises the interface and storage without GPIO hardware. Automated te
 
 ## Control the Pi's desktop with the remote
 
-Once buttons are learned, the same receiver can drive the Pi's own mouse pointer. Follow [section 6 of the setup guide](docs/raspberry-pi.md) to load `uinput` and install `v4l-utils`, then start the app as usual:
+Once buttons are learned, the same receiver can drive the Pi's own mouse pointer. Follow [section 5 of the setup guide](docs/raspberry-pi.md) to load `uinput` and install `v4l-utils`, then start the app as usual:
 
 ```bash
 python3 -m pipertv
