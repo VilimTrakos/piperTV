@@ -329,8 +329,8 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         line = next((line for line in lines if line["gpio"] == pin), None)
         if (line and line["used"] and line["consumer"] != OURS
                 and not (line["consumer"] or "").startswith(KERNEL_RECEIVER)):
-            raise RuntimeError(f"GPIO{pin} is already in use by {line['consumer'] or 'another driver'}."
-                               " Choose a free pin.")
+            holder = line["consumer"] or "another driver"
+            raise RuntimeError(f"GPIO{pin} is already in use by {holder}. Choose a free pin.")
         receiver["pin"] = write_pin(pin, config_path)
         listen_on = resolve(pin, lines, lirc=kernel_device)
         if hasattr(workbench.backend, "use"):

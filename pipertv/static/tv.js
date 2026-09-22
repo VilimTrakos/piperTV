@@ -442,14 +442,21 @@
       kind: "receiver", section: "receiver", choice: "auto", free: true,
       label: "automatic", value: automatic, current: pin === "auto",
     }];
-    for (const line of lines) {
+    // Plain pins first: the ones with no second name on the Pi's pinout, which
+    // nothing added later will want back. A pin that also has a job of its
+    // own (SDA, TXD, PCM_CLK…) says so, as the pinout does.
+    const ordered = [...lines].sort((a, b) =>
+      (a.function ? 1 : 0) - (b.function ? 1 : 0) || a.gpio - b.gpio);
+    for (const line of ordered) {
       const notes = [`pin ${line.header_pin}`];
+      if (line.function) notes.push(line.function);
       if (line.kernel) notes.push("kernel receiver");
       else if (!line.free) notes.push(`used by ${line.consumer || "another driver"}`);
       rows.push({
         kind: "receiver", section: "receiver", choice: line.gpio, free: line.free,
         label: `GPIO${line.gpio}`, pin: line.header_pin, viaKernel: !!line.kernel,
         holder: line.consumer || "another driver",
+        function: line.function, purpose: line.purpose,
         value: notes.join(" · "), current: pin === line.gpio,
       });
     }
@@ -529,6 +536,11 @@
       }
       if (row.viaKernel) {
         return `OK reads ${row.label} through the kernel's receiver, which already holds it`;
+      }
+      if (row.function) {
+        return `${row.label} (pin ${row.pin}) is also ${row.function}, for ${row.purpose}.`
+          + " It works as the receiver's input while that is off · a pin with no second"
+          + " name is the safer choice";
       }
       return `OK reads the remote from ${row.label} from now on · the receiver's OUT goes to`
         + ` pin ${row.pin} · kept in pipertv.conf`;

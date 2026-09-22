@@ -6,7 +6,7 @@ The interface follows the supplied One For All remote photo. Some small symbols 
 
 ## Set up the Pi
 
-Follow the [Raspberry Pi setup and wiring guide](docs/raspberry-pi.md) to copy the project and connect the receiver. With the receiver's OUT on GPIO17 (physical pin 11), there is nothing else to configure. On another pin, name it in `pipertv.conf` (`pin = 18`) or choose it on the TV under **options › ir receiver**.
+Follow the [Raspberry Pi setup and wiring guide](docs/raspberry-pi.md) to copy the project and connect the receiver. With the receiver's OUT on GPIO17 (physical pin 11), there is nothing else to configure. On another pin, name it in `pipertv.conf` (`pin = 27`, preferably one of the plain pins 5, 6, 16, 17 or 22 to 27) or choose it on the TV under **options › ir receiver**.
 
 From the project directory **on the Pi**, with Python 3.10 or newer:
 

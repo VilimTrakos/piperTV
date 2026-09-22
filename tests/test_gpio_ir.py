@@ -3,7 +3,7 @@ import struct
 import threading
 import unittest
 
-from pipertv.gpio_ir import (AUTO, CHIP_INFO, DEFAULT_PIN, GPIO_GET_CHIPINFO_IOCTL,
+from pipertv.gpio_ir import (AUTO, CHIP_INFO, DEFAULT_PIN, FUNCTIONS, GPIO_GET_CHIPINFO_IOCTL,
                              GPIO_V2_GET_LINE_IOCTL, GPIO_V2_GET_LINEINFO_IOCTL, HEADER,
                              LINE_EVENT, LINE_INFO, LINE_REQUEST, EdgeTimeline, GpioIrDevice,
                              describe, kernel_line, open_receiver, resolve, validate_pin)
@@ -91,6 +91,28 @@ class ReceiverDeviceTests(unittest.TestCase):
     def test_the_header_map_has_every_gpio_once(self):
         self.assertEqual(sorted(HEADER), list(range(2, 28)))
         self.assertEqual(len(set(HEADER.values())), len(HEADER))
+
+    def test_the_header_map_is_the_pinout_s(self):
+        # Read off the Pi 3B+ pinout. GPIO18 is physical pin 12 and GPIO12 is
+        # pin 32: the two numbers are easy to mix up, which is why both show.
+        for gpio, pin in ((17, 11), (18, 12), (27, 13), (22, 15), (12, 32),
+                          (2, 3), (14, 8), (21, 40), (26, 37), (5, 29)):
+            with self.subTest(gpio=gpio):
+                self.assertEqual(HEADER[gpio], pin)
+
+    def test_pins_with_a_second_job_are_named_as_the_pinout_names_them(self):
+        self.assertEqual(FUNCTIONS[18][0], "PCM_CLK")
+        self.assertEqual(FUNCTIONS[2][0], "SDA")
+        self.assertEqual(FUNCTIONS[14][0], "TXD")
+        self.assertEqual(sorted(gpio for gpio in HEADER if gpio not in FUNCTIONS),
+                         [5, 6, 16, 17, 22, 23, 24, 25, 26, 27])
+        for gpio, (name, purpose) in FUNCTIONS.items():
+            with self.subTest(gpio=gpio):
+                self.assertIn(gpio, HEADER)
+                self.assertTrue(name and purpose)
+
+    def test_the_pin_used_when_nothing_is_said_is_a_plain_one(self):
+        self.assertNotIn(DEFAULT_PIN, FUNCTIONS)
 
     def test_each_choice_opens_its_own_kind_of_device(self):
         self.assertIsInstance(open_receiver("/dev/lirc1", 10_000), LircDevice)

@@ -34,7 +34,11 @@ TEMPLATE = """\
 #
 #   pin = auto   the kernel's receiver, if /boot/firmware/config.txt sets one
 #                up with dtoverlay=gpio-ir; otherwise GPIO17
-#   pin = 18     the receiver is on GPIO18 (physical pin 12); any of 2 to 27
+#   pin = 27     the receiver is on GPIO27 (physical pin 13); any of 2 to 27
+#
+# Pins with no second name on the pinout (5, 6, 16, 17, 22 to 27) are the
+# safe choice. The others work too while their other job is off, but they
+# are the ones I2C, SPI, the serial port, PWM, 1-Wire or I2S audio would use.
 pin = {pin}
 """
 
