@@ -121,7 +121,8 @@ class RemoteControl:
     def __init__(self, store, screen=None, device="/dev/lirc0", cec_device="/dev/cec0",
                  poll_s=POLL_S, monitor=None, targets=None, controller=None, desktop=None,
                  buttons=None, launcher=None, browser=None, interface=None, port=8765,
-                 keys=None, watcher=None, onscreen=None, later=None, backdrop=None):
+                 keys=None, watcher=None, onscreen=None, later=None, backdrop=None,
+                 switch=None):
         self.store = store
         self.screen = tuple(screen or read_screen_size() or DEFAULT_SCREEN)
         self.session = ControlSession()
@@ -141,6 +142,10 @@ class RemoteControl:
         self.watcher = (FocusWatcher(on_text_field=self._text_field_focused)
                         if watcher is None else watcher)
         self.port = port
+        # Only set when Piper's interface is not on this television: the set is
+        # showing its own browser, so opening something here is worth nothing
+        # unless the set is also asked to look at this input.
+        self.switch = switch
         self.later = _later if later is None else later
         # The service the interface was closed for, while it is closed for one.
         # Piper only brings back what it sent away itself.
@@ -581,6 +586,11 @@ class RemoteControl:
         if self.launcher.running() is not None:
             self.leaving.disarm()
             self.launcher.stop()
+            if self.switch is not None:
+                # The way out includes the television: with the interface in
+                # its own browser, closing the service is only half of coming
+                # back, and the other half is the set leaving this input.
+                self.switch.release()
             self.onscreen.close()
             self.keys.release()
             self.desktop.release()
@@ -695,6 +705,13 @@ class RemoteControl:
         opened = state.get("running")
         if opened:
             self.later(STEP_ASIDE_AFTER_S, lambda: self._step_aside(opened))
+            if self.switch is not None:
+                # The press came from a browser on the television itself, so
+                # the set is showing that and not this Pi. Opening something
+                # here is only half the answer; the other half is asking the
+                # set to look at it. It may refuse, and that is its right:
+                # the service is open either way.
+                state = dict(state, television=self.switch.take())
         if self.launcher.policy(service) == SNAP:
             # Ready and out of sight: a keyboard that takes ten seconds to
             # appear is one nobody waits for.
@@ -703,7 +720,13 @@ class RemoteControl:
 
     def stop_service(self) -> dict:
         """Give the screen back to the interface. Always allowed: it is the way out."""
-        return self.launcher.stop()
+        state = self.launcher.stop()
+        if self.switch is not None:
+            # Nothing of Piper's is on this screen now, so the set is told it
+            # can go back to what it was showing -- its own browser, where the
+            # interface has been waiting the whole time.
+            state = dict(state, television=self.switch.release())
+        return state
 
     def leave(self) -> dict:
         """Take Piper off the screen and hand the remote to the desktop's mouse.
@@ -792,6 +815,10 @@ class RemoteControl:
         result["keyboard"] = self.onscreen.health()
         result["leaving"] = {"armed": self.leaving.armed(),
                              "seconds": self.leaving.remaining()}
+        # Only there when the interface is somewhere else, and worth saying:
+        # the page can tell whoever is watching that the set was asked to
+        # switch, which is different from the set having done it.
+        result["television"] = self.switch.snapshot() if self.switch is not None else None
         return result
 
     # --- reporting -------------------------------------------------------
@@ -808,6 +835,7 @@ class RemoteControl:
         state["keyboard"] = self.onscreen.health()
         state["pointer_settings"] = dict(self.pointer)
         state["window_settings"] = dict(self.window)
+        state["television"] = self.switch.snapshot() if self.switch is not None else None
         state["runtime"] = {"pointer": pointer_health(),
                             "receiver": self.controller.health(),
                             "desktop": self.desktop.health(),
@@ -821,6 +849,7 @@ class RemoteControl:
                 "targets": targets, "detection": self.monitor.snapshot(),
                 "services": self.launcher.snapshot(),
                 "interface": self._interface_state(),
+                "television": self.switch.snapshot() if self.switch is not None else None,
                 "keys": self.keys.health()}
 
     def _interface_state(self) -> dict:

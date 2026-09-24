@@ -20,8 +20,9 @@ from .config import CONFIG, read_pin, write_pin
 from .gpio_ir import (AUTO, DEFAULT_PIN, KERNEL_RECEIVER, describe, kernel_line, list_lines,
                       resolve, validate_pin)
 from .learner import Workbench
+from .cec import CecInput
 from .roles import SUGGESTED, RoleMap
-from .served import ServedRemote
+from .served import NoInterface, NotEvidence, ServedRemote
 from .storage import RecordingStore
 from .window import WINDOW_DEFAULTS, WINDOW_LIMITS, validate_window
 
@@ -43,7 +44,8 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
                demo: bool = False, workbench: Workbench | None = None,
                control: bool = False, remote: RemoteControl | None = None,
                browser: str | None = None, port: int = 8765,
-               config: str | Path | None = None, served: bool = False) -> Flask:
+               config: str | Path | None = None, served: bool = False,
+               opens_here: bool = False) -> Flask:
     """Build one application and one capture manager, shared by all browsers.
 
     Desktop control is opt-in: it opens real devices and runs a detector thread,
@@ -62,7 +64,18 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
         # it is right, the remote cannot be used to set it.
         receiver = {"pin": read_pin(config_path)}
         device = resolve(receiver["pin"], gpio_lines()[0], lirc=kernel_device)
-        if remote is None and served and not demo:
+        if remote is None and served and opens_here and not demo:
+            # The interface is in the television's own browser, which cannot
+            # show a streaming service: those are pages for a browser of this
+            # decade, and they need Widevine besides. So Piper keeps its own
+            # screen for them -- it opens them here and asks the set to look
+            # at this input -- while the dial stays where it is, costing this
+            # Pi nothing while nobody is watching anything.
+            remote = RemoteControl(store, device=device, browser=browser, port=port,
+                                   interface=NoInterface(), monitor=NotEvidence(),
+                                   switch=CecInput())
+            remote.session.start_served("piper")
+        elif remote is None and served and not demo:
             # No window of Piper's own on this Pi, so nothing here needs the
             # port or a browser: the page is in somebody else's.
             remote = ServedRemote(store, device=device)
@@ -464,18 +477,24 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--served", action="store_true",
                         help="Show the interface in a browser elsewhere on the network -- a "
                              "laptop, a tablet -- and leave this Pi's own screen alone")
+    parser.add_argument("--opens-here", action="store_true",
+                        help="With --served: open services on this Pi and ask the television to "
+                             "switch to it, for an interface shown in the TV's own browser")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     if args.served and args.no_control:
         parser.error("--served and --no-control ask for opposite things: served mode exists so "
                      "the remote can drive the interface in the browser showing it.")
+    if args.opens_here and not args.served:
+        parser.error("--opens-here says where services open while the interface is served "
+                     "elsewhere, so it goes with --served.")
     say_what_happens()
     try:
         app = create_app(args.data, args.device, args.demo,
                          control=not args.demo and not args.no_control,
                          browser=args.browser, port=args.port,
-                         served=args.served)
+                         served=args.served, opens_here=args.opens_here)
     except (ValueError, OSError) as exc:
         parser.exit(1, f"PiperTV: {exc}\n")
     workbench = app.extensions["pipertv"]
@@ -486,6 +505,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"The interface is served, not shown here: open "
               f"http://<raspberry-pi-ip>:{args.port}/tv on the computer you want to watch on, "
               "and the remote drives it there.", flush=True)
+    if args.opens_here:
+        print("Services open on this Pi's own screen, and the television is asked to switch "
+              "to this input when one does.", flush=True)
     print(f"Recordings: {workbench.store.path}", flush=True)
     def stop(_signum, _frame):
         raise KeyboardInterrupt
