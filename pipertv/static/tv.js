@@ -43,8 +43,15 @@
 
   const state = { screen: "boot", focus: 1, seen: 0, stream: null,
     primed: false, control: "off", tiles: [], session: null, services: null,
-    open: null, opening: false, notice: "", serviceError: null };
+    open: null, opening: false, notice: "", serviceError: null, served: false };
   let noticeTimer = null;
+
+  // Served mode: this page is in a browser on a laptop instead of on the Pi's
+  // own screen, so a tile opens a tab here rather than a window there. The Pi
+  // cannot see any of that, which is why what is open and what was opened are
+  // kept on this side.
+  const tabs = { handle: null, open: null, openedAt: 0, history: [] };
+  const REMEMBERED_TABS = 6;
 
   // Two presses of left, close enough together to be one gesture, open the
   // options. The first of them has already moved the wheel, so the gesture
@@ -199,7 +206,9 @@
     // Piper can actually start, and the caption is where that is admitted.
     $("focus-note").textContent = service.kind === "search"
       ? "search is not implemented yet"
-      : openable(service.id) ? "OK to open" : `piper cannot open ${service.name} yet`;
+      : openable(service.id) ? (state.served ? "OK opens it in a tab" : "OK to open")
+      : state.served ? `${service.name} runs on the pi, not in this browser`
+      : `piper cannot open ${service.name} yet`;
     $("ring-hint").textContent =
       `◀ ▶ choose · OK opens · ${state.focus + 1} of ${SERVICES.length}`;
   }
@@ -214,7 +223,8 @@
   function notify(message, persist = false, kind = "") {
     clearTimeout(noticeTimer);
     const notice = $("tv-notice");
-    notice.textContent = message || "";
+    $("tv-notice-text").textContent = message || "";
+    $("tv-notice-link").hidden = true;
     notice.hidden = !message;
     state.notice = message ? kind : "";
     if (message && !persist) noticeTimer = setTimeout(() => {
@@ -280,6 +290,7 @@
   }
 
   async function openService(service) {
+    if (state.served) { openHere(service); return; }
     if (state.opening) return;
     state.opening = true;
     notify(`Opening ${service.name}…`, true, "opening");
@@ -291,9 +302,84 @@
     }
   }
 
+  // --- served mode: the tab this browser opens ----------------------------
+
+  function servedService(id) {
+    return ((state.services && state.services.services) || []).find((s) => s.id === id) || null;
+  }
+
+  // The handle the tab comes back as is what lets exit close it again, which is
+  // the only way to close a tab with a remote control in your hand. Keeping it
+  // means the page Piper opened can see this one as its opener; that is the
+  // price of the way out, and it is paid to sites chosen from a fixed list.
+  function openHere(service) {
+    const known = servedService(service.id);
+    if (!known || !known.url) {
+      notify(`${service.name} runs on the Pi itself, so this browser cannot open it.`);
+      return;
+    }
+    closeHere();
+    const tab = window.open(known.url, `piper-${service.id}`);
+    if (!tab) {
+      // A tab opened by a press of the remote is not a click, and a browser
+      // blocks what nobody asked for by hand. Offering the link makes the next
+      // press a click; allowing pop-ups for this address settles it for good.
+      offerLink(service, known.url);
+      return;
+    }
+    tabs.handle = tab;
+    tabs.open = { id: service.id, name: service.name };
+    tabs.openedAt = Date.now();
+    notify(`${service.name} is open in another tab · exit closes it`, true, "open");
+  }
+
+  function offerLink(service, url) {
+    notify(`This browser blocked the tab for ${service.name}. Open it here, or allow `
+           + "pop-ups for this address.", true, "blocked");
+    const link = $("tv-notice-link");
+    link.href = url;
+    link.textContent = `open ${service.name}`;
+    link.hidden = false;
+    link.onclick = (event) => { event.preventDefault(); openHere(service); };
+  }
+
+  function closeHere() {
+    if (tabs.handle && !tabs.handle.closed) {
+      try { tabs.handle.close(); } catch { /* the tab is the person's, not ours */ }
+    }
+    rememberTab();
+  }
+
+  function rememberTab() {
+    if (tabs.open) {
+      tabs.history.unshift({ ...tabs.open, openedAt: tabs.openedAt, endedAt: Date.now() });
+      tabs.history.length = Math.min(tabs.history.length, REMEMBERED_TABS);
+    }
+    tabs.handle = null;
+    tabs.open = null;
+  }
+
+  // What the Pi reports about services, answered from this side instead: it
+  // cannot see a tab in somebody's browser, and the page's own history is the
+  // same history it would have shown.
+  function servedServices(catalogue) {
+    if (tabs.handle && tabs.handle.closed) rememberTab();   // closed by hand
+    const now = Date.now();
+    return {
+      ...(catalogue || {}),
+      running: tabs.open ? { ...tabs.open, seconds: (now - tabs.openedAt) / 1000 } : null,
+      history: tabs.history.map((entry) => ({
+        id: entry.id, name: entry.name, ended_at: entry.endedAt,
+        age_s: (now - entry.endedAt) / 1000,
+        seconds: (entry.endedAt - entry.openedAt) / 1000,
+      })),
+    };
+  }
+
   // The remote's own way back is handled on the Pi, because this page is behind
   // the service's window. This covers a keyboard, and a second press does no harm.
-  const closeService = () => ask("/api/tv/close", {}, "Could not close the open service.");
+  const closeService = () =>
+    state.served ? closeHere() : ask("/api/tv/close", {}, "Could not close the open service.");
 
   // The mouse's way out of Piper. The Pi closes this page in answering, and
   // the remote goes on to move the desktop's mouse.
@@ -936,14 +1022,19 @@
         state.seen = feed.sequence;
         state.stream = feed.stream_id;
         state.session = feed.session_id || null;
-        applyServices(feed.services);
+        // Served: this browser is the screen, so what is open and what was
+        // opened are this page's own answer rather than the Pi's.
+        state.served = !!feed.served;
+        document.body.classList.toggle("is-served", state.served);
+        applyServices(state.served ? servedServices(feed.services) : feed.services);
         applyLeaving(feed.leaving);
         state.primed = (state.screen === "home" || state.screen === "options")
           && !document.hidden;
         state.control = feed.control;
         const source = feed.control === "on"
-          ? feed.mode === "piper" ? "remote connected" : "desktop control selected"
-          : "remote control off";
+          ? state.served ? "remote connected · in this browser"
+            : feed.mode === "piper" ? "remote connected" : "desktop control selected"
+          : feed.hold ? "listening for a button to learn" : "remote control off";
         $("home-source").textContent = source;
         $("options-state").textContent = source;
         if (continuous && state.primed && feed.control === "on" && feed.mode === "piper") {

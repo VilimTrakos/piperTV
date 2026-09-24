@@ -12,6 +12,8 @@
 #   ./deploy.sh --kiosk         restart it even if no page files changed
 #   ./deploy.sh --no-session    do not open a control session afterwards
 #   ./deploy.sh --force         deploy even while someone is watching something
+#   ./deploy.sh --served        run it for a browser elsewhere: no interface on
+#                               the TV, nothing on the Pi's screen at all
 #
 # Deploying interrupts whoever is at the television: the app stops, which
 # closes what it had opened, and the screen is black until the interface comes
@@ -28,7 +30,7 @@ LOGIN=${PIPER_USER:-rpi}
 DIR=${PIPER_DIR:-/home/rpi/piperTV}
 PORT=${PIPER_PORT:-8765}
 PROFILE=${PIPER_KIOSK_PROFILE:-/tmp/kiosk-gpu-off}
-REF=HEAD; DIRTY=0; KIOSK=""; TESTS=1; SESSION=1; FORCE=0
+REF=HEAD; DIRTY=0; KIOSK=""; TESTS=1; SESSION=1; FORCE=0; SERVED=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,8 +40,11 @@ while [ $# -gt 0 ]; do
     --kiosk) KIOSK=1; shift ;;
     --force) FORCE=1; shift ;;
     --no-session) SESSION=0; shift ;;
+    # The interface is somewhere else, so there is nothing here to put on the
+    # TV and no session to open: the gate those two exist for is not in it.
+    --served) SERVED=1; KIOSK=0; SESSION=0; shift ;;
     --skip-tests) TESTS=0; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "deploy.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -182,7 +187,7 @@ if [ -z "$KIOSK" ]; then
 fi
 
 say "Stopping the old app and interface"
-if [ "$KIOSK" = 1 ]; then
+if [ "$KIOSK" = 1 ] || [ "$SERVED" = 1 ]; then
   pi "pkill -f '$APP_PATTERN' || true; pkill -f '$KIOSK_PATTERN' || true; sleep 2; echo 'app and interface stopped'"
 else
   pi "pkill -f '$APP_PATTERN' || true; sleep 2; echo 'app stopped; the interface was left where it was'"
@@ -193,10 +198,14 @@ fi
 WAYLAND_ENV='export XDG_RUNTIME_DIR=/run/user/$(id -u); export WAYLAND_DISPLAY=$(ls "$XDG_RUNTIME_DIR" | grep -m1 "^wayland-[0-9]$")'
 
 say "Starting the app"
+# Served mode needs none of the session's variables: it puts no window on the
+# TV, which is the point of it, and it runs on a Pi with no screen attached.
+START_ENV="$WAYLAND_ENV"; ARGS=""
+[ "$SERVED" = 1 ] && { START_ENV="true"; ARGS=" --served"; }
 # The channel can outlive the command when a child holds it; the app is already
 # running by then, so a bounded wait is enough and the health check is the proof.
 timeout 25 ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" \
-  "$WAYLAND_ENV; cd $DIR && setsid nohup ./.venv/bin/python3 main.py >> pipertv.log 2>&1 < /dev/null & disown; exit 0" || true
+  "$START_ENV; cd $DIR && setsid nohup ./.venv/bin/python3 main.py$ARGS >> pipertv.log 2>&1 < /dev/null & disown; exit 0" || true
 sleep 4
 
 if [ "$KIOSK" = 1 ]; then
@@ -216,6 +225,22 @@ fi
 # --- prove it ---------------------------------------------------------------
 
 say "Checking"
+if [ "$SERVED" = 1 ]; then
+  # Nothing to look for on the television: the proof is that the receiver is
+  # open and the feed the browser reads says the interface is elsewhere.
+  pi "curl -s -m 5 http://127.0.0.1:$PORT/api/health > /tmp/pipertv-health.json && echo 'app: UP' || { echo 'app: DOWN'; tail -15 $DIR/pipertv.log; exit 1; }
+python3 - <<'PY'
+import json
+health = json.load(open('/tmp/pipertv-health.json'))
+control = health.get('control') or {}
+receiver = control.get('receiver') or {}
+print('serving the interface:', bool(control.get('served')))
+print('receiver:', receiver.get('learned_buttons'), 'buttons, error:', receiver.get('error'))
+print('services a browser can open:', len(control.get('services') or []))
+PY
+echo \"windows on the pi's own screen: \$(ps -eo args | grep -c '[c]hromium --type=renderer') (served mode opens none)\""
+  say "Open http://$HOST:$PORT/tv in a browser on your network"
+else
 pi "curl -s -m 5 http://127.0.0.1:$PORT/api/health > /tmp/pipertv-health.json && echo 'app: UP' || { echo 'app: DOWN'; tail -15 $DIR/pipertv.log; exit 1; }
 python3 - <<'PY'
 import json
@@ -238,6 +263,7 @@ for _ in \$(seq 20); do
 done
 echo \"interface windows: \$WINDOWS\"
 [ \"\$WINDOWS\" -ge 1 ] || { echo 'the interface did not come up; last lines of its log:'; tail -5 /tmp/kiosk.log; exit 1; }"
+fi
 
 if [ "$SESSION" = 1 ]; then
   say "Opening a Piper session"

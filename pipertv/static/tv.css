@@ -297,6 +297,21 @@ body {
 
 .notice[hidden] { display: none; }
 
+/* The way past a browser that blocked a tab opened by a remote press: a click
+   is what it wanted, so the notice offers one. */
+.notice-link {
+  display: inline-block;
+  margin-left: calc(var(--u) * 14);
+  padding: calc(var(--u) * 4) calc(var(--u) * 14);
+  border: 1px solid var(--panel-edge);
+  border-radius: calc(var(--u) * 8);
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.notice-link[hidden] { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
   .tile, .boot-fill { transition: none; }
 }
@@ -427,6 +442,10 @@ body.is-pointing .back-button:hover { color: var(--ink); border-color: var(--ink
    on it that the remote cannot reach. */
 .exit-button { display: none; }
 body.is-pointing .exit-button { display: inline-block; }
+/* Served to a browser elsewhere: there is no Piper on this Pi's screen to
+   leave, and the desktop the remote would be handed to is not the one this
+   page is on. */
+body.is-served .exit-button { display: none; }
 
 .option-section .option-label {
   font-size: calc(20 * var(--u));
