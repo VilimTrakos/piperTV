@@ -1,0 +1,97 @@
+/* The Piper interface for a television's own browser.
+ *
+ * The set this was built against runs QtWebKit 4.8: no custom properties, no
+ * calc(), no flexbox, no grid. So every colour here is written out, every
+ * position is set from JavaScript in real pixels, and the only CSS 3 used is
+ * what that engine does have -- rgba, rounded corners and transitions.
+ *
+ * It is also a small window: that browser reported 1024x448 on a 1080p set,
+ * because it scales the page and keeps its own toolbars. The layout is
+ * measured from the window rather than drawn at 1920x1080 and scaled, which is
+ * what the other interface does.
+ */
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #08090B;
+  color: #F2F4F7;
+  font-family: Cantarell, "Nimbus Sans", "Liberation Sans", Arial, sans-serif;
+  font-weight: 300;
+  overflow: hidden;
+}
+
+#stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#wordmark {
+  position: absolute;
+  color: #F2F4F7;
+  letter-spacing: 4px;
+  font-weight: 300;
+}
+
+#source, #clock, #note, #hint, #last {
+  position: absolute;
+  color: rgba(242, 244, 247, .45);
+  font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+}
+
+#clock { color: rgba(242, 244, 247, .7); text-align: right; }
+
+#name {
+  position: absolute;
+  color: #F2F4F7;
+  text-align: center;
+}
+
+#note, #hint, #last { text-align: center; }
+
+#ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.tile {
+  position: absolute;
+  background: #12151B;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 10px;
+  color: #F2F4F7;
+  text-align: center;
+  cursor: pointer;
+  -webkit-transition: left .18s, top .18s, width .18s, height .18s, line-height .18s;
+  transition: left .18s, top .18s, width .18s, height .18s, line-height .18s;
+}
+
+/* The one in the middle is the one that opens, so it is the only one drawn as
+   a decision: brighter, and outlined rather than merely present. */
+.tile-focused {
+  border-color: rgba(90, 169, 230, .9);
+  -webkit-box-shadow: 0 0 0 2px rgba(90, 169, 230, .35);
+  box-shadow: 0 0 0 2px rgba(90, 169, 230, .35);
+}
+
+.tile-empty { color: rgba(242, 244, 247, .55); }
+
+#notice {
+  position: absolute;
+  display: none;
+  background: #12151B;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 8px;
+  color: rgba(242, 244, 247, .7);
+  font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+  text-align: center;
+}
+
+#notice.shown { display: block; }

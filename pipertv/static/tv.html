@@ -8,6 +8,9 @@
   <title>Piper</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/tv.css">
+  <!-- First, and not deferred: a browser too old for the page below is sent to
+       the one written for it before any of this is drawn. -->
+  <script src="/tv-check.js"></script>
   <script src="/tv.js" defer></script>
 </head>
 <body>

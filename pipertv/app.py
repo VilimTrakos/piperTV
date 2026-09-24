@@ -187,6 +187,26 @@ def create_app(data: str | Path | None = None, device: str = "/dev/lirc0",
     def tv_stylesheet():
         return app.send_static_file("tv.css")
 
+    @app.get("/tv-check.js")
+    def tv_check():
+        return app.send_static_file("tv-check.js")
+
+    # The same interface for a television's own browser, which is older than
+    # any browser on a desk -- the set this was built against runs an engine
+    # from 2012. /tv sends a browser here when it cannot show what is there;
+    # the address is its own, so it can be typed in directly as well.
+    @app.get("/tv/classic")
+    def tv_classic():
+        return app.send_static_file("classic.html")
+
+    @app.get("/classic.js")
+    def tv_classic_javascript():
+        return app.send_static_file("classic.js")
+
+    @app.get("/classic.css")
+    def tv_classic_stylesheet():
+        return app.send_static_file("classic.css")
+
 
     @app.get("/api/state")
     def state():
