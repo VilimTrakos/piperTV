@@ -149,11 +149,26 @@
     layoutRing();
   }
 
+  // How far a tile sits from the selected one, the short way round. Plain
+  // subtraction would say eight steps where the wheel only turns one, and the
+  // whole ring would slide backwards on passing the last tile.
+  function ringOffset(index, count) {
+    const straight = index - state.focus;
+    return straight - count * Math.round(straight / count);
+  }
+
   function layoutRing() {
     const count = state.tiles.length;
-    state.tiles.forEach(({ element, service, index }) => {
+    state.tiles.forEach((tile) => {
+      const { element, service, index } = tile;
+      const offset = ringOffset(index, count);
+      // One tile is always on the far side, where the short way round changes
+      // sides. It is moved without animating, or it would slide across the
+      // middle of the wheel while the others step round it.
+      const crossed = tile.offset !== undefined && Math.abs(offset - tile.offset) > 1;
+      tile.offset = offset;
+      if (crossed) element.style.transition = "none";
       // The selected tile sits in the middle, the rest clockwise from twelve o'clock.
-      const offset = index - state.focus;
       const angle = (offset / count) * Math.PI * 2 - Math.PI / 2;
       const focused = index === state.focus;
       const radius = focused ? 0 : RADIUS;
@@ -161,6 +176,10 @@
             CENTRE.y + Math.sin(angle) * radius, focused ? FOCUSED_TILE : TILE);
       element.classList.toggle("is-focused", focused);
       element.classList.toggle("is-empty", service.kind === "search");
+      if (crossed) {
+        void element.offsetWidth;    // let the move land before it can animate
+        element.style.transition = "";
+      }
     });
   }
 
