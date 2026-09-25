@@ -163,11 +163,15 @@
       const { element, service, index } = tile;
       const offset = ringOffset(index, count);
       // One tile is always on the far side, where the short way round changes
-      // sides. It is moved without animating, or it would slide across the
-      // middle of the wheel while the others step round it.
+      // sides. Sliding it would carry it across the middle of the wheel, and
+      // moving it outright makes it look like a tile that stands still and
+      // changes its face, so it is put in place unseen and fades in there.
       const crossed = tile.offset !== undefined && Math.abs(offset - tile.offset) > 1;
       tile.offset = offset;
-      if (crossed) element.style.transition = "none";
+      if (crossed) {
+        element.style.transition = "none";
+        element.style.opacity = "0";
+      }
       // The selected tile sits in the middle, the rest clockwise from twelve o'clock.
       const angle = (offset / count) * Math.PI * 2 - Math.PI / 2;
       const focused = index === state.focus;
@@ -179,6 +183,7 @@
       if (crossed) {
         void element.offsetWidth;    // let the move land before it can animate
         element.style.transition = "";
+        element.style.opacity = "";  // fades back in where it now belongs
       }
     });
   }
