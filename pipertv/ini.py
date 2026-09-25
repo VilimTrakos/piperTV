@@ -1,46 +1,49 @@
-"""Read and change one value in an ini file, leaving every other line alone.
+"""Get or set one key in an ini file without touching the rest of it.
 
-The files Piper touches are other programs' own -- the panel's, the file
-manager's -- and its own settings file is one a person edits by hand. A
-parser that rewrites the whole file would lose their comments and their
-order; these change the one line that is Piper's business.
+Used for files people edit by hand (pipertv.conf) and for other programs'
+settings (the panel, the file manager), so comments and order must survive.
 """
 
 from __future__ import annotations
 
 
+def _key(line: str) -> str | None:
+    stripped = line.strip()
+    return stripped.split("=", 1)[0].strip() if "=" in stripped else None
+
+
+def _section(line: str) -> str | None:
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return stripped[1:-1].strip()
+    return None
+
+
 def ini_get(text: str, section: str, key: str) -> str | None:
-    """One value from an ini file's text, if that section sets it."""
     current = None
     for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current = stripped[1:-1].strip()
-        elif current == section and "=" in stripped \
-                and stripped.split("=", 1)[0].strip() == key:
-            return stripped.split("=", 1)[1].strip()
+        if _section(line) is not None:
+            current = _section(line)
+        elif current == section and _key(line) == key:
+            return line.split("=", 1)[1].strip()
     return None
 
 
 def ini_set(text: str, section: str, key: str, value: str) -> str:
-    """The same ini with one value set, and every other line as it was."""
-    wanted = f"{key}={value}"
     lines = text.splitlines()
     current, section_at = None, None
     for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current = stripped[1:-1].strip()
+        if _section(line) is not None:
+            current = _section(line)
             if current == section and section_at is None:
                 section_at = index
-        elif current == section and "=" in stripped \
-                and stripped.split("=", 1)[0].strip() == key:
-            # Written the way the person who wrote the line wrote it.
+        elif current == section and _key(line) == key:
+            # Keep the spacing style of the existing line ("key=v" or "key = v").
             name, old = line.split("=", 1)
             lines[index] = f"{name}={' ' if old.startswith(' ') else ''}{value}"
             return "\n".join(lines) + "\n"
     if section_at is None:
-        lines += ([""] if lines else []) + [f"[{section}]", wanted]
+        lines += ([""] if lines else []) + [f"[{section}]", f"{key}={value}"]
     else:
-        lines.insert(section_at + 1, wanted)
+        lines.insert(section_at + 1, f"{key}={value}")
     return "\n".join(lines) + "\n"

@@ -1,26 +1,17 @@
 #!/usr/bin/env bash
-# Put a version of PiperTV on the Raspberry Pi and restart what runs there.
-#
-# One command, and the Pi ends up running exactly one app and one kiosk. What
-# is deployed is a git commit, not whatever happens to be in the working tree,
-# so going back is "./deploy.sh --ref <commit>" rather than an archaeology dig.
+# Deploy a git commit of PiperTV to the Raspberry Pi and restart it there.
 #
 #   ./deploy.sh                 deploy HEAD (refuses a dirty tree)
-#   ./deploy.sh --ref f6c361a   deploy any commit -- this is the way back
-#   ./deploy.sh --dirty         deploy the working tree as it stands
-#   ./deploy.sh --no-kiosk      leave the browser on the TV alone
-#   ./deploy.sh --kiosk         restart it even if no page files changed
-#   ./deploy.sh --no-session    do not open a control session afterwards
-#   ./deploy.sh --force         deploy even while someone is watching something
+#   ./deploy.sh --ref f6c361a   deploy another commit, e.g. to roll back
+#   ./deploy.sh --dirty         deploy the working tree as it is
+#   ./deploy.sh --no-kiosk      don't restart the interface on the TV
+#   ./deploy.sh --kiosk         restart it even if no page changed
+#   ./deploy.sh --no-session    don't open a control session afterwards
+#   ./deploy.sh --force         deploy even while a service is open on the TV
+#   ./deploy.sh --skip-tests    don't run the test suite first
 #
-# Deploying interrupts whoever is at the television: the app stops, which
-# closes what it had opened, and the screen is black until the interface comes
-# back. So it refuses while a service is open unless --force, and it restarts
-# the interface only when the page itself changed.
-#   ./deploy.sh --skip-tests    do not run the suite first
-#
-# The password is asked for once (one multiplexed SSH connection carries every
-# step) or taken from PIPER_PW for an unattended run. It is never written down.
+# The SSH password is asked once (one multiplexed connection) or read from
+# PIPER_PW. PIPER_HOST, PIPER_USER and PIPER_DIR say where the Pi is.
 set -euo pipefail
 
 HOST=${PIPER_HOST:-192.168.1.108}
@@ -39,7 +30,7 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1; shift ;;
     --no-session) SESSION=0; shift ;;
     --skip-tests) TESTS=0; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "deploy.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -47,9 +38,8 @@ done
 cd "$(dirname "$0")"
 say() { printf '\n== %s\n' "$*"; }
 
-# pkill matches the shell running it, so every pattern goes over as [m]ain.py.
-# Nothing else in a remote command may spell the same string out, which is why
-# stopping and starting are separate connections.
+# pkill -f would also match the remote shell's own command line, so patterns
+# are sent as [m]ain.py, and stopping and starting use separate connections.
 bracket() { printf '[%s]%s' "${1:0:1}" "${1:1}"; }
 APP_PATTERN=$(bracket "main.py")
 KIOSK_PATTERN=$(bracket "$(basename "$PROFILE")")
@@ -84,8 +74,7 @@ trap cleanup EXIT
 if [ "$DIRTY" = 1 ]; then
   rsync -a --exclude=__pycache__ pipertv main.py requirements.txt install.sh "$STAGE/"
 else
-  # install.sh travels with the program since it existed; an older commit,
-  # deployed to go back, simply has none.
+  # Older commits have no install.sh.
   EXTRA=(); git cat-file -e "$REF:install.sh" 2>/dev/null && EXTRA=(install.sh)
   git archive "$REF" pipertv main.py requirements.txt "${EXTRA[@]}" | tar -x -C "$STAGE"
 fi
@@ -94,8 +83,8 @@ fi
 
 say "Connecting to $LOGIN@$HOST"
 if [ -n "${PIPER_PW:-}" ]; then
-  # Unattended: answer the one prompt on a pty, so the password never reaches
-  # a file, an argument list, or the shell history.
+  # Answer the password prompt on a pty, so the password never ends up in a
+  # file, an argument list or the shell history.
   PIPER_PW="$PIPER_PW" python3 - "$CONTROL" "$LOGIN@$HOST" <<'PY'
 import os, pty, select, sys
 control, target = sys.argv[1], sys.argv[2]
@@ -128,7 +117,7 @@ pi() { ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" "$@"; }
 
 # --- send it ----------------------------------------------------------------
 
-# Nothing below is worth interrupting a film for.
+# Don't interrupt someone who is watching something.
 WATCHING=$(curl -s -m 5 "http://$HOST:$PORT/api/tv/events?after=0" 2>/dev/null \
   | python3 -c "import json,sys
 try: running = (json.load(sys.stdin).get('services') or {}).get('running')
@@ -140,9 +129,7 @@ if [ -n "$WATCHING" ] && [ "$FORCE" = 0 ]; then
   exit 1
 fi
 
-# What the interface is showing has to be asked BEFORE the new files land, or
-# the answer is always "the same": the comparison would be the copy against
-# itself, and a changed page would never reach the television.
+# Hash the pages before copying, to tell afterwards whether they changed.
 PAGES="find pipertv/static -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1"
 WAS_SHOWING=$(pi "cd $DIR && $PAGES" 2>/dev/null || echo "")
 
@@ -153,8 +140,7 @@ ROOT_FILES=("$STAGE/main.py" "$STAGE/requirements.txt")
 [ -f "$STAGE/install.sh" ] && ROOT_FILES+=("$STAGE/install.sh")
 rsync -az -e "ssh -S $CONTROL -o BatchMode=yes" "${ROOT_FILES[@]}" "$LOGIN@$HOST:$DIR/"
 
-# LC_ALL=C on both sides: the two machines collate '/' differently, which
-# reorders the list and would fail this check on identical files.
+# LC_ALL=C on both sides, or the two machines sort the paths differently.
 SUMS="find pipertv \\( -name '*.py' -o -name '*.js' -o -name '*.css' -o -name '*.html' \\) | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1"
 HERE=$(cd "$STAGE" && eval "$SUMS")
 THERE=$(pi "cd $DIR && $SUMS")
@@ -164,13 +150,10 @@ echo "checksum matches: ${HERE:0:16}"
 # --- stop, then start (separate connections: see bracket() above) ------------
 
 if [ -z "$KIOSK" ]; then
-  # The interface is a page a browser is already showing, so it needs
-  # restarting only when that page changed. A Python change is picked up by
-  # the app restart alone, and the screen never goes black.
+  # Restart the interface only if its page changed or it isn't showing; a
+  # Python-only change just restarts the app and the screen stays as it is.
   SHOWING=$(pi "ps -eo args | grep -c '[c]hromium --type=renderer' || true")
   if [ "${SHOWING:-0}" -lt 1 ]; then
-    # Nothing is showing it -- after a reboot, or a crash. Whatever changed,
-    # the interface has to be started or the television stays on the desktop.
     KIOSK=1
     echo "the interface is not on the screen; starting it"
   elif [ "$(cd "$STAGE" && eval "$PAGES")" = "$WAS_SHOWING" ]; then
@@ -188,23 +171,19 @@ else
   pi "pkill -f '$APP_PATTERN' || true; sleep 2; echo 'app stopped; the interface was left where it was'"
 fi
 
-# The launcher needs the desktop session's own variables to put a window on the
-# TV; started over SSH it inherits none of them.
+# Started over SSH the app has no desktop session; point it at the Wayland display.
 WAYLAND_ENV='export XDG_RUNTIME_DIR=/run/user/$(id -u); export WAYLAND_DISPLAY=$(ls "$XDG_RUNTIME_DIR" | grep -m1 "^wayland-[0-9]$")'
 
 say "Starting the app"
-# The channel can outlive the command when a child holds it; the app is already
-# running by then, so a bounded wait is enough and the health check is the proof.
+# The SSH channel can stay open while the app holds it, hence the timeout; the
+# health check below is what counts.
 timeout 25 ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" \
   "$WAYLAND_ENV; cd $DIR && setsid nohup ./.venv/bin/python3 main.py >> pipertv.log 2>&1 < /dev/null & disown; exit 0" || true
 sleep 4
 
 if [ "$KIOSK" = 1 ]; then
   say "Starting the interface on the TV"
-  # The app puts it there, rather than this script spelling out a browser
-  # command line of its own: whether the interface fills the screen or sits in
-  # a window is a setting now, and only one of the two can be right about it.
-  # It waits for the window, so this waits for it.
+  # The app knows the window settings, so let it open the interface.
   pi "curl -s -m 45 -X POST -H 'Content-Type: application/json' -d '{}' \
        http://127.0.0.1:$PORT/api/tv/interface" \
     | python3 -c "import json,sys
@@ -241,11 +220,9 @@ echo \"interface windows: \$WINDOWS\"
 
 if [ "$SESSION" = 1 ]; then
   say "Opening a Piper session"
-  # A restart forgets the visit, and this television never reports its selected
-  # input over CEC -- it answers "switch away and back" forever -- so the gate
-  # cannot open by itself and the remote is inert until someone says the Pi is
-  # what the screen is showing. Deploying is that someone: it is a manual
-  # confirmation, recorded as manual, not evidence pretending to be CEC.
+  # This TV never reports its input over CEC, so after a restart the remote does
+  # nothing until someone confirms the TV shows the Pi. Deploying counts as that
+  # confirmation (recorded as manual).
   ID=$(curl -s -m 5 -X POST -H 'Content-Type: application/json' -d '{"confirmed":true}' \
         "http://$HOST:$PORT/api/control/manual" \
        | python3 -c "import json,sys; print((json.load(sys.stdin).get('session') or {}).get('id',''))")

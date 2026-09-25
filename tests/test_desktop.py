@@ -4,9 +4,7 @@ import unittest
 from pipertv.desktop import (CLICKS, DOUBLE_CLICK_GAP_S, DOUBLE_OK_S, POINTER_DEFAULTS,
                              DesktopControl, choose_target)
 
-# The desktop layer logs whenever it swallows a failure instead of raising into
-# the IR thread. These tests assert on health(), so keep that noise out of the
-# test output.
+# Failures are logged rather than raised; keep that out of the test output.
 logging.getLogger("pipertv.desktop").addHandler(logging.NullHandler())
 
 SCREEN = (1920, 1080)
@@ -82,6 +80,12 @@ class FakeTargets:
             raise RuntimeError("the accessibility bus went away")
         return self._targets
 
+    def resolve(self, target):
+        return target
+
+    def invalidate(self):
+        pass
+
 
 def control(mode="pointer", enabled=True, targets=None, fail_on=None, tick=1.0, **kwargs):
     """Build a desktop layer whose own clock advances one tick per press.
@@ -129,8 +133,7 @@ class ChooseTargetTests(unittest.TestCase):
         self.assertEqual(choose_target((100, 100), icons, "right")["label"], "ahead")
 
     def test_what_is_directly_below_beats_a_nearer_diagonal(self):
-        # The complaint this answers: pressing down landed somewhere off to the
-        # side because it was a little closer, so a row could not be walked.
+        # Regression: down went to a closer control off to the side.
         icons = [{"x": 100, "y": 300, "label": "below"},
                  {"x": 260, "y": 220, "label": "diagonal"}]
         self.assertEqual(choose_target((100, 100), icons, "down")["label"], "below")
@@ -145,8 +148,7 @@ class ChooseTargetTests(unittest.TestCase):
         self.assertEqual(order, ["120", "240", "360"])
 
     def test_a_wide_control_hands_over_to_whatever_is_under_any_part_of_it(self):
-        # A banner button spans the screen; what is below its far end is still
-        # below it, and judging from the centre alone would miss it.
+        # Below any part of a wide control counts as below it.
         wide = {"left": 0, "top": 90, "right": 900, "bottom": 130, "x": 450, "y": 110}
         under_the_end = {"left": 800, "top": 300, "right": 880, "bottom": 340,
                          "x": 840, "y": 320, "label": "under the end"}
@@ -155,8 +157,6 @@ class ChooseTargetTests(unittest.TestCase):
         self.assertEqual(found["label"], "under the end")
 
     def test_without_a_shared_band_a_target_to_the_side_still_answers(self):
-        # Nothing directly below: the only control that way is offset, and a
-        # narrow cone still finds it rather than leaving the cursor stuck.
         icons = [{"left": 300, "top": 400, "right": 360, "bottom": 440,
                   "x": 330, "y": 420, "label": "offset"}]
         self.assertEqual(choose_target((100, 100), icons, "down")["label"], "offset")
@@ -179,15 +179,12 @@ class ChooseTargetTests(unittest.TestCase):
                          "that way")
 
     def test_a_target_far_off_the_line_is_still_better_than_being_stuck(self):
-        # A press that does nothing leaves whoever is holding the remote with
-        # no way forward, which is the worse of the two failures.
+        # Better than a press that does nothing at all.
         far_off = [{"x": 110, "y": 900, "label": "far off"}]
         self.assertEqual(choose_target((100, 100), far_off, "right")["label"], "far off")
 
     def test_the_menu_across_the_screen_is_reachable_from_the_middle(self):
-        # Real coordinates from the Prime Video page on the Pi: the cursor sits
-        # in the middle of the screen and the menu is at the top left. Pressing
-        # up must land there rather than doing nothing.
+        # Coordinates from the Prime Video page on the Pi: the menu is top left.
         menu = [{"left": 177, "top": 12, "right": 252, "bottom": 54,
                  "x": 214, "y": 33, "label": "Home"},
                 {"left": 252, "top": 12, "right": 336, "bottom": 54,
@@ -223,8 +220,7 @@ class ScrollTests(unittest.TestCase):
         control.press("down")
         self.assertEqual(pointer.scrolls[-1], -control.scroll_clicks)
 
-    # A mode handed to press() is how a service on the screen is driven; the
-    # strip along the top is reserved only then.
+    # The top strip is reserved only while a service is open (mode passed to press()).
 
     def test_pushing_up_at_the_top_scrolls_the_other_way(self):
         control, _session = self.build()
@@ -235,9 +231,7 @@ class ScrollTests(unittest.TestCase):
         self.assertEqual(pointer.scrolls[-1], control.scroll_clicks)
 
     def test_the_cursor_stops_below_the_strip_that_is_not_the_page(self):
-        # Measured on the Pi: the desktop's panel hides itself but keeps its
-        # whole height as an input region, and a wheel turned inside it reaches
-        # the panel rather than the page. Scrolling up did nothing at all.
+        # The hidden panel still takes input there, so scrolling up did nothing.
         control, _session = self.build()
         control.press("up", mode="pointer")
         control._pointer._y = control.reserved_top_px + 4
@@ -255,8 +249,7 @@ class ScrollTests(unittest.TestCase):
         self.assertEqual(control._pointer.position[1], 0)
 
     def test_a_control_under_the_strip_is_not_snapped_to(self):
-        # It is on the screen and cannot be clicked: the press would land on
-        # whatever owns the strip, so the page moves instead.
+        # A control in the strip can't be clicked, so scroll instead.
         targets = FakeTargets([{"x": 400, "y": 10, "label": "under the panel"}])
         control, _session = self.build(targets=targets, mode="snapping")
         control.press("up", mode="snapping")
@@ -264,8 +257,7 @@ class ScrollTests(unittest.TestCase):
         self.assertEqual(control._pointer.scrolls[-1], control.scroll_clicks)
 
     def test_on_the_desktop_the_cursor_reaches_the_panel(self):
-        # With nothing open the strip is the panel -- the PiperTV launcher,
-        # the network, the clock -- and the remote has to get there.
+        # With no service open the strip is the panel, which must be reachable.
         control, _session = self.build()
         control.press("up")
         control._pointer._y = 30
@@ -291,8 +283,6 @@ class ScrollTests(unittest.TestCase):
         self.assertEqual(control._pointer.scrolls, [])
 
     def test_snapping_scrolls_when_nothing_is_that_way(self):
-        # A long page has plenty below the fold; the press should reveal it
-        # rather than doing nothing at all.
         control, _session = self.build(targets=FakeTargets([]), mode="snapping")
         control.press("down")
         self.assertEqual(control._pointer.scrolls[-1], -control.scroll_clicks)
@@ -422,8 +412,7 @@ class DoubleOkTests(unittest.TestCase):
         self.assertEqual(made[0].clicks, ["left"] * 4)
 
     def test_a_service_gets_exactly_the_clicks_that_were_pressed(self):
-        # Two quick presses on a page's button are two presses of it; a third
-        # click would press it a third time.
+        # No double-click trick on a page: two presses are two clicks.
         desktop, made, _slept = self.build()
         desktop.press("ok", mode="snapping")
         desktop.press("ok", mode="snapping")

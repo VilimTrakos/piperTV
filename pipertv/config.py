@@ -1,13 +1,9 @@
-"""Piper's own settings file, for what has to be right before the remote works.
+"""pipertv.conf: settings that must be right before the remote can work.
 
-Most of Piper is set from the television, with the remote. Which pin the IR
-receiver's OUT wire is connected to cannot be: until it is right, the remote
-does nothing at all. So it lives in a plain file beside the program as well,
-readable and editable with any text editor before Piper has heard a button,
-and written by the TV's options whenever a pin is chosen there.
-
-Only the line Piper owns is ever rewritten; comments and anything a person
-added stay as they were.
+Everything else is set from the TV with the remote, but the IR receiver's pin
+can't be: until it's right the remote does nothing. So it lives in a plain
+file next to the program, editable by hand, and is also written when a pin is
+chosen in the TV's options. Only the pin line is ever rewritten.
 """
 
 from __future__ import annotations
@@ -44,12 +40,7 @@ pin = {pin}
 
 
 def read_pin(path: Path = CONFIG) -> str | int:
-    """The pin the file names, or auto when it names none it can be held to.
-
-    A file that says something unusable is not a reason for Piper to stop:
-    the remote is what gets it fixed, so it falls back to finding the pin by
-    itself, and says why in the log.
-    """
+    """The pin from the file, or auto if it is missing or unusable."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -63,19 +54,19 @@ def read_pin(path: Path = CONFIG) -> str | int:
     try:
         return validate_pin(value)
     except ValueError as exc:
+        # Don't refuse to start: the remote may still work with auto.
         LOG.warning("Ignoring the IR pin in %s: %s", path, exc)
         return AUTO
 
 
 def write_pin(value, path: Path = CONFIG) -> str | int:
-    """Keep a chosen pin in the file, creating it with its explanation."""
+    """Save the pin, creating the file from TEMPLATE if needed."""
     checked = validate_pin(value)
     path = Path(path)
     try:
         text = ini_set(path.read_text(encoding="utf-8"), "ir", "pin", str(checked))
     except FileNotFoundError:
         text = TEMPLATE.format(pin=checked)
-    # Whole or not at all: a half-written file is one Piper could not read.
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:

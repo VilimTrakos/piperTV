@@ -1,22 +1,23 @@
-"""Read kernel-timed, demodulated infrared from Linux's LIRC MODE2 API.
+"""Read raw infrared from the kernel's LIRC device in MODE2 format.
 
-API: https://docs.kernel.org/userspace-api/media/rc/lirc-dev-intro.html
-GPIO timing: drivers/media/rc/{gpio-ir-recv,rc-ir-raw,lirc_dev}.c in Linux.
-The TSOP2238 removes the carrier, so 38 kHz is an assumption, not a measurement.
+https://docs.kernel.org/userspace-api/media/rc/lirc-dev-intro.html
+
+The TSOP2238 demodulates the carrier, so 38 kHz is assumed, not measured.
 """
 
 from __future__ import annotations
 
-import math
+import fcntl
 import os
 import select
 import stat
 import struct
 import threading
 import time
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
 from typing import Callable
+
+from .util import utc_now
 
 SPACE = 0x00000000
 PULSE = 0x01000000
@@ -27,7 +28,7 @@ VALUE_MASK = 0x00FFFFFF
 MODE_MASK = 0xFF000000
 MAX_EDGES = 19_999
 
-# Linux asm-generic ioctl encoding, used by Raspberry Pi ARM and WSL x86.
+# ioctl numbers (asm-generic encoding, same on ARM and x86)
 LIRC_GET_FEATURES = 0x80046900
 LIRC_GET_MIN_TIMEOUT = 0x80046908
 LIRC_GET_MAX_TIMEOUT = 0x80046909
@@ -39,9 +40,12 @@ LIRC_MODE_MODE2 = 0x00000004
 LIRC_CAN_REC_MODE2 = 0x00040000
 LIRC_CAN_SET_REC_TIMEOUT = 0x10000000
 
+OPTION_LIMITS = {"timeout_s": (0.5, 120), "gap_us": (10_000, 1_000_000),
+                 "max_duration_s": (0.1, 30)}
+
 
 class CaptureError(RuntimeError):
-    """Input cannot be safely saved as a complete capture."""
+    """The input cannot be saved as a complete capture."""
 
 
 class CaptureCancelled(Exception):
@@ -59,20 +63,18 @@ class CaptureOptions:
     max_duration_s: float = 3.0
 
     @classmethod
-    def parse(cls, values: dict) -> "CaptureOptions":
+    def parse(cls, values: dict) -> CaptureOptions:
         if not isinstance(values, dict):
             raise ValueError("Capture options must be a JSON object.")
-        unknown = set(values) - {"timeout_s", "gap_us", "max_duration_s"}
+        unknown = set(values) - set(OPTION_LIMITS)
         if unknown:
             raise ValueError("Unknown capture option: " + ", ".join(sorted(unknown)))
-        options = {"timeout_s": 10.0, "gap_us": 120_000, "max_duration_s": 3.0}
-        options.update(values)
-        for name, low, high in (("timeout_s", 0.5, 120),
-                                ("gap_us", 10_000, 1_000_000),
-                                ("max_duration_s", 0.1, 30)):
+        options = {**asdict(cls()), **values}
+        for name, (low, high) in OPTION_LIMITS.items():
             value = options[name]
-            if (isinstance(value, bool) or not isinstance(value, (int, float))
-                    or not math.isfinite(value) or not low <= value <= high):
+            # NaN and infinity fail the range check as well.
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not low <= value <= high:
                 raise ValueError(f"{name} must be a number between {low} and {high}.")
         if int(options["gap_us"]) != options["gap_us"]:
             raise ValueError("gap_us must be a whole number of microseconds.")
@@ -82,12 +84,8 @@ class CaptureOptions:
                    float(options["max_duration_s"]))
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
 class Mode2Capture:
-    """Incremental MODE2 parser, including fragmented reads and repeat gaps."""
+    """Incremental MODE2 parser; handles split reads and repeat frames."""
 
     def __init__(self, options: CaptureOptions):
         self.options = options
@@ -116,55 +114,60 @@ class Mode2Capture:
         if kind == OVERFLOW:
             raise CaptureError("IR receiver overflow: data was lost. Please record again.")
         if kind == FREQUENCY:
-            return  # A TSOP2238 cannot measure carrier frequency.
+            return  # the TSOP2238 cannot measure the carrier
         if kind not in (PULSE, SPACE, TIMEOUT):
             raise CaptureError(f"Unexpected LIRC event type 0x{kind:08x}.")
         if value == 0:
             return
         if kind == PULSE:
-            if self.started_at is None:
-                self.started_at = now
-            if self.pending_space and self.durations:
-                self.durations.extend((self.pending_space, value))
-                self.total_us += self.pending_space + value
-            elif self.durations:
-                self.durations[-1] += value
-                self.total_us += value
-            else:
-                self.durations.append(value)
-                self.total_us = value
-            self.pending_space = 0
-            self.timeout_at = None
-            self._timeout_spaces = None
-            if len(self.durations) > MAX_EDGES:
-                raise CaptureError("Too many IR edges; capture was not saved. Try a short press.")
-            if self.total_us > self.options.max_duration_s * 1_000_000:
-                raise CaptureError("IR signal exceeds max_duration_s; capture was not saved.")
+            self._pulse(value, now)
         elif self.durations:
-            if kind == TIMEOUT:
-                self.pending_space += value
-                self.timeout_at = now
-                self._timeout_spaces = 0
-            elif self._timeout_spaces == 1:
-                # gpio-ir reports the full edge-to-edge space after lirc_dev's
-                # synthetic post-timeout space. Use that full kernel timing;
-                # adding it again would double the gap between repeat frames.
-                self.pending_space = value
-                self._timeout_spaces = 2
-                self.timeout_at = None
-            else:
-                self.pending_space += value
-                if self._timeout_spaces is not None:
-                    self._timeout_spaces += 1
-                self.timeout_at = None
-            if self.pending_space >= self.options.gap_us:
-                self.complete = True
+            self._space(kind, value, now)
+
+    def _pulse(self, value: int, now: float) -> None:
+        if self.started_at is None:
+            self.started_at = now
+        if self.pending_space and self.durations:
+            self.durations.extend((self.pending_space, value))
+            self.total_us += self.pending_space + value
+        elif self.durations:
+            self.durations[-1] += value
+            self.total_us += value
+        else:
+            self.durations.append(value)
+            self.total_us = value
+        self.pending_space = 0
+        self.timeout_at = None
+        self._timeout_spaces = None
+        if len(self.durations) > MAX_EDGES:
+            raise CaptureError("Too many IR edges; capture was not saved. Try a short press.")
+        if self.total_us > self.options.max_duration_s * 1_000_000:
+            raise CaptureError("IR signal exceeds max_duration_s; capture was not saved.")
+
+    def _space(self, kind: int, value: int, now: float) -> None:
+        if kind == TIMEOUT:
+            self.pending_space += value
+            self.timeout_at = now
+            self._timeout_spaces = 0
+        elif self._timeout_spaces == 1:
+            # After a timeout lirc_dev inserts a synthetic space, then gpio-ir
+            # reports the real edge-to-edge space. Use the real one only, or
+            # the gap between repeat frames is counted twice.
+            self.pending_space = value
+            self._timeout_spaces = 2
+            self.timeout_at = None
+        else:
+            self.pending_space += value
+            if self._timeout_spaces is not None:
+                self._timeout_spaces += 1
+            self.timeout_at = None
+        if self.pending_space >= self.options.gap_us:
+            self.complete = True
 
     def finish_idle(self, now: float) -> bool:
-        # A kernel timeout establishes that the receiver is idle. Merely not
-        # receiving bytes does not: the device may be disconnected or stalled.
-        # GPIO event dispatch batches edges for ~15 ms, so allow 30 ms for a
-        # repetition just before the deadline to reach userspace.
+        # Only a kernel timeout proves the receiver is idle; no data at all
+        # could just as well mean a stalled device. gpio-ir delivers edges in
+        # ~15 ms batches, so allow 30 ms for a late repeat frame.
         if (self.timeout_at is not None and not self._buffer
                 and now - self.timeout_at >=
                 max(0, self.options.gap_us - self.pending_space) / 1_000_000 + 0.03):
@@ -183,6 +186,8 @@ class Mode2Capture:
 
 
 class LircDevice:
+    source = "lirc"
+
     def __init__(self, path: str, gap_us: int):
         self.path = path
         self.gap_us = gap_us
@@ -191,14 +196,11 @@ class LircDevice:
         self._configured_timeout: int | None = None
 
     def _ioctl(self, request: int, value: int = 0) -> int:
-        import fcntl
         buffer = bytearray(struct.pack("=I", value))
         fcntl.ioctl(self.fd, request, buffer, True)
         return struct.unpack("=I", buffer)[0]
 
-    def __enter__(self) -> "LircDevice":
-        if os.name != "posix":
-            raise CaptureError("Hardware reception requires Linux on the Raspberry Pi.")
+    def __enter__(self) -> LircDevice:
         try:
             self.fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
             if not stat.S_ISCHR(os.fstat(self.fd).st_mode):
@@ -212,11 +214,9 @@ class LircDevice:
                 lower = self._ioctl(LIRC_GET_MIN_TIMEOUT)
                 upper = self._ioctl(LIRC_GET_MAX_TIMEOUT)
                 self._previous_timeout = self._ioctl(LIRC_GET_REC_TIMEOUT)
-                desired = min(upper, max(lower, self.gap_us))
-                self._ioctl(LIRC_SET_REC_TIMEOUT, desired)
+                self._ioctl(LIRC_SET_REC_TIMEOUT, min(upper, max(lower, self.gap_us)))
                 self._configured_timeout = self._ioctl(LIRC_GET_REC_TIMEOUT)
-            # Each open has a fresh kernel FIFO; discard events that arrived
-            # while configuring, before the UI announces it is listening.
+            # Throw away whatever arrived while we were configuring.
             for _ in range(64):
                 try:
                     chunk = os.read(self.fd, 4096)
@@ -228,7 +228,7 @@ class LircDevice:
                 raise CaptureError("IR input is already busy. Release the remote and try again.")
             return self
         except BaseException:
-            self.__exit__(None, None, None)
+            self.__exit__()
             raise
 
     def read(self, timeout: float) -> bytes | None:
@@ -244,21 +244,23 @@ class LircDevice:
         return data
 
     def __exit__(self, *_args) -> None:
-        if self.fd is not None:
-            try:
-                if (self._previous_timeout is not None and self._configured_timeout is not None
-                        and self._ioctl(LIRC_GET_REC_TIMEOUT) == self._configured_timeout):
-                    self._ioctl(LIRC_SET_REC_TIMEOUT, self._previous_timeout)
-            except OSError:
-                pass
-            finally:
-                os.close(self.fd)
-                self.fd = None
+        if self.fd is None:
+            return
+        try:
+            # Put the timeout back, unless someone else changed it meanwhile.
+            if (self._previous_timeout is not None and self._configured_timeout is not None
+                    and self._ioctl(LIRC_GET_REC_TIMEOUT) == self._configured_timeout):
+                self._ioctl(LIRC_SET_REC_TIMEOUT, self._previous_timeout)
+        except OSError:
+            pass
+        finally:
+            os.close(self.fd)
+            self.fd = None
 
 
 def capture_stream(device, options: CaptureOptions, cancelled: threading.Event,
                    clock: Callable[[], float] = time.monotonic) -> dict:
-    """Consume a configured device. Its read(timeout) returns bytes or None."""
+    """Read one button press from an open device (anything with read(timeout))."""
     parser = Mode2Capture(options)
     armed_at = clock()
     while True:
@@ -272,7 +274,7 @@ def capture_stream(device, options: CaptureOptions, cancelled: threading.Event,
             if not data:
                 raise CaptureError("IR receiver closed or returned an incomplete stream.")
             parser.feed(data, now)
-        # First drain queued events; only infer quiet time when read found none.
+        # Drain queued events first; only judge silence when a read got nothing.
         if parser.complete or (data is None and parser.finish_idle(now)):
             return parser.result(getattr(device, "source", "lirc"))
         if parser.started_at is None:
@@ -284,7 +286,7 @@ def capture_stream(device, options: CaptureOptions, cancelled: threading.Event,
 
 
 def demo_signal(gap_us: int = 120_000) -> dict:
-    # One illustrative NEC-shaped frame and repeat. It is never a learned code.
+    """A made-up NEC frame plus one repeat, for demo mode."""
     durations = [9000, 4500]
     for bit in range(32):
         durations.extend((560, 1690 if (0x20DF10EF >> bit) & 1 else 560))

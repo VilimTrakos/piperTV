@@ -1,20 +1,21 @@
 "use strict";
 
-/* The Piper interface, driven by the learned remote.
+/* The Piper interface on the TV.
  *
- * Presses arrive as numbered data from /api/tv/events rather than as
- * synthesised keystrokes, so this page can be developed and judged with a
- * keyboard and behaves the same either way.
- *
- * The service list below is still the one from the design references: Piper
- * does not yet know what is installed on this Pi. Which of them it can actually
- * open comes from the server, and OK asks the server to open it, so a tile that
- * leads nowhere says so rather than pretending. The launch history underneath
- * is whatever Piper really started, not an illustration.
+ * Remote presses are polled from /api/tv/events rather than injected as key
+ * events, so the page works the same with a keyboard during development.
+ * Which tiles can actually be opened is up to the server.
  */
 
 (() => {
   const $ = (id) => document.getElementById(id);
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
 
   const SERVICES = [
     { id: "search", name: "Search", letter: "⌕", colour: "#1B1F27", kind: "search" },
@@ -27,10 +28,9 @@
     { id: "kodi", name: "Kodi", letter: "K", colour: "#3B7A57" },
     { id: "browser", name: "Web browser", letter: "L", colour: "#5A6570" },
   ];
-
   const BY_ID = new Map(SERVICES.map((service) => [service.id, service]));
 
-  // Design coordinates; the stylesheet scales them through --u.
+  // The dial, in 1920x1080 design pixels (scaled by unit()).
   const CENTRE = { x: 960, y: 560 };
   const RADIUS = 300;
   const TILE = 120;
@@ -46,23 +46,22 @@
     open: null, opening: false, notice: "", serviceError: null };
   let noticeTimer = null;
 
-  // Two presses of left, close enough together to be one gesture, open the
-  // options. The first of them has already moved the wheel, so the gesture
-  // puts it back: nobody asked to change what is selected.
+  // Left pressed twice quickly opens the options (and undoes the first step).
   const DOUBLE_LEFT_MS = 450;
   let lastLeftAt = 0;
   let focusBeforeLeft = 0;
-  // A television has no mouse, so the cursor is hidden until one moves -- the
-  // same page is worked on over VNC, where clicking a tile has to be possible.
+
+  // The mouse cursor is hidden unless a mouse is actually moving (e.g. over VNC).
   const POINTER_IDLE_MS = 2500;
   let pointingTimer = null;
-  // What the options screen is showing, and what it is waiting for.
+
   const CAPTURE_DONE = ["captured", "timeout", "cancelled", "error"];
   const OPTIONS = { rows: [], focus: 0, busy: "", loaded: false,
     open: new Set(["piper"]), capture: null, view: "list",
     remote: { rows: [], row: 0, col: 0 }, receiverSummary: "", receiverError: "" };
-  // What a key says when it is drawn small and read from a sofa. Anything not
-  // named here keeps the label the library gave it.
+  let busyTimer = null;
+
+  // Short labels for the drawn remote; other keys use their library label.
   const KEY_TEXT = {
     power: "⏻", up: "▲", down: "▼", left: "◀", right: "▶", ok: "OK",
     home: "⌂", back: "↩", exit: "EXIT", menu: "MENU", list: "LIST",
@@ -73,13 +72,49 @@
     pause: "❚❚", next: "▶|", record: "●", stop: "■", three_d: "3D",
     tv_radio: "TV/RAD", audio: "AUDIO", format: "FORMAT",
   };
-  let busyTimer = null;
+
+  // --- requests ----------------------------------------------------------
+
+  async function api(method, path, payload) {
+    const init = { method, headers: { Accept: "application/json" } };
+    if (payload !== undefined) {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(payload);
+    }
+    const response = await fetch(path, init);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(result.error || `the Pi answered ${response.status}`);
+      error.reason = result.error;
+      throw error;
+    }
+    return result;
+  }
+
+  const get = (path) => api("GET", path);
+  const send = (method, path, payload) => api(method, path, payload || {});
+
+  // A request made from the dial; a failure is shown as a notice. The
+  // server's own message is used when there is one, since it knows why.
+  async function ask(path, payload, whenItFails) {
+    try {
+      const result = await send("POST", path, payload);
+      applyServices(result);
+      return result;
+    } catch (error) {
+      // fetch() rejects with a TypeError when the request never got an answer.
+      notify(error instanceof TypeError ? `${whenItFails} The Pi did not answer.`
+        : error.reason || whenItFails);
+      return null;
+    }
+  }
+
+  // --- the dial ----------------------------------------------------------
 
   const unit = () => Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
 
   function place(element, x, y, size) {
-    // Positions are applied through the CSSOM: the page's policy forbids
-    // style attributes in markup, and the ring is computed anyway.
+    // Set through the CSSOM: the CSP forbids style attributes.
     const u = unit();
     element.style.width = `${size * u}px`;
     element.style.height = `${size * u}px`;
@@ -92,15 +127,12 @@
     const ring = $("ring");
     ring.replaceChildren();
     state.tiles = SERVICES.map((service, index) => {
-      const tile = document.createElement("div");
-      tile.className = "tile";
+      const tile = el("div", "tile", service.letter);
       tile.dataset.id = service.id;
-      tile.textContent = service.letter;
       if (service.colour) tile.style.background = service.colour;
       tile.setAttribute("role", "img");
       tile.setAttribute("aria-label", service.name);
-      // A click chooses, and a click on what is already chosen opens it --
-      // the same two steps the remote takes, so neither surprises the other.
+      // Click selects; clicking the selected tile opens it, like OK.
       tile.addEventListener("click", () => {
         if (state.open) return;
         if (index !== state.focus) {
@@ -120,19 +152,41 @@
   function layoutRing() {
     const count = state.tiles.length;
     state.tiles.forEach(({ element, service, index }) => {
-      // Slot 0 sits at twelve o'clock and the rest run clockwise, matching the
-      // reference where search occupies the top of the dial.
+      // The selected tile sits in the middle, the rest clockwise from twelve o'clock.
       const offset = index - state.focus;
       const angle = (offset / count) * Math.PI * 2 - Math.PI / 2;
       const focused = index === state.focus;
-      const size = focused ? FOCUSED_TILE : TILE;
       const radius = focused ? 0 : RADIUS;
       place(element, CENTRE.x + Math.cos(angle) * radius,
-            CENTRE.y + Math.sin(angle) * radius, size);
+            CENTRE.y + Math.sin(angle) * radius, focused ? FOCUSED_TILE : TILE);
       element.classList.toggle("is-focused", focused);
       element.classList.toggle("is-empty", service.kind === "search");
     });
   }
+
+  function move(step) {
+    const count = SERVICES.length;
+    state.focus = (state.focus + step + count) % count;
+    layoutRing();
+    renderFocus();
+  }
+
+  function openable(id) {
+    const known = (state.services && state.services.services) || [];
+    return known.some((service) => service.id === id);
+  }
+
+  function renderFocus() {
+    const service = SERVICES[state.focus];
+    $("focus-name").textContent = service.name;
+    $("focus-note").textContent = service.kind === "search"
+      ? "search is not implemented yet"
+      : openable(service.id) ? "OK to open" : `piper cannot open ${service.name} yet`;
+    $("ring-hint").textContent =
+      `◀ ▶ choose · OK opens · ${state.focus + 1} of ${SERVICES.length}`;
+  }
+
+  // --- launch history ----------------------------------------------------
 
   function ago(seconds) {
     if (!(seconds >= 0)) return "";
@@ -157,127 +211,58 @@
     const entries = (state.services && state.services.history) || [];
     list.replaceChildren();
     if (!entries.length) {
-      const empty = document.createElement("li");
-      empty.className = "history-item";
-      const when = document.createElement("div");
-      when.className = "history-when";
-      when.textContent = "nothing opened yet";
-      empty.append(when);
+      const empty = el("li", "history-item");
+      empty.append(el("div", "history-when", "nothing opened yet"));
       list.append(empty);
       return;
     }
     for (const entry of entries) {
       const service = BY_ID.get(entry.id);
-      const item = document.createElement("li");
-      item.className = "history-item";
-      const badge = document.createElement("span");
-      badge.className = "history-badge";
-      badge.textContent = service ? service.letter : "·";
+      const badge = el("span", "history-badge", service ? service.letter : "·");
       if (service && service.colour) badge.style.background = service.colour;
-      const text = document.createElement("div");
-      const name = document.createElement("div");
-      name.className = "history-name";
-      name.textContent = entry.name;
-      const when = document.createElement("div");
-      when.className = "history-when";
-      when.textContent = `${ago(entry.age_s)} · ${lasted(entry.seconds)}`;
-      text.append(name, when);
+      const text = el("div");
+      text.append(el("div", "history-name", entry.name),
+                  el("div", "history-when", `${ago(entry.age_s)} · ${lasted(entry.seconds)}`));
+      const item = el("li", "history-item");
       item.append(badge, text);
       list.append(item);
     }
   }
 
-  function openable(id) {
-    const known = (state.services && state.services.services) || [];
-    return known.some((service) => service.id === id);
-  }
-
-  function renderFocus() {
-    const service = SERVICES[state.focus];
-    $("focus-name").textContent = service.name;
-    // The ring is the design's list of services; only some of them are ones
-    // Piper can actually start, and the caption is where that is admitted.
-    $("focus-note").textContent = service.kind === "search"
-      ? "search is not implemented yet"
-      : openable(service.id) ? "OK to open" : `piper cannot open ${service.name} yet`;
-    $("ring-hint").textContent =
-      `◀ ▶ choose · OK opens · ${state.focus + 1} of ${SERVICES.length}`;
-  }
+  // --- screens and notices -------------------------------------------------
 
   function showScreen(name) {
     state.screen = name;
-    $("screen-boot").classList.toggle("is-shown", name === "boot");
-    $("screen-home").classList.toggle("is-shown", name === "home");
-    $("screen-options").classList.toggle("is-shown", name === "options");
+    for (const screen of ["boot", "home", "options"]) {
+      $(`screen-${screen}`).classList.toggle("is-shown", name === screen);
+    }
   }
 
+  // `kind` tags a notice so it can be taken down when its reason goes away.
   function notify(message, persist = false, kind = "") {
     clearTimeout(noticeTimer);
     const notice = $("tv-notice");
     notice.textContent = message || "";
     notice.hidden = !message;
     state.notice = message ? kind : "";
-    if (message && !persist) noticeTimer = setTimeout(() => {
-      notice.hidden = true;
-      state.notice = "";
-    }, 4000);
+    if (message && !persist) {
+      noticeTimer = setTimeout(() => {
+        notice.hidden = true;
+        state.notice = "";
+      }, 4000);
+    }
   }
 
-  function clock() {
+  function updateClock() {
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     $("home-clock").textContent = time;
     $("options-clock").textContent = time;
     $("boot-meta").textContent = `raspberry pi · ${time}`;
-    // "just now" becomes "20 min ago" without anything else having changed.
-    if (state.screen === "home") renderHistory();
+    if (state.screen === "home") renderHistory();  // "just now" becomes "20 min ago"
   }
 
-  function move(step) {
-    const count = SERVICES.length;
-    state.focus = (state.focus + step + count) % count;
-    layoutRing();
-    renderFocus();
-  }
-
-  async function ask(path, payload, whenItFails) {
-    try {
-      const response = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        // The server knows why -- no browser, wrong input, an earlier visit --
-        // so its sentence is shown instead of a guess made here.
-        notify(result.error || whenItFails);
-        return null;
-      }
-      applyServices(result);
-      return result;
-    } catch {
-      notify(`${whenItFails} The Pi did not answer.`);
-      return null;
-    }
-  }
-
-  async function get(path) {
-    const response = await fetch(path, { headers: { Accept: "application/json" } });
-    if (!response.ok) throw new Error(`the Pi answered ${response.status}`);
-    return response.json();
-  }
-
-  async function send(method, path, payload) {
-    const response = await fetch(path, {
-      method,
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(payload || {}),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || `the Pi answered ${response.status}`);
-    return result;
-  }
+  // --- services ------------------------------------------------------------
 
   async function openService(service) {
     if (state.opening) return;
@@ -291,32 +276,30 @@
     }
   }
 
-  // The remote's own way back is handled on the Pi, because this page is behind
-  // the service's window. This covers a keyboard, and a second press does no harm.
+  // The remote's exit is handled on the Pi (this page is behind the service's
+  // window); this is for a keyboard.
   const closeService = () => ask("/api/tv/close", {}, "Could not close the open service.");
 
-  // The mouse's way out of Piper. The Pi closes this page in answering, and
-  // the remote goes on to move the desktop's mouse.
+  // The exit button, for a mouse. The Pi closes this page and the remote
+  // goes on to move the desktop's mouse.
   function leavePiper() {
-    send("POST", "/api/tv/leave", {}).catch((error) => notify(`Could not leave Piper. ${error.message}`));
+    send("POST", "/api/tv/leave").catch((error) => notify(`Could not leave Piper. ${error.message}`));
   }
 
   function press(button) {
     if (state.screen === "options") { pressOptions(button); return; }
     if (state.screen !== "home") return;
     if (state.open) {
-      // Something owns the screen; the ring must not move behind it, and back
-      // belongs to that service. Only exit and home come back here.
+      // A service is on the screen: the dial must not move behind it.
       if (button === "exit" || button === "home") closeService();
       return;
     }
     switch (button) {
-      case "right": move(1); break;
+      case "right": case "down": move(1); break;
+      case "up": move(-1); break;
       case "left": {
         const now = Date.now();
         if (now - lastLeftAt <= DOUBLE_LEFT_MS) {
-          // The gesture, not two steps: put the wheel back where it was and
-          // open the options instead.
           lastLeftAt = 0;
           state.focus = focusBeforeLeft;
           layoutRing();
@@ -329,15 +312,10 @@
         move(-1);
         break;
       }
-      case "down": move(1); break;
-      case "up": move(-1); break;
       case "ok": {
         const service = SERVICES[state.focus];
-        if (service.kind === "search") {
-          notify("Search is not implemented yet.");
-          break;
-        }
-        openService(service);
+        if (service.kind === "search") notify("Search is not implemented yet.");
+        else openService(service);
         break;
       }
       case "home": move(-state.focus); break;
@@ -345,11 +323,9 @@
     }
   }
 
-  // --- the options: the remote itself, and the shape of the screen --------
+  // --- options ---------------------------------------------------------------
 
-  // Sections, so the whole remote fits on a television screen: everything is
-  // here, and only what was asked for is open. Nine presses reach the last of
-  // them, which is the point of collapsing them in the first place.
+  // The list is in collapsible sections so it fits on one screen.
   const SECTION_TITLES = {
     receiver: "ir receiver",
     piper: "what piper does", power: "power", numbers: "numbers",
@@ -363,6 +339,7 @@
     else renderOptions();
   }
 
+  // The status line under the detail pane; cleared after `forSeconds` if given.
   function say(message, forSeconds = 0) {
     clearTimeout(busyTimer);
     OPTIONS.busy = message;
@@ -378,14 +355,9 @@
   }
 
   async function refreshOptions() {
-    // Three things the Pi knows: which button carries each of Piper's roles,
-    // what the remote's buttons are and which of them have been recorded, and
-    // whether Piper is filling the screen. Read together, so the list is
-    // never half true.
     const [roles, library, shape, receiver] = await Promise.all([
       get("/api/roles"), get("/api/state"), get("/api/window"),
-      // Optional: a server without GPIO still has everything else to offer.
-      get("/api/receiver").catch(() => null),
+      get("/api/receiver").catch(() => null),  // a server without GPIO has no pins to offer
     ]);
     const recordings = library.recordings || {};
     const buttons = library.buttons || [];
@@ -403,10 +375,7 @@
       });
     }
 
-    const sections = [];
-    for (const button of buttons) {
-      if (!sections.includes(button.section)) sections.push(button.section);
-    }
+    const sections = [...new Set(buttons.map((button) => button.section))];
     for (const section of sections) {
       rows.push({ kind: "section", section });
       for (const button of buttons.filter((entry) => entry.section === section)) {
@@ -423,10 +392,8 @@
     renderCurrent();
   }
 
+  // Which pin the IR receiver's OUT wire is on (the same setting as in pipertv.conf).
   function receiverRows(receiver) {
-    // Which pin the IR receiver's OUT wire is on -- the same setting as the
-    // pin line in pipertv.conf. Piper works out how to read it: through the
-    // kernel's receiver when that already holds the pin, directly otherwise.
     const pin = receiver.pin;
     const heard = receiver.listening;
     const kernel = receiver.kernel || {};
@@ -442,9 +409,7 @@
       kind: "receiver", section: "receiver", choice: "auto", free: true,
       label: "automatic", value: automatic, current: pin === "auto",
     }];
-    // Plain pins first: the ones with no second name on the Pi's pinout, which
-    // nothing added later will want back. A pin that also has a job of its
-    // own (SDA, TXD, PCM_CLK…) says so, as the pinout does.
+    // Plain pins first, then those with a second function (SDA, TXD, PCM_CLK...).
     const ordered = [...lines].sort((a, b) =>
       (a.function ? 1 : 0) - (b.function ? 1 : 0) || a.gpio - b.gpio);
     for (const line of ordered) {
@@ -478,9 +443,8 @@
     refreshOptions().catch(() => {});
   }
 
+  // Section rows are always visible; their contents only when the section is open.
   function visibleRows() {
-    // A section's own row is always there, and so is anything that belongs to
-    // no section; what is under a section is there once it has been opened.
     return OPTIONS.rows.filter((row) => row.section === null || row.kind === "section"
       || OPTIONS.open.has(row.section));
   }
@@ -545,32 +509,39 @@
       return `OK reads the remote from ${row.label} from now on · the receiver's OUT goes to`
         + ` pin ${row.pin} · kept in pipertv.conf`;
     }
-    const what = row.kind === "role" ? `the ${row.buttonLabel} button, which piper uses for ${row.role},` : `the ${row.buttonLabel} button`;
+    const what = row.kind === "role"
+      ? `the ${row.buttonLabel} button, which piper uses for ${row.role},`
+      : `the ${row.buttonLabel} button`;
     return row.samples
       ? `OK records ${what} again · the old recording is kept as well`
       : `OK records ${what} · it has no signal yet`;
+  }
+
+  function renderDetail(name, note, count, hint) {
+    $("option-name").textContent = name;
+    $("option-note").textContent = note;
+    const busy = $("option-busy");
+    busy.textContent = OPTIONS.busy;
+    busy.hidden = !OPTIONS.busy;
+    $("options-count").textContent = count;
+    $("options-hint").textContent = OPTIONS.capture
+      ? "press the button on your remote · OK or back cancels" : hint;
   }
 
   function renderOptions() {
     const rows = visibleRows();
     const list = $("options-list");
     list.replaceChildren();
-    // Only a screenful is drawn, and the chosen row stays inside it.
+    // Draw one screenful, keeping the selected row inside it.
     const last = Math.max(0, rows.length - VISIBLE_ROWS);
     const start = Math.max(0, Math.min(OPTIONS.focus - Math.floor(VISIBLE_ROWS / 2), last));
     rows.slice(start, start + VISIBLE_ROWS).forEach((row, offset) => {
       const index = start + offset;
-      const item = document.createElement("li");
-      item.className = `option option-${row.kind}${index === OPTIONS.focus ? " is-focused" : ""}`;
-      const label = document.createElement("span");
-      label.className = "option-label";
-      label.textContent = optionTitle(row);
-      const value = document.createElement("span");
-      value.className = "option-value";
-      value.textContent = optionValue(row);
-      item.append(label, value);
-      // One click does it. A second click would land somewhere else anyway:
-      // choosing a row scrolls the list under the cursor.
+      const item = el("li", `option option-${row.kind}${index === OPTIONS.focus ? " is-focused" : ""}`);
+      item.append(el("span", "option-label", optionTitle(row)),
+                  el("span", "option-value", optionValue(row)));
+      // One click selects and activates: the list scrolls under the cursor
+      // anyway, so a second click would land on another row.
       item.addEventListener("click", () => {
         OPTIONS.focus = index;
         activateOption();
@@ -578,17 +549,13 @@
       list.append(item);
     });
     const row = rows[OPTIONS.focus];
-    $("option-name").textContent = row ? optionTitle(row).replace(/^[▾▸] /, "") : "";
-    $("option-note").textContent = row ? optionNote(row) : "reading the library…";
-    const busy = $("option-busy");
-    busy.textContent = OPTIONS.busy;
-    busy.hidden = !OPTIONS.busy;
-    $("options-count").textContent = rows.length
-      ? `${OPTIONS.focus + 1} of ${rows.length}` : "";
-    $("options-hint").textContent = OPTIONS.capture
-      ? "press the button on your remote · OK or back cancels"
-      : "▲ ▼ choose · OK · ▶ back to the wheel · ▲ at the top does the same";
+    renderDetail(row ? optionTitle(row).replace(/^[▾▸] /, "") : "",
+                 row ? optionNote(row) : "reading the library…",
+                 rows.length ? `${OPTIONS.focus + 1} of ${rows.length}` : "",
+                 "▲ ▼ choose · OK · ▶ back to the wheel · ▲ at the top does the same");
   }
+
+  // --- the drawn remote --------------------------------------------------------
 
   function keyText(button) {
     if (KEY_TEXT[button.id]) return KEY_TEXT[button.id];
@@ -596,15 +563,14 @@
     return button.label;
   }
 
+  // Rows as the library lays them out, so the drawing matches the real remote.
   function buildRemote(buttons, recordings) {
-    // The rows are the library's own: the arrangement is a property of the
-    // remote, not of this page, so the drawing cannot drift from the thing.
     const rows = [];
     for (const button of buttons) {
-      const index = rows.findIndex((row) => row.number === button.row);
       const entry = { ...button, samples: countSamples(recordings, button.id) };
-      if (index < 0) rows.push({ number: button.row, keys: [entry] });
-      else rows[index].keys.push(entry);
+      const row = rows.find((line) => line.number === button.row);
+      if (row) row.keys.push(entry);
+      else rows.push({ number: button.row, keys: [entry] });
     }
     for (const row of rows) row.keys.sort((one, other) => one.col - other.col);
     return rows;
@@ -625,8 +591,8 @@
       renderRemote();
       return;
     }
-    // Between rows, the key nearest the same place across the width: down
-    // from the up arrow is OK, not whatever happens to be first in the row.
+    // Moving between rows, pick the key at the nearest horizontal position:
+    // down from the up arrow is OK, not the first key of the row.
     const here = rows[remote.row].keys;
     const place = (Math.min(remote.col, here.length - 1) + 0.5) / here.length;
     const next = Math.max(0, Math.min(rows.length - 1, remote.row + dy));
@@ -645,18 +611,15 @@
     const body = $("remote-body");
     body.replaceChildren();
     OPTIONS.remote.rows.forEach((row, rowIndex) => {
-      const line = document.createElement("div");
-      line.className = "key-row";
+      const line = el("div", "key-row");
       row.keys.forEach((button, colIndex) => {
-        const key = document.createElement("button");
-        key.type = "button";
         const chosen = rowIndex === OPTIONS.remote.row
           && colIndex === Math.min(OPTIONS.remote.col, row.keys.length - 1);
-        key.className = `remote-key ${button.id}`
+        const key = el("button", `remote-key ${button.id}`
           + (button.section === "colors" ? " is-colour" : "")
           + (button.samples ? " is-saved" : "")
-          + (chosen ? " is-focused" : "");
-        key.textContent = keyText(button);
+          + (chosen ? " is-focused" : ""), keyText(button));
+        key.type = "button";
         key.setAttribute("aria-label",
           `${button.label}${button.samples ? `, ${button.samples} recorded` : ", not recorded"}`);
         key.addEventListener("click", () => {
@@ -670,19 +633,15 @@
       body.append(line);
     });
     const button = focusedKey();
-    $("option-name").textContent = button ? button.label : "";
-    $("option-note").textContent = button
-      ? (button.samples
-         ? `OK records it again · ${button.samples} already saved`
-         : "OK records it · it has no signal yet")
-      : "";
-    const busy = $("option-busy");
-    busy.textContent = OPTIONS.busy;
-    busy.hidden = !OPTIONS.busy;
-    $("options-count").textContent = button ? button.id.replace(/_/g, " ") : "";
-    $("options-hint").textContent = OPTIONS.capture
-      ? "press the button on your remote · OK or back cancels"
-      : "▲ ▼ ◀ ▶ choose a key · OK records it · back returns to the list";
+    let note = "";
+    if (button) {
+      note = button.samples
+        ? `OK records it again · ${button.samples} already saved`
+        : "OK records it · it has no signal yet";
+    }
+    renderDetail(button ? button.label : "", note,
+                 button ? button.id.replace(/_/g, " ") : "",
+                 "▲ ▼ ◀ ▶ choose a key · OK records it · back returns to the list");
   }
 
   function showRemote(show) {
@@ -690,8 +649,7 @@
     $("options-list").hidden = show;
     $("remote-body").hidden = !show;
     $("options-back").textContent = show ? "◀ back to the list" : "◀ back to the wheel";
-    if (show) renderRemote();
-    else renderOptions();
+    renderCurrent();
   }
 
   function pressRemote(button) {
@@ -714,8 +672,9 @@
     }
   }
 
+  // --- moving around the options -------------------------------------------------
+
   function wheelOptions(event) {
-    // A list this long is worth a wheel when there is a mouse on the desk.
     if (state.screen !== "options") return;
     event.preventDefault();
     moveOption(event.deltaY > 0 ? 1 : -1);
@@ -749,10 +708,40 @@
     renderFocus();
   }
 
+  function activateOption() {
+    if (OPTIONS.capture) { cancelCapture(); return; }
+    const row = visibleRows()[OPTIONS.focus];
+    if (!row) return;
+    if (row.kind === "window") switchWindow(row);
+    else if (row.kind === "remote") showRemote(true);
+    else if (row.kind === "receiver") chooseReceiver(row);
+    else if (row.kind === "section") {
+      if (OPTIONS.open.has(row.section)) OPTIONS.open.delete(row.section);
+      else OPTIONS.open.add(row.section);
+      renderOptions();
+    } else learn(row);
+  }
+
+  function pressOptions(button) {
+    if (OPTIONS.view === "remote") { pressRemote(button); return; }
+    switch (button) {
+      case "down": moveOption(1); break;
+      case "up":
+        if (OPTIONS.capture) break;  // waiting for the button being recorded
+        if (OPTIONS.focus === 0) closeOptions();
+        else moveOption(-1);
+        break;
+      case "right": case "back": case "home": closeOptions(); break;
+      case "ok": activateOption(); break;
+      default: break;
+    }
+  }
+
+  // --- recording a button ----------------------------------------------------------
+
   async function waitForCapture(id) {
-    // The gate is shut while a signal is being learned, so the press being
-    // recorded does not also drive this page. Nothing arrives here until the
-    // Pi is finished with it either way.
+    // While a button is being recorded the Pi doesn't pass presses on to
+    // this page, so there is nothing to do but wait.
     for (let attempt = 0; attempt < 480; attempt += 1) {
       const job = await get(`/api/captures/${id}`);
       if (CAPTURE_DONE.includes(job.status)) return job;
@@ -773,9 +762,9 @@
     if (!id) return;
     OPTIONS.capture = null;
     try {
-      await send("POST", `/api/captures/${id}/cancel`, {});
+      await send("POST", `/api/captures/${id}/cancel`);
     } catch {
-      // It finished on its own between the press and this request.
+      // It finished by itself in the meantime.
     }
     say("cancelled", 4);
   }
@@ -799,11 +788,7 @@
       say(String(error.message || error), 8);
       return;
     }
-    try {
-      await refreshOptions();
-    } catch {
-      // The list is stale rather than wrong; the next visit reads it again.
-    }
+    await refreshOptions().catch(() => {});  // stale is fine; it's read again next time
   }
 
   async function switchWindow(row) {
@@ -812,45 +797,15 @@
     try {
       await send("PUT", "/api/window", { windowed });
     } catch {
-      // Expected as often as not: this page is the window being replaced, so
-      // the answer has nowhere to arrive. What follows is a new page.
+      // Usually no answer arrives: this page is the window being replaced.
     }
   }
 
-  function activateOption() {
-    if (OPTIONS.capture) { cancelCapture(); return; }
-    const row = visibleRows()[OPTIONS.focus];
-    if (!row) return;
-    if (row.kind === "window") { switchWindow(row); return; }
-    if (row.kind === "remote") { showRemote(true); return; }
-    if (row.kind === "receiver") { chooseReceiver(row); return; }
-    if (row.kind === "section") {
-      if (OPTIONS.open.has(row.section)) OPTIONS.open.delete(row.section);
-      else OPTIONS.open.add(row.section);
-      renderOptions();
-      return;
-    }
-    learn(row);
-  }
+  // --- the feed ----------------------------------------------------------------
 
-  function pressOptions(button) {
-    if (OPTIONS.view === "remote") { pressRemote(button); return; }
-    switch (button) {
-      case "down": moveOption(1); break;
-      case "up":
-        if (OPTIONS.capture) break;   // a recording is waiting for a press
-        if (OPTIONS.focus === 0) closeOptions();
-        else moveOption(-1);
-        break;
-      case "right": case "back": case "home": closeOptions(); break;
-      case "ok": activateOption(); break;
-      default: break;
-    }
-  }
-
+  // "press exit again" is decided on the Pi, which also sees presses while
+  // this page is hidden behind a service.
   function applyLeaving(leaving) {
-    // Asked on the Pi, not here: this page may be behind a service's window,
-    // and the question has to survive the gate being shut.
     const armed = !!(leaving && leaving.armed);
     if (armed && state.notice !== "leaving") {
       notify("press exit again to close piper", true, "leaving");
@@ -859,9 +814,8 @@
     }
   }
 
+  // Everything that matters for drawing, without the timers that change on every poll.
   function signature(services) {
-    // Everything except the clocks: ages and uptimes change on every poll and
-    // must not redraw the page four times a second.
     if (!services) return "";
     const known = (services.services || []).map((service) => service.id).join(",");
     const history = (services.history || [])
@@ -878,8 +832,7 @@
       notify(`${running.name} is open · exit returns to piper`, true, "open");
     } else if (!running && (state.notice === "open"
                || (state.notice === "opening" && !state.opening))) {
-      // Either it closed, or it never came up: neither leaves a notice standing.
-      notify("");
+      notify("");  // it closed, or never came up
     }
     state.open = running ? running.id : null;
     const failure = (services && services.error) || null;
@@ -891,24 +844,6 @@
     }
   }
 
-  document.addEventListener("keydown", (event) => {
-    const button = KEYS[event.key];
-    if (!button) return;
-    event.preventDefault();
-    press(button);
-  });
-
-  window.addEventListener("resize", () => { if (state.screen === "home") layoutRing(); });
-
-  // A mouse, when there is one: the cursor appears while it moves and goes
-  // away again, so a television is not left with an arrow parked on it.
-  document.addEventListener("mousemove", () => {
-    document.body.classList.add("is-pointing");
-    clearTimeout(pointingTimer);
-    pointingTimer = setTimeout(
-      () => document.body.classList.remove("is-pointing"), POINTER_IDLE_MS);
-  });
-
   async function poll() {
     let delay = 250;
     const abort = new AbortController();
@@ -919,7 +854,7 @@
         signal: abort.signal,
       });
       if (response.status === 404) {
-        // Started without desktop control: the page still works by keyboard.
+        // Started without desktop control: only the keyboard works.
         notify("This server is running without remote control. Use a keyboard.", true);
         state.primed = false;
         delay = 5000;
@@ -928,9 +863,8 @@
         delay = 2000;
       } else {
         const feed = await response.json();
-        // A new page/reconnection establishes a cursor; it must never replay
-        // retained OK presses. A stream id detects restarts even if the new
-        // server's sequence has already overtaken our previous number.
+        // After a reload or a server restart, the first poll only catches up;
+        // old presses (an OK especially) must not be replayed.
         const continuous = state.primed && state.stream === feed.stream_id && !feed.missed;
         if (feed.missed) notify("Some presses were missed.");
         state.seen = feed.sequence;
@@ -938,8 +872,7 @@
         state.session = feed.session_id || null;
         applyServices(feed.services);
         applyLeaving(feed.leaving);
-        state.primed = (state.screen === "home" || state.screen === "options")
-          && !document.hidden;
+        state.primed = (state.screen === "home" || state.screen === "options") && !document.hidden;
         state.control = feed.control;
         const source = feed.control === "on"
           ? feed.mode === "piper" ? "remote connected" : "desktop control selected"
@@ -949,8 +882,7 @@
         if (continuous && state.primed && feed.control === "on" && feed.mode === "piper") {
           for (const event of feed.events || []) {
             if (event.mode === "piper" && event.session_id === feed.session_id && event.navigation) {
-              // What the key performs, not which key it was: a role bound to a
-              // button the TV ignores arrives under that button's name.
+              // The role the key performs, which differs from the key once it is rebound.
               press(event.action || event.button);
             }
           }
@@ -966,13 +898,29 @@
     setTimeout(poll, delay);
   }
 
+  // --- start -------------------------------------------------------------------
+
+  document.addEventListener("keydown", (event) => {
+    const button = KEYS[event.key];
+    if (!button) return;
+    event.preventDefault();
+    press(button);
+  });
+
+  window.addEventListener("resize", () => { if (state.screen === "home") layoutRing(); });
+
+  document.addEventListener("mousemove", () => {
+    document.body.classList.add("is-pointing");
+    clearTimeout(pointingTimer);
+    pointingTimer = setTimeout(
+      () => document.body.classList.remove("is-pointing"), POINTER_IDLE_MS);
+  });
+
   document.addEventListener("visibilitychange", () => { state.primed = false; });
 
   function initialize() {
     const params = new URLSearchParams(window.location.search);
-    // Piper closes this page while a service is on the screen and opens it
-    // again afterwards; it comes back on the tile that was just closed, as if
-    // it had been waiting behind it the whole time.
+    // Reopened after a service closed: start on that service's tile.
     const returning = SERVICES.findIndex((service) => service.id === params.get("focus"));
     if (returning >= 0) state.focus = returning;
     renderHistory();
@@ -982,15 +930,13 @@
     $("options-back").addEventListener("click", closeOptions);
     $("home-exit").addEventListener("click", leavePiper);
     $("options-list").addEventListener("wheel", wheelOptions, { passive: false });
-    clock();
-    setInterval(clock, 20000);
+    updateClock();
+    setInterval(updateClock, 20000);
 
-    // A kiosk that reloads should not replay the splash every time, and it is
-    // the only way to look at the dial in a renderer that cannot wait.
-    const skipBoot = params.get("boot") === "0";
+    // ?boot=0 skips the splash (the Pi opens the page that way).
     $("boot-fill").style.width = "62%";
     $("boot-status").textContent = "starting · reading the remote";
-    if (skipBoot) {
+    if (params.get("boot") === "0") {
       showScreen("home");
       layoutRing();
     } else {

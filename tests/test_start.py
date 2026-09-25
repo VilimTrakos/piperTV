@@ -56,7 +56,7 @@ class StarterCase(unittest.TestCase):
 
         ticks = iter(range(0, 100_000))
         self.backdrop = FakeBackdrop(visible=False)
-        return Starter(port=8765, ask=api, spawn=spawn, backdrop=self.backdrop,
+        return Starter(port=8765, api=api, spawn=spawn, backdrop=self.backdrop,
                        clock=lambda: float(next(ticks)), sleep=lambda _s: None,
                        windowed=lambda: windowed,
                        log_file=Path(self.temporary.name) / "pipertv.log")

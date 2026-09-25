@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pipertv import pointer
+from pipertv import pointer, uinput
 from pipertv.pointer import (AXIS_MAX, VirtualPointer, ask_compositor, health,
                              read_framebuffer_size, read_screen_size, to_axis, to_pixel)
 
@@ -37,28 +37,28 @@ class FakeUinput:
         """Decode every event written, in order, as (type, code, value)."""
         decoded = []
         for payload in self.writes[since:]:
-            assert len(payload) % pointer.EVENT_SIZE == 0, "events must be whole structs"
-            for offset in range(0, len(payload), pointer.EVENT_SIZE):
+            assert len(payload) % uinput.EVENT_SIZE == 0, "events must be whole structs"
+            for offset in range(0, len(payload), uinput.EVENT_SIZE):
                 _sec, _usec, kind, code, value = struct.unpack_from(
-                    pointer.EVENT, payload, offset)
+                    uinput.EVENT, payload, offset)
                 decoded.append((kind, code, value))
         return decoded
 
     def moves(self, since=0):
         return [(code, value) for kind, code, value in self.events(since)
-                if kind == pointer.EV_ABS]
+                if kind == uinput.EV_ABS]
 
     def keys(self, since=0):
         return [(code, value) for kind, code, value in self.events(since)
-                if kind == pointer.EV_KEY]
+                if kind == uinput.EV_KEY]
 
 
 @contextlib.contextmanager
 def fake_pointer(screen=SCREEN, accept_all=True, **kwargs):
     fake = FakeUinput(accept_all)
-    with (patch.object(pointer.os, "open", return_value=fake.fd),
-          patch.object(pointer.os, "write", side_effect=fake.write),
-          patch.object(pointer.os, "close", side_effect=fake.closed.append),
+    with (patch.object(uinput.os, "open", return_value=fake.fd),
+          patch.object(uinput.os, "write", side_effect=fake.write),
+          patch.object(uinput.os, "close", side_effect=fake.closed.append),
           patch("fcntl.ioctl", side_effect=fake.ioctl)):
         device = VirtualPointer(screen, settle_s=0, **kwargs)
         device.open()
@@ -90,7 +90,7 @@ class AxisTests(unittest.TestCase):
                 to_axis(10, extent)
 
 
-class ScreenSizeTests(unittest.TestCase):
+class FramebufferSizeTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -211,22 +211,22 @@ class SetupTests(unittest.TestCase):
     def test_the_device_is_declared_before_it_is_created(self):
         with fake_pointer() as (_device, fake):
             requests = fake.requests()
-        self.assertEqual(requests[-1], pointer.UI_DEV_CREATE)
-        self.assertIn(pointer.UI_DEV_SETUP, requests)
+        self.assertEqual(requests[-1], uinput.UI_DEV_CREATE)
+        self.assertIn(uinput.UI_DEV_SETUP, requests)
         # Both axes, all three buttons and the wheel must be declared up front.
-        self.assertEqual(requests.count(pointer.UI_SET_ABSBIT), 2)
-        self.assertEqual(requests.count(pointer.UI_SET_KEYBIT), 3)
-        self.assertEqual(requests.count(pointer.UI_SET_RELBIT), 1)
-        self.assertEqual(requests.count(pointer.UI_SET_EVBIT), 4)
+        self.assertEqual(requests.count(uinput.UI_SET_ABSBIT), 2)
+        self.assertEqual(requests.count(uinput.UI_SET_KEYBIT), 3)
+        self.assertEqual(requests.count(uinput.UI_SET_RELBIT), 1)
+        self.assertEqual(requests.count(uinput.UI_SET_EVBIT), 4)
 
     def test_the_axes_span_the_whole_screen(self):
         with fake_pointer() as (_device, fake):
             setups = [value for request, value in fake.ioctls
-                      if request == pointer.UI_ABS_SETUP]
+                      if request == uinput.UI_ABS_SETUP]
         self.assertEqual(len(setups), 2)
         for axis, payload in zip((pointer.ABS_X, pointer.ABS_Y), setups):
             code, _filler, value, minimum, maximum, _fuzz, _flat, _res = struct.unpack(
-                pointer.ABS_SETUP, payload)
+                uinput.ABS_SETUP, payload)
             self.assertEqual((code, value, minimum, maximum), (axis, 0, 0, AXIS_MAX))
 
     def test_opening_does_not_move_before_the_control_gate_is_rechecked(self):
@@ -261,7 +261,7 @@ class MovementTests(unittest.TestCase):
             mark = len(fake.writes)
             device.move_to(100, 100)
             events = fake.events(mark)
-        self.assertEqual(events[-1], (pointer.EV_SYN, pointer.SYN_REPORT, 0))
+        self.assertEqual(events[-1], (uinput.EV_SYN, uinput.SYN_REPORT, 0))
 
     def test_pointer_mode_nudges_from_where_it_left_off(self):
         with fake_pointer() as (device, _fake):
@@ -307,7 +307,7 @@ class ShutdownTests(unittest.TestCase):
         self.assertEqual(sorted(released),
                          [(pointer.BTN_LEFT, 0), (pointer.BTN_RIGHT, 0),
                           (pointer.BTN_MIDDLE, 0)])
-        self.assertEqual(requests[-1], pointer.UI_DEV_DESTROY)
+        self.assertEqual(requests[-1], uinput.UI_DEV_DESTROY)
         self.assertEqual(fake.closed, [fake.fd])
 
     def test_closing_twice_removes_the_device_once(self):
@@ -315,7 +315,7 @@ class ShutdownTests(unittest.TestCase):
             device.close()
             device.close()
         self.assertEqual(fake.closed, [fake.fd])
-        self.assertEqual(fake.requests().count(pointer.UI_DEV_DESTROY), 1)
+        self.assertEqual(fake.requests().count(uinput.UI_DEV_DESTROY), 1)
 
     def test_a_closed_pointer_cannot_move_the_cursor(self):
         with fake_pointer() as (device, _fake):
@@ -335,7 +335,7 @@ class ShutdownTests(unittest.TestCase):
         with fake_pointer() as (device, fake):
             fake.accept_all = False
             device.close()
-            self.assertIn(pointer.UI_DEV_DESTROY, fake.requests())
+            self.assertIn(uinput.UI_DEV_DESTROY, fake.requests())
             self.assertEqual(fake.closed, [fake.fd])
 
 
@@ -347,11 +347,11 @@ class WheelTests(unittest.TestCase):
             before = len(fake.writes)
             device.scroll(2)
             self.assertEqual([(code, value) for kind, code, value in fake.events(before)
-                              if kind == pointer.EV_REL], [(pointer.REL_WHEEL, 2)])
+                              if kind == uinput.EV_REL], [(pointer.REL_WHEEL, 2)])
             before = len(fake.writes)
             device.scroll(-3)
             self.assertEqual([(code, value) for kind, code, value in fake.events(before)
-                              if kind == pointer.EV_REL], [(pointer.REL_WHEEL, -3)])
+                              if kind == uinput.EV_REL], [(pointer.REL_WHEEL, -3)])
 
     def test_turning_the_wheel_leaves_the_cursor_where_it_is(self):
         with fake_pointer() as (device, _fake):

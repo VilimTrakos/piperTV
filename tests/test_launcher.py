@@ -91,14 +91,12 @@ class LauncherTests(unittest.TestCase):
         launcher.launch("youtube")
         command = self.spawn.started[0].command
         self.assertEqual(command[0], str(self.browser))
-        # The size of the screen, but not fullscreen: a fullscreen window sits
-        # above every layer a keyboard could be drawn in.
+        # Screen-sized but not fullscreen, so the on-screen keyboard can go on top.
         self.assertIn("--window-size=1920,1080", command)
         self.assertIn("--window-position=0,0", command)
         self.assertNotIn("--kiosk", command)
         self.assertNotIn("--start-fullscreen", command)
-        # Both are required on a Pi 3B+: the GPU context fails, and the keyring
-        # prompt cannot be answered from a sofa.
+        # Both are required on a Pi 3B+.
         self.assertIn("--disable-gpu", command)
         self.assertIn("--password-store=basic", command)
         self.assertEqual(command[-1], "--app=https://www.youtube.com/tv")
@@ -107,8 +105,6 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(profile.is_dir(), "the profile directory must exist before chromium needs it")
 
     def test_pages_are_pointed_at_and_applications_are_typed_at(self):
-        # A site built for a mouse ignores arrow keys; an application built for
-        # a remote ignores a cursor. Which is which is a property of the thing.
         launcher = self.build()
         drives = {service["id"]: service["control"] for service in launcher.catalogue()}
         self.assertEqual(drives.pop("youtube"), "keys")   # a television web app
@@ -131,7 +127,6 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.spawn.started, [])
 
     def test_an_application_needs_no_browser(self):
-        # Piper without chromium can still start what it does have.
         with patch("pipertv.launcher.shutil.which", side_effect=lambda name: None
                    if "chromium" in name else f"/usr/bin/{name}"):
             launcher = self.build(browser="auto",
@@ -147,7 +142,7 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("desktop session", str(refused.exception))
 
     def test_prime_video_opens_as_the_site_it_publishes(self):
-        # Amazon has no television web app, so no identity is pretended here.
+        # No TV user agent: Amazon has no TV web app.
         launcher = self.build()
         launcher.launch("prime")
         command = self.spawn.started[0].command
@@ -155,8 +150,6 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse([part for part in command if part.startswith("--user-agent=")])
 
     def test_the_browser_opens_on_a_search_page(self):
-        # The tile is a browser, and a browser with nowhere to go is a blank
-        # window: it opens where someone would start.
         launcher = self.build()
         launcher.launch("browser")
         command = self.spawn.started[0].command
@@ -171,7 +164,6 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.spawn.started[0].kwargs["env"]["MOZ_ENABLE_WAYLAND"], "1")
 
     def test_a_windowed_firefox_uses_the_requested_size(self):
-        # The same Pi seen over VNC has work going on around Piper.
         launcher = self.build(window={"windowed": True, "width": 1280, "height": 720})
         launcher.launch("browser")
         command = self.spawn.started[0].command
@@ -271,9 +263,7 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn("--ozone-platform=wayland", self.spawn.started[0].command)
 
     def test_the_browser_says_it_is_a_television(self):
-        # A Chromecast identity returns the cast receiver and a desktop one the
-        # pointer site; only a television gets the ten-foot app. The check is on
-        # the fact rather than the exact string, except for the one that bit us.
+        # A Chromecast agent gets the cast receiver, not the TV app.
         launcher = self.build()
         launcher.launch("youtube")
         agents = [part for part in self.spawn.started[0].command if part.startswith("--user-agent=")]
@@ -379,8 +369,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(state["history"], [])
 
     def test_a_service_closed_from_the_desktop_is_noticed(self):
-        # Someone quits the browser, or it crashes: the interface must come
-        # back rather than wait for a window that is no longer there.
+        # Quit from the desktop, or crashed.
         launcher = self.build()
         launcher.launch("youtube")
         self.clock.advance(600)
@@ -403,8 +392,7 @@ class LauncherTests(unittest.TestCase):
         self.assertIsNone(launcher.snapshot()["error"], "a new launch clears the old failure")
 
     def test_a_failure_noticed_late_is_still_a_failure(self):
-        # "seconds" counts to the moment the exit was noticed, so a failed
-        # launch nobody asked about for a while must not pass for viewing.
+        # Judged by the exit code, not by how long it seemed to run.
         launcher = self.build()
         launcher.launch("youtube")
         self.spawn.started[0].returncode = 1
@@ -457,8 +445,7 @@ class FirefoxPreferenceTests(unittest.TestCase):
             self.assertIn(f'user_pref("{name}", ', written)
 
     def test_a_profile_from_an_earlier_version_is_brought_up_to_date(self):
-        # The first version wrote three lines once and never touched the file
-        # again, so nothing it left there may be doubled or kept stale.
+        # Nothing an older version wrote may be doubled or left stale.
         earlier = ('user_pref("browser.shell.checkDefaultBrowser", true);\n'
                    'user_pref("extensions.autoDisableScopes", 0);\n')
         written = firefox_preferences(earlier)

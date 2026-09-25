@@ -1,18 +1,8 @@
-"""Notice when a page focuses something a person could type into.
+"""Notice when a web page focuses a text field, so the keyboard can be offered.
 
-A search box is reached the same way as anything else on a page -- the cursor
-moves onto it and OK clicks it -- and at that moment the remote has nothing to
-offer it. This is how Piper finds out that the moment has come: the page says
-so itself, over the accessibility bus, the same bus snapping reads.
-
-Listening rather than looking. Walking the tree to ask what is focused costs a
-second on a page the size of a shop front, and by then the answer is stale;
-the bus announces the change instead, and this remembers the last one.
-
-What counts as typing-into is a short list of roles. A browser calls a plain
-search box an entry, and one with suggestions a combo box; anything outside
-the list -- a document, a heading, a button -- is focus moving around the page
-rather than a request for a keyboard.
+We listen to focus and caret events on the accessibility bus rather than
+walking the tree to ask what is focused: a walk takes about a second on a
+big page, and by then the answer is stale.
 """
 
 from __future__ import annotations
@@ -23,43 +13,27 @@ import time
 
 LOG = logging.getLogger(__name__)
 
-# The roles a browser uses for the things a keyboard belongs to.
+# Roles a browser uses for things you type into ("entry" for a plain search
+# box, "combo box" for one with suggestions).
 TEXT_ROLES = frozenset({"entry", "text", "password text", "combo box",
                         "search box", "spin button", "terminal"})
-# A browser has text fields of its own -- the address bar above all -- and in
-# kiosk mode they are not even on the screen. Only a field inside the page
-# counts, and a page announces itself in the ancestry of everything in it.
+# Only fields inside a page count; the browser's own address bar doesn't.
 PAGE_ROLES = frozenset({"document web", "document frame", "document",
                         "embedded", "internal frame"})
-# Where the page ends and the browser begins. The walk up stops here rather
-# than after a fixed number of steps: a page nests its search box as deeply as
-# it likes -- DuckDuckGo puts a dozen sections between the box on a page of
-# results and the document -- while the browser's own fields reach a frame in a
-# handful of steps whatever the page does.
+# Walking up from the browser's own fields reaches one of these before any
+# page role.
 WINDOW_ROLES = frozenset({"frame", "window", "dialog", "application",
                           "desktop frame"})
 PAGE_DEPTH = 40
 EVENTS = ("object:state-changed:focused", "object:text-caret-moved")
-# How long a field stays in hand without being heard from. Generous, because
-# what really lets go of it is focus moving to something that is not a field --
-# a link, a button, another page -- which is noticed as it happens. A search
-# box on a page of results can sit focused for a long time before anyone
-# clicks into it, and it is still the box they mean.
+# A field stays "in hand" until focus moves to something else, or this long.
 FRESH_S = 900.0
-# A field reports itself many times over while it is used -- every caret move
-# is another word from it. Only the first of a burst is worth passing on.
+# Every caret move is an event; report a field at most this often.
 REPORT_EVERY_S = 0.4
 
 
-def in_page(node, depth: int = PAGE_DEPTH, roles=PAGE_ROLES,
-            outside=WINDOW_ROLES) -> bool:
-    """Whether this control belongs to a web page rather than to the browser.
-
-    Everything in a page hangs below a document; the address bar and the rest
-    of the browser's own furniture hang below panels and tool bars, and reach
-    the window without passing a document. So the walk goes up until one or the
-    other is found, and costs nothing next to walking down.
-    """
+def in_page(node, depth: int = PAGE_DEPTH, roles=PAGE_ROLES, outside=WINDOW_ROLES) -> bool:
+    """Whether a control is part of a web page rather than the browser's UI."""
     for _ in range(depth):
         try:
             node = node.parent
@@ -74,16 +48,14 @@ def in_page(node, depth: int = PAGE_DEPTH, roles=PAGE_ROLES,
         if role in roles:
             return True
         if role in outside:
-            return False  # the window itself, with no page on the way
+            return False
     return False
 
 
 class FocusWatcher:
-    """What the active window has focused, as the bus reports it.
+    """Remembers the text field the page focused last. Never raises.
 
-    Never raises into its caller: a desktop without an accessibility bus
-    simply reports nothing focused, and the remote goes on working as it did
-    before any of this existed.
+    on_text_field(field) is called from the bus thread when a field is used.
     """
 
     def __init__(self, on_text_field=None, roles=TEXT_ROLES, registry=None,
@@ -99,15 +71,11 @@ class FocusWatcher:
         self._reported_at = -float("inf")
         self._error: str | None = None
 
-    # --- the bus ----------------------------------------------------------
-
     def _load(self):
-        registry = self._registry
-        if registry is None:
-            import pyatspi  # Imported late: it pulls in GTK and a D-Bus client.
-
-            registry = self._registry = pyatspi.Registry
-        return registry
+        if self._registry is None:
+            import pyatspi  # late: it loads GTK and a D-Bus client
+            self._registry = pyatspi.Registry
+        return self._registry
 
     def start(self) -> None:
         with self._lock:
@@ -122,73 +90,64 @@ class FocusWatcher:
             registry = self._load()
             for event in EVENTS:
                 registry.registerEventListener(self.observe, event)
-            registry.start()
-        except Exception as exc:  # noqa: BLE001 - a missing bus is a desktop condition
+            registry.start()  # runs the bus's main loop until stop()
+        except Exception as exc:
             with self._lock:
                 self._error = str(exc) or type(exc).__name__
             LOG.warning("Watching what the page focuses: %s", exc)
 
     def close(self) -> None:
         self._stop.set()
-        registry = self._registry
-        if registry is None:
+        if self._registry is None:
             return
         try:
-            registry.stop()
-        except Exception as exc:  # noqa: BLE001 - shutdown must finish
+            self._registry.stop()
+        except Exception as exc:
             LOG.warning("Closing the focus watcher: %s", exc)
 
-    # --- what it heard ----------------------------------------------------
-
     def observe(self, event) -> None:
-        """One event from the bus. Called on the bus's own thread."""
+        """Handle one bus event (on the bus's thread)."""
         try:
-            if getattr(event, "type", "").endswith("focused") and event.detail1 != 1:
-                return  # something losing focus is not something gaining it
+            focused = getattr(event, "type", "").endswith("focused")
+            if focused and event.detail1 != 1:
+                return  # losing focus
             source = event.source
             role = source.getRoleName()
             if role not in self.roles:
-                if getattr(event, "type", "").endswith("focused"):
-                    # Focus moved to a link or a button: whatever was being
-                    # typed into is no longer in hand.
-                    self.forget()
+                if focused:
+                    self.forget()  # focus moved to a link, a button...
                 return
             if not in_page(source):
-                return  # the browser's own address bar, not the page's search box
+                return
             field = {"role": role, "label": (source.name or "")[:80], "at": self.clock()}
-        except Exception as exc:  # noqa: BLE001 - an event must never raise here
+        except Exception as exc:
             LOG.debug("Reading a focus event: %s", exc)
             return
         with self._lock:
-            # Not only when the field changes: a page focuses its search box as
-            # it loads, so by the time someone clicks into it the field is
-            # already the one in hand and says nothing new about itself. What
-            # is worth reporting is that it is in use now -- whoever listens
-            # decides whether the moment calls for a keyboard.
+            # Report the same field again once in a while, not only when it
+            # changes: a page often focuses its search box while loading, so by
+            # the time someone clicks into it nothing about it is new.
             now = field["at"]
             another = self._field is None or self._field["label"] != field["label"]
-            fresh = another or now - self._reported_at >= REPORT_EVERY_S
+            report = another or now - self._reported_at >= REPORT_EVERY_S
             self._field = field
             self._error = None
-            if fresh:
+            if report:
                 self._reported_at = now
-        if fresh and self.on_text_field is not None:
+        if report and self.on_text_field is not None:
             try:
                 self.on_text_field(dict(field))
-            except Exception as exc:  # noqa: BLE001 - the bus thread must survive
+            except Exception as exc:
                 LOG.warning("Acting on a focused text field: %s", exc)
 
     def typing_into(self) -> dict | None:
-        """The text field in hand, or None if focus has moved on or gone stale."""
+        """The focused text field, or None if focus moved on or it is stale."""
         with self._lock:
-            if self._field is None:
-                return None
-            if self.clock() - self._field["at"] > FRESH_S:
+            if self._field is None or self.clock() - self._field["at"] > FRESH_S:
                 return None
             return dict(self._field)
 
     def forget(self) -> None:
-        """Let go of the field, so its keyboard is not offered twice."""
         with self._lock:
             self._field = None
             self._reported_at = -float("inf")

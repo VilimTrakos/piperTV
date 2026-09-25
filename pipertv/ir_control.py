@@ -1,29 +1,29 @@
-"""Continuous raw-IR recognition for desktop control, separate from learning.
+"""Recognise learned remote buttons in the live IR stream.
 
-RC5's toggle is decoded, never guessed by ignoring arbitrary timing differences.
-Other protocols use every learned sample with a conservative timing comparison.
-Reference: https://docs.kernel.org/userspace-api/media/rc/rc-protos.html
+RC5 frames are decoded properly (address, command and toggle bit). Anything
+else is matched against every learned sample by comparing the timings.
+Protocols: https://docs.kernel.org/userspace-api/media/rc/rc-protos.html
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
 import statistics
 import struct
 import threading
 import time
+from dataclasses import dataclass
 
 from .gpio_ir import describe, open_receiver
 from .lirc import CaptureError, CaptureOptions, Mode2Capture
+from .roles import DIRECTIONS
 
 LOG = logging.getLogger(__name__)
 FRAME_GAP_US = 10_000
-DIRECTIONS = frozenset({"up", "down", "left", "right"})
 
 
 def split_frames(durations, gap_us=FRAME_GAP_US):
-    """A learned press can contain several full frames and short repeat frames."""
+    """One learned press may hold several frames and repeat codes; yield each."""
     start = 0
     for index in range(1, len(durations), 2):
         if durations[index] >= gap_us:
@@ -35,18 +35,17 @@ def split_frames(durations, gap_us=FRAME_GAP_US):
 
 
 def decode_rc5(frame):
-    """Return ((address, command), toggle) for a valid 14-bit RC5 envelope.
+    """((address, command), toggle) for a valid 14-bit RC5 frame, else None.
 
-    The receiver omits the leading idle half-bit and the final idle half-bit.
-    A mark/space pair is one Manchester bit; all half-bits must be plausible.
+    The receiver drops the idle half-bit at each end. Every mark/space must
+    be one or two half-bit units long, and the result must be valid
+    Manchester code.
     """
     if not 13 <= len(frame) <= 27 or len(frame) % 2 == 0:
         return None
     short = [value for value in frame if 550 <= value <= 1150]
-    # Alternating data can merge almost every half-bit into double-length
-    # intervals; valid extended RC5 can even contain no short interval at all.
-    # Manchester validation below, rather than an arbitrary short-edge count,
-    # decides whether the reconstructed message is a valid RC5 frame.
+    # Alternating bits can merge almost every half-bit into double-length
+    # intervals, so there may be no short interval at all.
     unit = statistics.median(short) if short else statistics.median(frame) / 2
     if not 680 <= unit <= 1050:
         return None
@@ -77,7 +76,7 @@ def decode_rc5(frame):
 
 
 def timing_distance(frame, reference):
-    """Normalize a modest clock difference; reject any substantially wrong edge."""
+    """Mean relative error after correcting for a small clock difference, or None."""
     if len(frame) != len(reference) or len(frame) < 7:
         return None
     scale = statistics.median(a / b for a, b in zip(frame, reference))
@@ -90,15 +89,12 @@ def timing_distance(frame, reference):
 
 
 def is_nec_repeat(frame):
-    if len(frame) != 3:
-        return False
-    return (7000 <= frame[0] <= 11000 and 1700 <= frame[1] <= 2900
-            and 350 <= frame[2] <= 800)
+    return (len(frame) == 3 and 7000 <= frame[0] <= 11000
+            and 1700 <= frame[1] <= 2900 and 350 <= frame[2] <= 800)
 
 
 def is_nec_frame(frame):
-    return (len(frame) == 67 and 7000 <= frame[0] <= 11000
-            and 3300 <= frame[1] <= 5700)
+    return len(frame) == 67 and 7000 <= frame[0] <= 11000 and 3300 <= frame[1] <= 5700
 
 
 @dataclass(frozen=True)
@@ -116,7 +112,7 @@ class SignalMatcher:
         for button_id, record in document.get("recordings", {}).items():
             for sample in record.get("samples", []):
                 if sample.get("source") not in ("lirc", "gpio"):
-                    continue  # Simulated recordings must never control a desktop.
+                    continue  # demo recordings must never drive the desktop
                 for frame in split_frames(sample.get("durations_us", [])):
                     decoded = decode_rc5(frame)
                     if decoded:
@@ -142,7 +138,7 @@ class SignalMatcher:
         if not ranked:
             return None
         if len(ranked) > 1 and ranked[1][1] - ranked[0][1] < .065:
-            return None  # Never select arbitrarily between two learned buttons.
+            return None  # too close to call between two buttons
         return Match(ranked[0][0], "nec" if is_nec_frame(frame) else "raw")
 
     @property
@@ -152,17 +148,18 @@ class SignalMatcher:
 
 
 class RepeatFilter:
+    """Turn a stream of frames into presses; held directions repeat.
+
+    is_direction(button) decides what repeats (by the role a button performs,
+    so a play key bound to "up" repeats too). pace(button) may return
+    (delay_s, interval_s) to slow the repeat down, e.g. when each press moves
+    to the next item rather than nudging a cursor.
+    """
+
     def __init__(self, release_s=.28, delay_s=.32, interval_s=.09, is_direction=None,
                  pace=None):
         self.release_s, self.delay_s, self.interval_s = release_s, delay_s, interval_s
-        # Hold-to-repeat follows what a button *does*, not what it is called:
-        # once "up" is bound to the play key, holding play has to repeat.
-        self.is_direction = ((lambda button: button in DIRECTIONS)
-                             if is_direction is None else is_direction)
-        # How fast a held key repeats depends on what it moves. Nudging a
-        # cursor wants many small steps a second; stepping from one control to
-        # the next wants far fewer, or a press that is a shade long walks past
-        # what it was aimed at. The caller knows which is happening.
+        self.is_direction = is_direction or (lambda button: button in DIRECTIONS)
         self.pace = pace
         self.reset()
 
@@ -199,7 +196,8 @@ class RepeatFilter:
 
 
 class FrameReader:
-    """Preserve all MODE2 events when several IR frames arrive in one read."""
+    """Split a MODE2 stream into frames, even when one read holds several."""
+
     def __init__(self):
         self.buffer = bytearray()
         self.options = CaptureOptions(timeout_s=120, gap_us=FRAME_GAP_US, max_duration_s=.5)
@@ -215,13 +213,10 @@ class FrameReader:
                 self.parser.event(word, now)
             except CaptureError:
                 self.parser = Mode2Capture(self.options)
-                frames.append(None)  # Also invalidate any previous repeat binding.
+                frames.append(None)  # None also breaks any repeat in progress
                 continue
             if self.parser.complete:
-                if len(self.parser.durations) >= 3:
-                    frames.append(tuple(self.parser.durations))
-                else:
-                    frames.append(None)
+                frames.append(tuple(self.parser.durations) if len(self.parser.durations) >= 3 else None)
                 self.parser = Mode2Capture(self.options)
         return frames
 
@@ -239,19 +234,26 @@ class FrameReader:
 
 
 class IRController:
-    """Run only when both resumed and the activation/recording gate permits it.
+    """Reads the receiver on a thread of its own and reports recognised buttons.
 
-    pause() waits for the LIRC descriptor to close before recording can begin.
-    No input device is grabbed and all activity stops when the gate closes.
+    It reads only while resumed and while enabled() is true. pause() returns
+    once the device is closed, so a recording can open it.
     """
-    def __init__(self, recordingstore, on_button, enabled, device="/dev/lirc0",
+
+    def __init__(self, store, on_button, enabled, device="/dev/lirc0",
                  device_factory=open_receiver, clock=time.monotonic, is_direction=None,
                  pace=None):
-        self.store, self.on_button, self.enabled = recordingstore, on_button, enabled
-        self.device, self.device_factory, self.clock = device, device_factory, clock
+        self.store = store
+        self.on_button = on_button
+        self.enabled = enabled
+        self.device = device
+        self.device_factory = device_factory
+        self.clock = clock
         self.matcher = SignalMatcher(self.store.snapshot())
         self.repeat = RepeatFilter(is_direction=is_direction, pace=pace)
-        self._stop, self._paused, self._released = threading.Event(), threading.Event(), threading.Event()
+        self._stop = threading.Event()
+        self._paused = threading.Event()
+        self._released = threading.Event()  # set while no device is open
         self._reopen = threading.Event()
         self._paused.set()
         self._released.set()
@@ -274,19 +276,14 @@ class IRController:
         self.start()
 
     def reload_recordings(self):
-        """Apply an edited library without reopening a paused recording device."""
+        # Take the snapshot under the lock too, or a slow rebuild could replace
+        # a newer one (and bring back a deleted button).
         with self._lock:
-            # Serialize the snapshot as well as assignment: otherwise a slow
-            # rebuild can overwrite a newer deletion with its older snapshot.
             self.matcher = SignalMatcher(self.store.snapshot())
             self.repeat.reset()
 
     def use(self, device):
-        """Listen to another receiver from now on, without a restart.
-
-        The open device is closed at the next read and the new one opened in
-        its place, so a pin chosen on the screen is being read a moment later.
-        """
+        """Switch to another receiver; the reader reopens on its next read."""
         with self._lock:
             self.device = device
             self._error = None
@@ -321,13 +318,10 @@ class IRController:
                 return None
             match = self.matcher.match(frame) if frame else None
             button = self.repeat.accept(match, now)
-            if button and self.enabled() and not self._paused.is_set():
+            if button:
                 self._last_button = button
-            else:
-                button = None
-        # The desktop may need D-Bus calls. Never keep pause()/health()/reload
-        # blocked behind those calls; the desktop checks the gate again just
-        # before injecting an input event.
+        # The callback may be slow (D-Bus, uinput), so it runs without the
+        # lock; pause() and health() must not wait for it.
         if button and self.enabled() and not self._paused.is_set():
             self.on_button(button)
             return button
@@ -341,8 +335,8 @@ class IRController:
                 continue
             self._released.clear()
             try:
-                # Re-check after clearing: pause() must never observe a stale
-                # released event while a new device is being opened.
+                # Check again after clearing _released, so pause() can't miss
+                # a device that is about to be opened.
                 if self._paused.is_set() or not self.enabled():
                     continue
                 self._reopen.clear()
@@ -355,13 +349,11 @@ class IRController:
                            and not self._reopen.is_set() and self.enabled()):
                         data = device.read(.025)
                         now = self.clock()
-                        frames = reader.feed(data, now) if data else reader.idle(now)
-                        for frame in frames:
+                        for frame in reader.feed(data, now) if data else reader.idle(now):
                             self.process_frame(frame, now)
             except Exception as exc:
                 with self._lock:
                     self._error = str(exc)
-                    self.repeat.reset()
                 LOG.warning("Desktop IR receiver: %s", exc)
             finally:
                 with self._lock:

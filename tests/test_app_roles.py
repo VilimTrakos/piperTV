@@ -19,9 +19,8 @@ class RoleEndpointTests(unittest.TestCase):
         self.path = Path(self.temporary.name) / "recordings.json"
         self.app = create_app(data=self.path, demo=True)
         self.client = self.app.test_client()
-        workbench = self.app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        recorder = self.app.extensions["recorder"]
+        self.addCleanup(recorder.close)
 
     def test_a_fresh_library_reports_every_key_acting_as_itself(self):
         state = self.client.get("/api/roles").get_json()
@@ -81,8 +80,7 @@ class RoleEndpointTests(unittest.TestCase):
             state = reloaded.test_client().get("/api/roles").get_json()
             self.assertEqual(state["bindings"], {"ok": "pause"})
         finally:
-            reloaded.extensions["pipertv"].close()
-            reloaded.extensions["pipertv"].backend.close()
+            reloaded.extensions["recorder"].close()
 
 
 class RoleEndpointsWithControlTests(unittest.TestCase):
@@ -93,9 +91,8 @@ class RoleEndpointsWithControlTests(unittest.TestCase):
         self.remote = FakeRemote()
         self.app = create_app(data=self.path, demo=True, remote=self.remote)
         self.client = self.app.test_client()
-        workbench = self.app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        recorder = self.app.extensions["recorder"]
+        self.addCleanup(recorder.close)
 
     def test_a_new_binding_takes_effect_without_a_restart(self):
         response = self.client.put("/api/roles/up", json={"button": "play"})
