@@ -41,7 +41,9 @@
     Enter: "ok", Backspace: "back", Escape: "back", h: "home", m: "menu",
   };
 
-  const state = { screen: "boot", focus: 1, seen: 0, stream: null,
+  // "turn" is how far the wheel has turned and never starts over; "focus" is
+  // which service that lands on.
+  const state = { screen: "boot", focus: 1, turn: 1, seen: 0, stream: null,
     primed: false, control: "off", tiles: [], session: null, services: null,
     open: null, opening: false, notice: "", serviceError: null };
   let noticeTimer = null;
@@ -49,7 +51,6 @@
   // Left pressed twice quickly opens the options (and undoes the first step).
   const DOUBLE_LEFT_MS = 450;
   let lastLeftAt = 0;
-  let focusBeforeLeft = 0;
 
   // The mouse cursor is hidden unless a mouse is actually moving (e.g. over VNC).
   const POINTER_IDLE_MS = 2500;
@@ -135,12 +136,7 @@
       // Click selects; clicking the selected tile opens it, like OK.
       tile.addEventListener("click", () => {
         if (state.open) return;
-        if (index !== state.focus) {
-          state.focus = index;
-          layoutRing();
-          renderFocus();
-          return;
-        }
+        if (index !== state.focus) { focusOn(index); return; }
         press("ok");
       });
       ring.append(tile);
@@ -149,50 +145,37 @@
     layoutRing();
   }
 
-  // How far a tile sits from the selected one, the short way round. Plain
-  // subtraction would say eight steps where the wheel only turns one, and the
-  // whole ring would slide backwards on passing the last tile.
-  function ringOffset(index, count) {
-    const straight = index - state.focus;
-    return straight - count * Math.round(straight / count);
-  }
-
   function layoutRing() {
     const count = state.tiles.length;
-    state.tiles.forEach((tile) => {
-      const { element, service, index } = tile;
-      const offset = ringOffset(index, count);
-      // One tile is always on the far side, where the short way round changes
-      // sides. Sliding it would carry it across the middle of the wheel, and
-      // moving it outright makes it look like a tile that stands still and
-      // changes its face, so it is put in place unseen and fades in there.
-      const crossed = tile.offset !== undefined && Math.abs(offset - tile.offset) > 1;
-      tile.offset = offset;
-      if (crossed) {
-        element.style.transition = "none";
-        element.style.opacity = "0";
-      }
-      // The selected tile sits in the middle, the rest clockwise from twelve o'clock.
-      const angle = (offset / count) * Math.PI * 2 - Math.PI / 2;
+    state.tiles.forEach(({ element, service, index }) => {
+      // Measured from how far the wheel has turned, which keeps counting past
+      // the last tile instead of starting over. Every tile then moves one slot
+      // per press, the same slot, in the direction pressed -- a count that
+      // started over would move them all the other way round the wheel.
+      const angle = ((index - state.turn) / count) * Math.PI * 2 - Math.PI / 2;
       const focused = index === state.focus;
       const radius = focused ? 0 : RADIUS;
       place(element, CENTRE.x + Math.cos(angle) * radius,
             CENTRE.y + Math.sin(angle) * radius, focused ? FOCUSED_TILE : TILE);
       element.classList.toggle("is-focused", focused);
       element.classList.toggle("is-empty", service.kind === "search");
-      if (crossed) {
-        void element.offsetWidth;    // let the move land before it can animate
-        element.style.transition = "";
-        element.style.opacity = "";  // fades back in where it now belongs
-      }
     });
   }
 
   function move(step) {
     const count = SERVICES.length;
-    state.focus = (state.focus + step + count) % count;
+    state.turn += step;
+    state.focus = ((state.turn % count) + count) % count;
     layoutRing();
     renderFocus();
+  }
+
+  // Choosing a tile outright -- by click, or on coming back to one -- turns the
+  // wheel there the short way rather than jumping the selection.
+  function focusOn(index) {
+    const count = SERVICES.length;
+    const straight = index - state.focus;
+    move(straight - count * Math.round(straight / count));
   }
 
   function openable(id) {
@@ -325,14 +308,11 @@
         const now = Date.now();
         if (now - lastLeftAt <= DOUBLE_LEFT_MS) {
           lastLeftAt = 0;
-          state.focus = focusBeforeLeft;
-          layoutRing();
-          renderFocus();
+          move(1);                 // the first press of the gesture moved it; put it back
           openOptions();
           break;
         }
         lastLeftAt = now;
-        focusBeforeLeft = state.focus;
         move(-1);
         break;
       }
@@ -946,7 +926,7 @@
     const params = new URLSearchParams(window.location.search);
     // Reopened after a service closed: start on that service's tile.
     const returning = SERVICES.findIndex((service) => service.id === params.get("focus"));
-    if (returning >= 0) state.focus = returning;
+    if (returning >= 0) { state.focus = returning; state.turn = returning; }
     renderHistory();
     buildRing();
     renderFocus();
