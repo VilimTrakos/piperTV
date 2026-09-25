@@ -14,8 +14,6 @@
 #   ./deploy.sh --force         deploy even while someone is watching something
 #   ./deploy.sh --served        run it for a browser elsewhere: no interface on
 #                               the TV, nothing on the Pi's screen at all
-#   ./deploy.sh --opens-here    with --served: the dial is in the television's
-#                               own browser, services still open on the Pi
 #
 # Deploying interrupts whoever is at the television: the app stops, which
 # closes what it had opened, and the screen is black until the interface comes
@@ -32,7 +30,7 @@ LOGIN=${PIPER_USER:-rpi}
 DIR=${PIPER_DIR:-/home/rpi/piperTV}
 PORT=${PIPER_PORT:-8765}
 PROFILE=${PIPER_KIOSK_PROFILE:-/tmp/kiosk-gpu-off}
-REF=HEAD; DIRTY=0; KIOSK=""; TESTS=1; SESSION=1; FORCE=0; SERVED=0; OPENS=0
+REF=HEAD; DIRTY=0; KIOSK=""; TESTS=1; SESSION=1; FORCE=0; SERVED=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,9 +43,6 @@ while [ $# -gt 0 ]; do
     # The interface is somewhere else, so there is nothing here to put on the
     # TV and no session to open: the gate those two exist for is not in it.
     --served) SERVED=1; KIOSK=0; SESSION=0; shift ;;
-    # The dial is in the television's own browser, which cannot show a
-    # streaming service; the pi keeps its screen for those.
-    --opens-here) OPENS=1; SERVED=1; KIOSK=0; SESSION=0; shift ;;
     --skip-tests) TESTS=0; shift ;;
     -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "deploy.sh: unknown option $1" >&2; exit 2 ;;
@@ -207,9 +202,6 @@ say "Starting the app"
 # TV, which is the point of it, and it runs on a Pi with no screen attached.
 START_ENV="$WAYLAND_ENV"; ARGS=""
 [ "$SERVED" = 1 ] && { START_ENV="true"; ARGS=" --served"; }
-# Opening a service is putting a window on this Pi's screen, so that one does
-# need the session's own variables after all.
-[ "$OPENS" = 1 ] && { START_ENV="$WAYLAND_ENV"; ARGS=" --served --opens-here"; }
 # The channel can outlive the command when a child holds it; the app is already
 # running by then, so a bounded wait is enough and the health check is the proof.
 timeout 25 ssh -S "$CONTROL" -o BatchMode=yes -n "$LOGIN@$HOST" \
@@ -242,16 +234,9 @@ import json
 health = json.load(open('/tmp/pipertv-health.json'))
 control = health.get('control') or {}
 receiver = control.get('receiver') or {}
-interface = control.get('interface') or {}
+print('serving the interface:', bool(control.get('served')))
 print('receiver:', receiver.get('learned_buttons'), 'buttons, error:', receiver.get('error'))
-print('the interface is:', 'served to another browser'
-      if control.get('served') or interface.get('elsewhere') else 'on this pi')
-services = control.get('services')
-if isinstance(services, dict):
-    print('services open here:', 'ready' if services.get('available') else services.get('reason'))
-    print('the television is asked to switch:', control.get('television') is not None)
-else:
-    print('services a browser can open:', len(services or []))
+print('services a browser can open:', len(control.get('services') or []))
 PY
 echo \"windows on the pi's own screen: \$(ps -eo args | grep -c '[c]hromium --type=renderer') (served mode opens none)\""
   say "Open http://$HOST:$PORT/tv in a browser on your network"

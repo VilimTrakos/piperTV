@@ -13,7 +13,6 @@ IR control enabled indefinitely. A manual override belongs above this module.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import logging
 import math
 import os
 import re
@@ -23,8 +22,6 @@ import struct
 import subprocess
 import threading
 import time
-
-LOG = logging.getLogger(__name__)
 
 PRIVILEGE_HELP = (
     "CEC monitor mode needs root: reading HDMI messages requires CAP_NET_ADMIN, "
@@ -461,81 +458,3 @@ class CecMonitor:
         if thread is not None:
             thread.join(timeout=3)
         self.state.unavailable("CEC monitoring stopped.")
-
-
-class CecInput:
-    """Ask the television to show this Pi, and to stop showing it.
-
-    The monitor above only listens, because deciding whether the remote may
-    move a cursor has to rest on evidence rather than on Piper's own wishes.
-    This is the opposite direction and a different question: Piper has just
-    been told to open something on this screen, and the screen is no use if
-    the set is showing its own browser instead. Saying "show me" is then the
-    honest completion of the press, not an assumption about anything.
-
-    Two messages do it, both defined for exactly this: IMAGE_VIEW_ON wakes a
-    set that is asleep, and ACTIVE_SOURCE names the input to show. Leaving
-    sends INACTIVE_SOURCE, which many sets take as "go back to what you were
-    doing" -- and many ignore, which is why nothing here is ever allowed to
-    fail what asked for it. Whether the set obeyed is not knowable from this
-    end: it is reported as sent, never as done.
-    """
-
-    def __init__(self, device: str = "/dev/cec0", run=subprocess.run,
-                 timeout_s: float = 5.0, address=None):
-        self.device = device
-        self.run = run
-        self.timeout_s = timeout_s
-        self._address = address
-        self._last: dict | None = None
-
-    def address(self) -> str | None:
-        """This Pi's own physical address, as cec-ctl spells it."""
-        if self._address is None:
-            try:
-                self._address = format_address(read_physical_address(self.device))
-            except OSError as exc:
-                LOG.warning("Reading this Pi's HDMI address: %s", exc)
-                return None
-        return self._address
-
-    def _send(self, *arguments: str) -> tuple[bool, str | None]:
-        command = ["cec-ctl", "-d", self.device, "--playback", *arguments]
-        try:
-            finished = self.run(command, capture_output=True, text=True,
-                                timeout=self.timeout_s, check=False)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return False, str(exc)[:200]
-        if finished.returncode != 0:
-            return False, (finished.stderr or finished.stdout or "").strip()[:200] or "cec-ctl failed"
-        return True, None
-
-    def take(self) -> dict:
-        """Say that this input is the one to show. Best effort, always."""
-        address = self.address()
-        if address is None:
-            return self._remember("take", False, "This Pi has no HDMI address to announce.")
-        self._send("--to", "0", "--image-view-on")
-        sent, error = self._send("--active-source", f"phys-addr={address}")
-        return self._remember("take", sent, error)
-
-    def release(self) -> dict:
-        """Say that this input is done, for a set that takes the hint."""
-        address = self.address()
-        if address is None:
-            return self._remember("release", False, "This Pi has no HDMI address to announce.")
-        sent, error = self._send("--inactive-source", f"phys-addr={address}")
-        return self._remember("release", sent, error)
-
-    def _remember(self, what: str, sent: bool, error: str | None) -> dict:
-        if error:
-            LOG.warning("Asking the television to %s this input: %s", what, error)
-        else:
-            LOG.info("Asked the television to %s this input", what)
-        self._last = {"asked": what, "sent": sent, "error": error, "at": _utc_now()}
-        return dict(self._last)
-
-    def snapshot(self) -> dict:
-        # "Sent", never "done": whether the set acted on it cannot be seen
-        # from here, and saying otherwise would be inventing evidence.
-        return {"address": self._address, "last": dict(self._last) if self._last else None}

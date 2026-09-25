@@ -43,8 +43,7 @@
 
   var LAST = "piper.classic.last";
 
-  var state = { focus: 2, urls: {}, seen: 0, primed: false, feed: true, opening: false,
-                session: null, launches: false, running: null, television: null };
+  var state = { focus: 2, urls: {}, seen: 0, primed: false, feed: true, opening: false };
   var tiles = [];
   var geometry = {};
   var noticeTimer = null;
@@ -180,17 +179,13 @@
     var service = SERVICES[state.focus];
     text($("name"), service.name);
     var note;
-    if (state.running) note = state.running.name + " is open on the pi";
-    else if (service.id === "search") note = "search is not implemented yet";
+    if (service.id === "search") note = "search is not implemented yet";
     else if (state.urls[service.id]) note = "OK or the green key opens it here";
-    else if (state.launches) note = "OK or the green key opens it on the pi";
     else if (service.id === "kodi") note = "kodi plays on the pi itself, not in this browser";
     else note = "piper cannot open " + service.name + " here";
     text($("note"), note);
-    text($("hint"), state.running
-      ? "back or the red key closes what is open"
-      : "◀ ▶ choose · OK or green opens · "
-        + (state.focus + 1) + " of " + SERVICES.length);
+    text($("hint"), "◀ ▶ choose · OK or green opens · "
+      + (state.focus + 1) + " of " + SERVICES.length);
   }
 
   function notify(message, keep) {
@@ -245,60 +240,21 @@
   function open() {
     var service = SERVICES[state.focus];
     if (service.id === "search") { notify("Search is not implemented yet."); return; }
-    if (state.opening) return;
     var url = state.urls[service.id];
-    if (url) {
-      // Served to this browser: the page itself goes there. Only a browser of
-      // this decade is offered a url in the first place.
-      state.opening = true;
-      remember(service);
-      notify("Opening " + service.name + " · the TV's back button returns to piper", true);
-      window.location.href = url;
+    if (!url) {
+      notify(service.id === "kodi"
+        ? "Kodi plays video in the pi's own hardware, so this browser cannot show it."
+        : "Piper cannot open " + service.name + " from here.");
       return;
     }
-    if (!state.launches) {
-      notify("Piper cannot open " + service.name + " from here.");
-      return;
-    }
-    // The pi opens it on its own screen, because a television's browser can
-    // show neither a modern streaming site nor the video it is protected with.
+    if (state.opening) return;
     state.opening = true;
     remember(service);
-    notify("Opening " + service.name + " on the pi…", true);
-    post("/api/tv/launch", { service: service.id, session_id: state.session },
-      function (answer) {
-        state.opening = false;
-        opened(service, answer);
-      },
-      function (message) {
-        state.opening = false;
-        notify(message || ("Could not open " + service.name + "."));
-      });
-  }
-
-  function opened(service, answer) {
-    var television = answer && answer.television;
-    if (television && television.sent) {
-      notify(service.name + " is open on the pi · the TV was asked to switch to it", true);
-    } else {
-      notify(service.name + " is open on the pi · switch the TV to that input", true);
-    }
-  }
-
-  function closeService() {
-    if (!state.running) return;
-    notify("Closing " + state.running.name + "…", true);
-    post("/api/tv/close", {}, function () { notify(""); },
-         function (message) { notify(message || "Could not close it."); });
+    notify("Opening " + service.name + " · the TV's back button returns to piper", true);
+    window.location.href = url;
   }
 
   function act(action) {
-    if (state.running) {
-      // Something the pi opened owns the screen. The dial must not turn behind
-      // it, and the only presses that mean anything here are the way out.
-      if (action === "back" || action === "red" || action === "home") closeService();
-      return;
-    }
     switch (action) {
       case "left": case "up": move(-1); break;
       case "right": case "down": move(1); break;
@@ -321,20 +277,6 @@
 
   // --- the pi's own feed, when there is one -------------------------------
 
-  function post(path, payload, ok, fail) {
-    var request = new XMLHttpRequest();
-    request.open("POST", path, true);
-    request.setRequestHeader("Content-Type", "application/json");
-    request.onreadystatechange = function () {
-      if (request.readyState !== 4) return;
-      var answer = null;
-      try { answer = JSON.parse(request.responseText); } catch (error) { answer = null; }
-      if (request.status >= 200 && request.status < 300) { ok(answer || {}); return; }
-      fail(answer && answer.error ? answer.error : "The pi answered " + request.status + ".");
-    };
-    try { request.send(JSON.stringify(payload || {})); } catch (error) { fail("The pi did not answer."); }
-  }
-
   function ask(path, ok, fail) {
     var request = new XMLHttpRequest();
     request.open("GET", path, true);
@@ -348,12 +290,6 @@
       fail(request.status);
     };
     try { request.send(null); } catch (error) { fail(0); }
-  }
-
-  function sourceLine(feed) {
-    if (feed.served) return "served by the pi · tv remote or learned remote";
-    if (state.launches) return "the dial is here · services open on the pi";
-    return "the pi answers, but opens nothing from here";
   }
 
   function catalogue(services) {
@@ -370,20 +306,8 @@
       var continuous = state.primed;
       state.seen = feed.sequence || 0;
       state.primed = true;
-      state.session = feed.session_id || null;
-      state.television = feed.television || null;
-      // A feed with no addresses in it is a pi that opens services itself: the
-      // page asks it to, rather than going anywhere.
-      state.launches = !feed.served
-        && !!(feed.services && feed.services.available === true && feed.session_id);
-      var running = (feed.services && feed.services.running) || null;
-      if (running && (!state.running || state.running.id !== running.id)) {
-        notify(running.name + " is open on the pi · back closes it", true);
-      } else if (!running && state.running) {
-        notify("");
-      }
-      state.running = running;
-      text($("source"), sourceLine(feed));
+      text($("source"), feed.served ? "the pi is serving · tv remote or learned remote"
+                                    : "the pi is showing this elsewhere too");
       if (continuous && feed.control === "on" && feed.events) {
         for (var index = 0; index < feed.events.length; index++) {
           var event = feed.events[index];

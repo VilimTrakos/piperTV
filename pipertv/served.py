@@ -46,52 +46,6 @@ def pages(services=SERVICES) -> list[dict]:
             for key, service in services.items() if service.get("url")]
 
 
-class NoInterface:
-    """Piper's own interface, on a screen this Pi does not draw.
-
-    The television's browser is showing it, so there is no window here to
-    open, cover, or close. Everything that would have moved it says that
-    plainly instead, and the Pi's screen stays empty until a service is
-    opened on it.
-    """
-
-    def open(self, window=None, focus=None) -> dict:
-        return self.snapshot()
-
-    def showing(self) -> bool:
-        return False
-
-    def close(self) -> dict:
-        return self.snapshot()
-
-    def snapshot(self) -> dict:
-        return {"showing": False, "elsewhere": True, "port": None, "error": None,
-                "detail": "The interface is in the television's own browser."}
-
-
-class NotEvidence:
-    """What the television is showing, when it says nothing about the remote.
-
-    The gate's evidence is about one question: is this Pi's output what the
-    set is displaying? While the interface lives in the television's own
-    browser the answer is usually no, and it should be -- that is the
-    arrangement working, not a reason to take the remote away. So detection
-    is not consulted here, and this says so where a monitor would have been,
-    rather than a stub quietly reporting nothing.
-    """
-
-    def start(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-    def snapshot(self) -> dict:
-        return {"state": "unknown", "source": "served",
-                "reason": "The interface is in the television's own browser, so what the "
-                          "set is showing is not evidence about what the remote may drive."}
-
-
 def _saved(read, fallback, what: str):
     """A saved setting, or the default when the library says something unusable.
 

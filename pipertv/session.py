@@ -26,7 +26,7 @@ SOURCES = ("active", "inactive", "unknown")
 # desktop cursor. All three are gated identically.
 MODES = ("pointer", "snapping", "piper")
 DESKTOP_MODES = ("pointer", "snapping")
-ORIGINS = ("cec", "manual", "served")
+ORIGINS = ("cec", "manual")
 
 
 def utc_now() -> str:
@@ -66,16 +66,6 @@ class ControlSession:
             state = "unknown"
         detail = snapshot.get("reason")
         with self._lock:
-            if self._session is not None and self._session["origin"] == "served":
-                # Nothing the set reports can end this visit, because Piper is
-                # not on that screen: the interface is in the television's own
-                # browser, and the only thing on this Pi's output is what Piper
-                # itself was asked to open. What the TV is showing is then a
-                # fact about the TV, not evidence about the remote.
-                self._source = state
-                if isinstance(detail, str) and detail:
-                    self._detail = detail
-                return self.snapshot()
             previous_source = self._source
             selection_revision = snapshot.get("selection_revision")
             evidence_revision = snapshot.get("evidence_revision")
@@ -168,24 +158,6 @@ class ControlSession:
             self._start("manual")
             self._manual_evidence = self._evidence_token
             self._manual_revision = self._evidence_revision
-            return self.snapshot()
-
-    def start_served(self, mode: str = "piper") -> dict:
-        """Open the visit that lasts, for when Piper draws nothing on this TV.
-
-        The gate has one purpose: a press must not move this Pi's cursor while
-        the television is showing something else. With the interface served to
-        another browser that cannot happen -- the only thing ever on this
-        screen is what Piper was asked to put there, by the remote that is now
-        driving it. So the visit is the arrangement itself. It is recorded as
-        "served" rather than dressed up as a confirmation nobody gave.
-        """
-        if mode not in MODES:
-            raise ValueError("Choose the piper interface, pointer, or snapping mode.")
-        with self._lock:
-            self._stopped = False
-            self._start("served")
-            self._session["mode"] = mode
             return self.snapshot()
 
     def stop(self) -> dict:
