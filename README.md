@@ -27,6 +27,7 @@ By default, PiperTV expects the IR receiver signal pin to be connected to **phys
 However, this can be changed in the configuration, so you can use almost any suitable GPIO pin.
 
 ## Installation
+**Note**: you need Raspberry Pi OS with the desktop, not Lite. The interface is a window on the Pi's screen, so there has to be a screen to put it on!
 
 PiperTV is designed to run on Raspberry Pi OS.
 
@@ -54,6 +55,16 @@ sudo reboot
 
 Once the Raspberry Pi starts again, PiperTV should be ready for the initial setup.
 
+## Using PiperTV
+
+Open **`http://PI_ADDRESS:8765`** from any browser on your network. That is the
+studio: record buttons, bind them to actions, and set how the cursor behaves.
+
+On the Pi's own screen there is a **PiperTV icon** on the desktop and on the
+panel. Opening it puts the TV interface on the television. The remote works
+before that too: after a reboot it moves the desktop's mouse, and two presses
+of OK on the icon start Piper.
+
 ## Remote setup
 
 Before using PiperTV, you first need to teach it the IR signals produced by your remote control.
@@ -71,7 +82,12 @@ You are not limited to the original function of a button — you can choose what
 
 In my case, with a **Grundig TV**, I also had to select the Raspberry Pi as the active system device. To do this, I selected the Raspberry Pi as the source, opened **Tools**, scrolled to the bottom, and selected the Raspberry Pi as the connected device, as shown below:
 
-<IMG_of_GRUNDIG_DEVICE_SETUP>
+<img width="510" height="703" alt="image" src="https://github.com/user-attachments/assets/66402131-78b3-4055-bf88-bca3e8645d7d" />
+
+<img width="2040" height="1536" alt="image" src="https://github.com/user-attachments/assets/2393ad42-d67a-4b5a-854f-4ec815228fb2" />
+
+<img width="921" height="540" alt="image" src="https://github.com/user-attachments/assets/fbaf08a4-bcf7-4e69-927c-eacf045b72d7" />
+
 
 This step may be different depending on your TV manufacturer and model.
 
@@ -79,9 +95,20 @@ Once the remote setup is complete, you're ready to start using **PiperTV!**
 
 The original TV remote can now control the Raspberry Pi interface, launch supported services, navigate the UI, and interact with applications without requiring a separate keyboard or mouse.
 
+Note:
+Control is deliberately hard to switch on by accident. In the studio, confirm
+that the TV is showing the Pi and pick a mode for that visit — **Piper
+interface**, **Pointer** or **Snapping**. If your TV cannot report its selected
+input over HDMI-CEC (many cannot), the confirmation is the manual one, and it
+is shown as manual rather than as evidence.
+Note in a note:
+Snapping is not that good, can't find a way to make it better currently
+
+
+
 ## Demo
 
 You can see PiperTV in action in the YouTube demo below:
 
-<YOUTUBE_DEMO>
+/<YOUTUBE_DEMO - in works :D/>
 
