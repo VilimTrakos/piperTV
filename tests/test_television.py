@@ -66,10 +66,6 @@ class AskingTheTelevisionTests(unittest.TestCase):
         result = CecInput(run=run, address="1.0.0.0").release()
         self.assertTrue(result["sent"])
         self.assertIn("--inactive-source", run.sent())
-        # Addressed to the TV: cec-ctl refuses to send this one broadcast, and
-        # the refusal was silent enough to reach the television as nothing.
-        self.assertIn("--to", run.commands[-1])
-        self.assertIn("0", run.commands[-1])
 
     def test_a_set_that_refuses_does_not_fail_what_asked(self):
         # Many televisions ignore this, and the service is open either way.

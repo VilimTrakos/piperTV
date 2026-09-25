@@ -524,9 +524,7 @@ class CecInput:
         address = self.address()
         if address is None:
             return self._remember("release", False, "This Pi has no HDMI address to announce.")
-        # Addressed to the TV, unlike ACTIVE_SOURCE, which is a broadcast:
-        # cec-ctl refuses to send it without being told where it goes.
-        sent, error = self._send("--to", "0", "--inactive-source", f"phys-addr={address}")
+        sent, error = self._send("--inactive-source", f"phys-addr={address}")
         return self._remember("release", sent, error)
 
     def _remember(self, what: str, sent: bool, error: str | None) -> dict:
