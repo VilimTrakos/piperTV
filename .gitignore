@@ -10,3 +10,13 @@ dist/
 pipertv.log
 pipertv.conf
 .start.lock
+
+# Kept out of the project on purpose: these hold one person's own machines.
+# agent_setup.md is the notes for deploying to a particular Pi, and deploy.sh
+# reaches it over SSH.
+agent_setup.md
+deploy.sh
+
+# Recordings of a screen or a room, dropped in while working.
+*.mp4
+*.mov
