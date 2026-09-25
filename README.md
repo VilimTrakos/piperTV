@@ -101,6 +101,7 @@ that the TV is showing the Pi and pick a mode for that visit — **Piper
 interface**, **Pointer** or **Snapping**. If your TV cannot report its selected
 input over HDMI-CEC (many cannot), the confirmation is the manual one, and it
 is shown as manual rather than as evidence.
+
 Note in a note:
 Snapping is not that good, can't find a way to make it better currently
 
