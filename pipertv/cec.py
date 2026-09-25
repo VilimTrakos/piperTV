@@ -1,18 +1,20 @@
-"""Observe HDMI-CEC routing evidence without selecting an input.
+"""Watch HDMI-CEC traffic to tell whether the TV is showing the Pi.
 
-Physical addresses describe HDMI topology, not the currently displayed input:
+We only listen (cec-ctl --monitor) and never transmit or switch inputs.
+
+A physical address describes where the Pi sits in the HDMI topology, not which
+input is on screen:
 https://docs.kernel.org/userspace-api/media/cec/cec-ioc-adap-g-phys-addr.html
-Monitor modes and their privilege requirements:
+Monitor mode needs CAP_NET_ADMIN:
 https://docs.kernel.org/userspace-api/media/cec/cec-ioc-g-mode.html
 
-CEC is event based. A TV that silently switches to its tuner or an internal app
-cannot be detected with certainty; positive evidence expires instead of keeping
-IR control enabled indefinitely. A manual override belongs above this module.
+CEC is event based and a TV can switch to its tuner without saying so, so
+positive evidence expires after a while instead of keeping control on forever.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import fcntl
 import math
 import os
 import re
@@ -22,6 +24,8 @@ import struct
 import subprocess
 import threading
 import time
+
+from .util import utc_now
 
 PRIVILEGE_HELP = (
     "CEC monitor mode needs root: reading HDMI messages requires CAP_NET_ADMIN, "
@@ -37,10 +41,14 @@ SET_STREAM_PATH = 0x86
 INACTIVE_SOURCE = 0x9D
 STANDBY = 0x36
 REPORT_POWER_STATUS = 0x90
+ROUTING_EVENTS = {ACTIVE_SOURCE: "active_source", ROUTING_CHANGE: "routing_change",
+                  ROUTING_INFORMATION: "routing_information",
+                  SET_STREAM_PATH: "set_stream_path"}
+CEC_ADAP_G_PHYS_ADDR = 0x80026101  # _IOR('a', 1, __u16)
 
 
 def physical_address(value: str | int | None) -> int | None:
-    """Validate a CEC address; None/FFFF means the HDMI address is unknown."""
+    """Parse "1.0.0.0", "1000" or 0x1000. None or f.f.f.f means unknown."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -54,6 +62,7 @@ def physical_address(value: str | int | None) -> int | None:
         raise ValueError("Invalid CEC physical address.")
     if value == 0xFFFF:
         return None
+    # Once a digit is 0, all the following ones must be 0 too.
     zero_seen = False
     for shift in (12, 8, 4, 0):
         digit = (value >> shift) & 15
@@ -68,12 +77,8 @@ def format_address(value: int | None) -> str | None:
     return None if value is None else ".".join(f"{value:04x}")
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
 class CecState:
-    """Pure, thread-safe reducer for received CEC frames and connection events."""
+    """What the received CEC frames say about the selected input. Thread-safe."""
 
     def __init__(self, physical_address: str | int | None = None,
                  stale_after_s: float = 120, *, clock=time.monotonic):
@@ -90,8 +95,7 @@ class CecState:
         self._last_seen = None
         self._event = None
         self._source_address = None
-        # Consumers poll snapshots, so a quick away/back transition must remain
-        # distinguishable from another report during the same selected visit.
+        # Counters, so a poller can tell "away and back again" from "nothing happened".
         self._selection_revision = 0
         self._evidence_revision = 0
         self._address_revision = 0
@@ -100,7 +104,7 @@ class CecState:
     def set_physical_address(self, value: str | int | None) -> None:
         address = physical_address(value)
         if address == 0:
-            address = None  # The Pi is a source, not the root television.
+            address = None  # 0.0.0.0 is the TV itself, not a source
         with self._lock:
             if address != self._physical_address:
                 self._physical_address = address
@@ -124,7 +128,8 @@ class CecState:
         if (self._state == "active" and self._evidence_at is not None
                 and self._clock() - self._evidence_at >= self.stale_after_s):
             self._state = "unknown"
-            self._reason = "The last HDMI selection report expired; confirm the input or switch to the Pi again."
+            self._reason = ("The last HDMI selection report expired; confirm the input or "
+                            "switch to the Pi again.")
             self._selection_revision += 1
 
     def _evidence(self, state: str, reason: str, event: str, address: int | None = None) -> None:
@@ -136,16 +141,15 @@ class CecState:
         self._reason = reason
         self._event = event
         self._evidence_at = self._clock()
-        self._last_seen = _utc_now()
+        self._last_seen = utc_now()
         self._source_address = address
 
     def observe(self, frame: bytes, *, received: bool = True) -> bool:
-        """Apply one complete received CEC frame; return whether it is evidence.
+        """Apply one CEC frame; returns whether it said anything about the input.
 
-        Sent frames must be identified by the transport and are always ignored.
-        The TV is logical address 0. Routing reports from other HDMI branches do
-        not establish that the TV is displaying this branch, so only TV routing
-        messages can enable this directly-connected Pi.
+        Frames we sent ourselves are ignored. The TV is logical address 0;
+        only its routing messages count, since routing reports from devices on
+        other HDMI branches say nothing about this one.
         """
         if not received or not isinstance(frame, bytes) or not 2 <= len(frame) <= 16:
             return False
@@ -154,7 +158,7 @@ class CecState:
         with self._lock:
             if self._physical_address is None:
                 return False
-            if opcode in (ACTIVE_SOURCE, ROUTING_CHANGE, ROUTING_INFORMATION, SET_STREAM_PATH):
+            if opcode in ROUTING_EVENTS:
                 expected = 6 if opcode == ROUTING_CHANGE else 4
                 if len(frame) != expected or destination != 15 or initiator == 15:
                     return False
@@ -162,32 +166,32 @@ class CecState:
                     return False
                 try:
                     address = physical_address(int.from_bytes(frame[-2:], "big"))
-                    if opcode == ROUTING_CHANGE:
-                        if physical_address(int.from_bytes(frame[2:4], "big")) is None:
-                            return False
+                    if (opcode == ROUTING_CHANGE
+                            and physical_address(int.from_bytes(frame[2:4], "big")) is None):
+                        return False
                 except ValueError:
                     return False
                 if address is None:
                     return False
-                event = {ACTIVE_SOURCE: "active_source", ROUTING_CHANGE: "routing_change",
-                         ROUTING_INFORMATION: "routing_information", SET_STREAM_PATH: "set_stream_path"}[opcode]
                 selected = address == self._physical_address
                 self._evidence("active" if selected else "inactive",
                                "CEC reports the Pi's HDMI input selected." if selected else
-                               "CEC reports another source selected.", event, address)
+                               "CEC reports another source selected.",
+                               ROUTING_EVENTS[opcode], address)
                 return True
             if opcode == INACTIVE_SOURCE:
                 if len(frame) != 4 or destination != 0 or initiator == 15:
                     return False
                 if int.from_bytes(frame[2:], "big") == self._physical_address:
-                    self._evidence("inactive", "The Pi's HDMI source was marked inactive.", "inactive_source")
+                    self._evidence("inactive", "The Pi's HDMI source was marked inactive.",
+                                   "inactive_source")
                     return True
             elif opcode == STANDBY:
                 if len(frame) == 2 and destination in (0, 15) and initiator != 15:
                     self._evidence("inactive", "CEC requested TV standby.", "standby")
                     return True
             elif opcode == REPORT_POWER_STATUS and initiator == 0 and len(frame) == 3:
-                if frame[2] in (1, 3):
+                if frame[2] in (1, 3):  # standby, or going to standby
                     self._evidence("inactive", "The TV reports standby.", "tv_standby")
                     return True
                 if frame[2] in (0, 2) and self._event in ("standby", "tv_standby"):
@@ -200,9 +204,9 @@ class CecState:
             age = None if self._evidence_at is None else max(0.0, self._clock() - self._evidence_at)
             return {"state": self._state, "reason": self._reason,
                     "physical_address": format_address(self._physical_address),
-                    "local_address": format_address(self._physical_address),
                     "source_address": format_address(self._source_address),
-                    "last_seen": self._last_seen, "evidence_age_s": None if age is None else round(age, 2),
+                    "last_seen": self._last_seen,
+                    "evidence_age_s": None if age is None else round(age, 2),
                     "stale_after_s": self.stale_after_s, "source": "cec", "event": self._event,
                     "selection_revision": self._selection_revision,
                     "evidence_revision": self._evidence_revision,
@@ -210,22 +214,24 @@ class CecState:
 
 
 class CecCtlParser:
-    """Parse cec-ctl --monitor --show-raw; never treat transmitted data as input.
+    """Parse `cec-ctl --monitor --show-raw` output line by line.
 
-    Output format is defined by show_msg/log_raw_msg/log_event in v4l-utils:
+    Format: show_msg/log_raw_msg/log_event in
     https://github.com/gjasny/v4l-utils/blob/master/utils/cec-ctl/cec-ctl.cpp
     """
 
     _header = re.compile(r"^(Received from|Transmitted by) .+ \((\d+) to (\d+)\):")
     _raw = re.compile(r"^\s*Raw:\s*(0x[0-9a-fA-F]{2}(?:\s+0x[0-9a-fA-F]{2}){0,15})\s*(?:\([^\r\n]*\))?\s*$")
     _address = re.compile(r"Event: State Change: PA: ([0-9a-fA-F](?:\.[0-9a-fA-F]){3})(?:,|$)")
+    _errors = ("disconnected", "permission denied", "operation not permitted", "no such file",
+               "failed", "cannot open", "could not open", "error:", "password is required")
 
     def __init__(self, state: CecState):
         self.state = state
         self.ready = False
         self.failed = False
         self.needs_root = False
-        self._pending = None
+        self._pending = None  # (received, header byte) of the message being read
 
     def feed_line(self, line: str) -> bool:
         if len(line) > 8192:
@@ -234,7 +240,7 @@ class CecCtlParser:
             return False
         stripped = line.strip()
         lower = stripped.lower()
-        if ("events were lost" in lower or re.search(r"event: lost \d+ messages", lower)):
+        if "events were lost" in lower or re.search(r"event: lost \d+ messages", lower):
             self._pending = None
             self.state.unavailable("CEC messages were lost; waiting for a new TV input report.")
             return False
@@ -245,23 +251,20 @@ class CecCtlParser:
             try:
                 self.state.set_physical_address(address.group(1))
                 if self.state.snapshot()["physical_address"] is not None:
-                    # Even an unchanged address may follow a missed unplug/replug.
-                    self.state.unavailable("CEC connected; switch away from the Pi input and back to report its selection.")
+                    # The address may be unchanged after an unplug we didn't see.
+                    self.state.unavailable("CEC connected; switch away from the Pi input and "
+                                           "back to report its selection.")
             except ValueError:
                 self.state.set_physical_address(None)
             return False
-        # cec-ctl indents a message's decoded payload, so a TV's own OSD name,
-        # vendor text, or status string must never be read as a monitor failure.
-        # cec-ctl and sudo report their own errors unindented, outside a message.
-        errors = ("disconnected", "permission denied", "operation not permitted", "no such file",
-                  "failed", "cannot open", "could not open", "error:", "password is required")
+        # Errors from cec-ctl and sudo are not indented; message payloads are,
+        # and may contain words like "failed" (an OSD name, a vendor string).
         if (line[:1] not in (" ", "\t") and self._pending is None
-                and any(message in lower for message in errors)):
-            self._pending = None
+                and any(message in lower for message in self._errors)):
             self.ready = False
             self.failed = True
-            # cec-ctl exits 0 after refusing monitor mode, so this line is the
-            # only signal that the kernel turned the request down.
+            # cec-ctl exits 0 even when monitor mode is refused, so this line
+            # is the only sign of it.
             if "monitor mode failed" in lower or "as root" in lower:
                 self.needs_root = True
                 self.state.unavailable(PRIVILEGE_HELP)
@@ -290,30 +293,23 @@ class CecCtlParser:
 
 
 def read_physical_address(device: str) -> int | None:
-    """Read the current EDID-derived address without claiming CEC identities."""
-    import fcntl
-
+    """The adapter's current address (from EDID), without claiming a logical address."""
     fd = os.open(device, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
         value = bytearray(2)
-        # _IOR('a', 1, __u16), Linux UAPI, identical on Pi ARM32/ARM64.
-        fcntl.ioctl(fd, 0x80026101, value, True)  # CEC_ADAP_G_PHYS_ADDR
+        fcntl.ioctl(fd, CEC_ADAP_G_PHYS_ADDR, value, True)
         return physical_address(struct.unpack("=H", value)[0])
     finally:
         os.close(fd)
 
 
 class CecMonitor:
-    """Supervise a passive cec-ctl child while the Flask process stays unprivileged.
+    """Runs cec-ctl in monitor mode in a child process and feeds CecState.
 
-    No transmission, identity configuration, topology scan, or source-activation
-    commands are issued. A supplied command is an explicit local/testing
-    override, never an HTTP input.
-
-    Device access permits reading the physical address, but selecting Linux
-    monitor mode additionally requires CAP_NET_ADMIN. privileged=True prepends
-    sudo -n for an explicitly configured privileged monitor; it never prompts,
-    so it fails at once where sudo wants a password.
+    Monitor mode needs CAP_NET_ADMIN (install.sh sets it on cec-ctl).
+    privileged=True runs it through `sudo -n` instead, which fails at once
+    rather than prompting if a password is needed. `command` overrides the
+    whole command line, for testing.
     """
 
     def __init__(self, device: str = "/dev/cec0", stale_after_s: float = 120,
@@ -368,8 +364,7 @@ class CecMonitor:
             except PermissionError:
                 if not self.privileged or self.command is not None:
                     raise
-                # sudo may have changed the child credentials. Address only the
-                # process group created for this specific monitor subprocess.
+                # Started through sudo, so it runs as root: kill its process group through sudo too.
                 subprocess.run(["sudo", "-n", "kill", f"-{signum.name[3:]}", "--", f"-{process.pid}"],
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, timeout=1, check=False)
@@ -380,11 +375,8 @@ class CecMonitor:
                 pass
 
     def _refresh_address(self) -> bool:
-        """Read the adapter address only when this process is allowed to.
-
-        If the Flask account lacks device access, a denied read must leave the
-        address to cec-ctl's own State Change events instead of clearing it.
-        """
+        # Without access to the device, leave the address to cec-ctl's own
+        # "State Change" events instead of clearing it.
         try:
             self.state.set_physical_address(read_physical_address(self.device))
         except PermissionError:
@@ -397,7 +389,8 @@ class CecMonitor:
             parser = CecCtlParser(self.state)
             try:
                 if self._refresh_address() and self.state.snapshot()["physical_address"] is not None:
-                    self.state.unavailable("Waiting for the TV to report a source change; switch away from the Pi and back.")
+                    self.state.unavailable("Waiting for the TV to report a source change; "
+                                           "switch away from the Pi and back.")
                 process = subprocess.Popen(self._command(), stdin=subprocess.DEVNULL,
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                            start_new_session=True, env={**os.environ, "LC_ALL": "C"})
@@ -434,7 +427,8 @@ class CecMonitor:
                 missing = self.device if exc.filename == self.device else "cec-ctl, stdbuf, or sudo"
                 self.state.unavailable(f"CEC monitoring unavailable: {missing} was not found.")
             except PermissionError:
-                self.state.unavailable("CEC access was denied. Check device permissions and passive-monitor privileges.")
+                self.state.unavailable("CEC access was denied. Check device permissions and "
+                                       "passive-monitor privileges.")
             except (OSError, RuntimeError) as exc:
                 self.state.unavailable("CEC monitoring unavailable: " + str(exc)[:250])
             finally:

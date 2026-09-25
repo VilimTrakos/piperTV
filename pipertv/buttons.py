@@ -1,6 +1,6 @@
-"""Stable button identities, arranged after the user's One For All remote photo.
+"""The buttons of the One For All remote, row by row as they sit on it.
 
-Small icon meanings can be renamed in the UI without changing stored identities.
+Ids are what the library stores and never change; labels can be renamed.
 """
 
 _ROWS = [

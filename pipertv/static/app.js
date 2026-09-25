@@ -1,5 +1,7 @@
 "use strict";
 
+// The recording studio: pick a button on the drawn remote and record its signal.
+
 (() => {
   const $ = (id) => document.getElementById(id);
   const svg = (body) => `<svg viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
@@ -33,30 +35,41 @@
   };
   const shortLabels = {
     favorites: "fav", help: "?", info: "i", exit: "EXIT", ok: "OK", media: "MEDIA",
-    nettv: "NETTV", three_d: "3D", tv_radio: "TV/RAD", red: "Red", green: "Green", yellow: "Yellow", blue: "Blue",
+    nettv: "NETTV", three_d: "3D", tv_radio: "TV/RAD",
+    red: "Red", green: "Green", yellow: "Yellow", blue: "Blue",
   };
+  const ACTIVE = ["arming", "listening", "cancelling"];
+  const FINISHED = ["captured", "timeout", "cancelled", "error"];
+
   let state = null;
   let selectedId = "power";
   let selectedSample = 0;
   let health = { ok: false };
   let activeCapture = null;
-  let busy = false;
-  let mutating = false;
+  let busy = false;       // a capture is running
+  let mutating = false;   // a rename, delete or receiver test is running
   let pollTimer = null;
   let lastStatus = "idle";
   let control = null;
   let controlTimer = null;
   let controlActionError = "";
+  let pointer = null;
 
   async function api(path, options = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
     try {
-      const response = await fetch(path, { ...options, signal: controller.signal,
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+      const response = await fetch(path, {
+        ...options, signal: controller.signal,
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      });
       const text = await response.text();
       let data;
-      try { data = text ? JSON.parse(text) : {}; } catch { throw new Error(`The app returned an unexpected response (${response.status}).`); }
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        throw new Error(`The app returned an unexpected response (${response.status}).`);
+      }
       if (!response.ok) {
         const error = new Error(data.error || data.message || `Request failed (${response.status}).`);
         error.status = response.status;
@@ -64,10 +77,16 @@
       }
       return data;
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("The app did not respond in time. Check that the Python app is still running.");
-      if (error instanceof TypeError) throw new Error("Cannot reach the Python app. Check that it is still running, then reload this page.");
+      if (error.name === "AbortError") {
+        throw new Error("The app did not respond in time. Check that the Python app is still running.");
+      }
+      if (error instanceof TypeError) {
+        throw new Error("Cannot reach the Python app. Check that it is still running, then reload this page.");
+      }
       throw error;
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function showError(message) {
@@ -75,13 +94,16 @@
     $("global-error").hidden = !message;
   }
 
-  function buttonMetadata() { return state?.buttons.find((button) => button.id === selectedId); }
-  function samples() { return state?.recordings?.[selectedId]?.samples || []; }
+  const buttonMetadata = () => state?.buttons.find((button) => button.id === selectedId);
+  const samples = () => state?.recordings?.[selectedId]?.samples || [];
+
   function keyContent(id) {
     if (icons[id]) return icons[id];
     if (id.startsWith("digit_")) return id.slice(6);
     return shortLabels[id] || "·";
   }
+
+  // --- the remote ----------------------------------------------------------
 
   function makeKey(id, classes = "") {
     const metadata = state.buttons.find((button) => button.id === id);
@@ -100,7 +122,10 @@
   function makeRow(ids, classes = "", keyClasses = "") {
     const row = document.createElement("div");
     row.className = `key-row ${classes}`;
-    ids.forEach((id) => { const key = makeKey(id, `${keyClasses} ${id}`); if (key) row.append(key); });
+    for (const id of ids) {
+      const key = makeKey(id, `${keyClasses} ${id}`);
+      if (key) row.append(key);
+    }
     return row;
   }
 
@@ -108,7 +133,9 @@
     const keys = $("remote-keys");
     keys.replaceChildren();
     keys.append(makeRow(["power"], "power-row", "round power-key"));
-    [[1, 2, 3], [4, 5, 6], [7, 8, 9]].forEach((row) => keys.append(makeRow(row.map((digit) => `digit_${digit}`), "number-row", "round")));
+    for (const digits of [[1, 2, 3], [4, 5, 6], [7, 8, 9]]) {
+      keys.append(makeRow(digits.map((digit) => `digit_${digit}`), "number-row", "round"));
+    }
     keys.append(makeRow(["favorites", "digit_0", "guide"], "number-row", "round"));
     keys.querySelector('[data-id="favorites"]')?.classList.add("tiny-label");
     keys.append(makeRow(["red", "green", "yellow", "blue"], "color-row"));
@@ -118,14 +145,19 @@
     navigation.append(makeRow(["home", "back"], "nav-corners"));
     const pad = document.createElement("div");
     pad.className = "nav-pad";
-    ["up", "left", "ok", "right", "down"].forEach((id) => { const key = makeKey(id); if (key) pad.append(key); });
+    for (const id of ["up", "left", "ok", "right", "down"]) {
+      const key = makeKey(id);
+      if (key) pad.append(key);
+    }
     navigation.append(pad, makeRow(["menu", "list"], "nav-corners"));
     keys.append(navigation);
     keys.append(makeRow(["volume_up", "source", "channel_up"], "volume-row"));
     keys.append(makeRow(["volume_down", "mute", "channel_down"], "volume-row"));
     keys.append(makeRow(["media", "nettv"], "media-row"));
-    [["rewind", "play", "fast_forward"], ["previous", "pause", "next"], ["record", "three_d", "stop"], ["tv_radio", "audio", "format"]]
-      .forEach((ids) => keys.append(makeRow(ids, "transport-row")));
+    for (const ids of [["rewind", "play", "fast_forward"], ["previous", "pause", "next"],
+                       ["record", "three_d", "stop"], ["tv_radio", "audio", "format"]]) {
+      keys.append(makeRow(ids, "transport-row"));
+    }
   }
 
   function syncKeyStates() {
@@ -137,7 +169,8 @@
       key.classList.toggle("is-saved", count > 0);
       key.setAttribute("aria-pressed", String(id === selectedId));
       key.title = `${metadata.label}${count ? ` · ${count} saved` : ""}`;
-      key.setAttribute("aria-label", `${metadata.label}${count ? `, ${count} saved recording${count === 1 ? "" : "s"}` : ""}`);
+      key.setAttribute("aria-label", `${metadata.label}${count
+        ? `, ${count} saved recording${count === 1 ? "" : "s"}` : ""}`);
       key.disabled = busy || mutating;
     });
     $("remote").classList.toggle("remote-busy", busy);
@@ -147,25 +180,31 @@
     if (!state) return;
     syncKeyStates();
     $("record-button").disabled = busy || mutating || (state.mode !== "demo" && !health.ok);
-    $("record-label").textContent = busy ? "Recording…" : samples().length ? "Record another signal" : "Record signal";
+    $("record-label").textContent = busy ? "Recording…"
+      : samples().length ? "Record another signal" : "Record signal";
     $("cancel-capture").hidden = !busy;
     $("cancel-capture").disabled = !activeCapture;
-    ["rename-button", "sample-select", "delete-sample", "test-receiver"]
-      .forEach((id) => { $(id).disabled = busy || mutating; });
-    $("rename-form").querySelectorAll("input,button").forEach((element) => { element.disabled = busy || mutating; });
+    for (const id of ["rename-button", "sample-select", "delete-sample", "test-receiver"]) {
+      $(id).disabled = busy || mutating;
+    }
+    $("rename-form").querySelectorAll("input,button").forEach((element) => {
+      element.disabled = busy || mutating;
+    });
   }
 
   function renderState() {
     $("demo-banner").hidden = state.mode !== "demo";
     $("total-count").textContent = state.buttons.length;
-    $("saved-count").textContent = state.buttons.filter((button) => state.recordings?.[button.id]?.samples?.length).length;
+    $("saved-count").textContent = state.buttons
+      .filter((button) => state.recordings?.[button.id]?.samples?.length).length;
     $("storage-path").textContent = state.data_file || "Local JSON library";
     $("storage-path").title = state.data_file || "Local JSON library";
     const metadata = buttonMetadata();
     $("selected-label").textContent = metadata.label;
     $("selected-id").textContent = metadata.id;
     $("selected-section").textContent = (metadata.section || "remote").replaceAll("_", " ").toUpperCase();
-    $("selected-icon").innerHTML = icons[selectedId] || `<span class="${selectedId.startsWith("digit_") ? "" : "tiny-icon-text"}">${keyContent(selectedId)}</span>`;
+    $("selected-icon").innerHTML = icons[selectedId]
+      || `<span class="${selectedId.startsWith("digit_") ? "" : "tiny-icon-text"}">${keyContent(selectedId)}</span>`;
     renderSamples();
     updateControls();
   }
@@ -177,8 +216,10 @@
     $("rename-form").hidden = true;
     setCaptureStatus("idle");
     renderState();
+    // On a phone the capture card is below the remote; scroll to it.
     if (scroll && window.matchMedia("(max-width:660px)").matches) {
-      $("capture-heading").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" });
+      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      $("capture-heading").scrollIntoView({ behavior: reduced ? "instant" : "smooth", block: "start" });
     }
   }
 
@@ -187,24 +228,39 @@
     const badge = $("connection-badge");
     badge.className = `status-badge ${demo ? "demo" : health.ok ? "connected" : "disconnected"}`;
     badge.querySelector("span").textContent = demo ? "Demo" : health.ok ? "Connected" : "Offline";
-    $("receiver-detail").textContent = demo ? "Simulated signals · hardware not in use" : "Raspberry Pi · GPIO receiver";
+    $("receiver-detail").textContent = demo
+      ? "Simulated signals · hardware not in use" : "Raspberry Pi · GPIO receiver";
     $("local-receiver-error").hidden = !!health.ok;
-    $("local-receiver-error").textContent = health.error || "The receiver is unavailable. Check its wiring and the server configuration, then test again.";
+    $("local-receiver-error").textContent = health.error
+      || "The receiver is unavailable. Check its wiring and the server configuration, then test again.";
     updateControls();
   }
+
+  // --- recording -------------------------------------------------------------
 
   function setCaptureStatus(status, error = "") {
     lastStatus = status;
     const label = buttonMetadata()?.label || "the selected button";
     const demo = state?.mode === "demo";
     const statuses = {
-      idle: ["↗", "Ready when you are", demo ? "Click Record to create a clearly marked example signal and try the recording workflow." : "Click Record, then point your real remote at the receiver and press the selected button once."],
-      arming: ["·", "Preparing receiver…", demo ? "Preparing a simulated recording. No hardware is being used." : "Wait for the receiver to start listening before pressing your remote."],
-      listening: ["◉", demo ? "Simulating a remote press…" : `Listening — press ${label}`, demo ? "Generating a sample infrared envelope for this button." : "Point the real remote at the sensor and give the button one short press. Hold the remote steady."],
-      cancelling: ["·", "Cancelling…", "Waiting for the receiver to finish. You can start another recording once it is ready."],
-      captured: ["✓", "Signal saved", demo ? "Your simulated signal is saved. Record another sample, or select the next button." : "Your recording is safely stored in the library. Try another sample, or choose the next button."],
-      timeout: ["⌛", "No signal received", "Try again with the remote closer to the sensor. Check the receiver wiring, then wait for Listening before pressing."],
-      cancelled: ["↗", "Recording cancelled", "Nothing was saved. You can record this button again whenever you’re ready."],
+      idle: ["↗", "Ready when you are", demo
+        ? "Click Record to create a clearly marked example signal and try the recording workflow."
+        : "Click Record, then point your real remote at the receiver and press the selected button once."],
+      arming: ["·", "Preparing receiver…", demo
+        ? "Preparing a simulated recording. No hardware is being used."
+        : "Wait for the receiver to start listening before pressing your remote."],
+      listening: ["◉", demo ? "Simulating a remote press…" : `Listening — press ${label}`, demo
+        ? "Generating a sample infrared envelope for this button."
+        : "Point the real remote at the sensor and give the button one short press. Hold the remote steady."],
+      cancelling: ["·", "Cancelling…",
+        "Waiting for the receiver to finish. You can start another recording once it is ready."],
+      captured: ["✓", "Signal saved", demo
+        ? "Your simulated signal is saved. Record another sample, or select the next button."
+        : "Your recording is safely stored in the library. Try another sample, or choose the next button."],
+      timeout: ["⌛", "No signal received",
+        "Try again with the remote closer to the sensor. Check the receiver wiring, then wait for Listening before pressing."],
+      cancelled: ["↗", "Recording cancelled",
+        "Nothing was saved. You can record this button again whenever you’re ready."],
       error: ["!", "Couldn’t record the signal", error || "Check the receiver connection and try again."],
     };
     const [icon, title, copy] = statuses[status] || statuses.error;
@@ -214,16 +270,122 @@
     $("capture-status-copy").textContent = copy;
   }
 
+  async function finishCapture(job) {
+    clearTimeout(pollTimer);
+    activeCapture = null;
+    busy = false;
+    setCaptureStatus(job.status, job.error);
+    if (job.status === "captured") {
+      try {
+        await refreshState();
+        selectedSample = Math.max(0, samples().length - 1);
+        renderSamples();
+      } catch (error) {
+        showError(`The signal was captured, but the library could not be refreshed: ${error.message}`);
+      }
+    }
+    updateControls();
+  }
+
+  async function pollCapture() {
+    if (!activeCapture) return;
+    const id = activeCapture;
+    try {
+      const job = await api(`/api/captures/${encodeURIComponent(id)}`);
+      if (activeCapture !== id) return;
+      if (FINISHED.includes(job.status)) {
+        await finishCapture(job);
+      } else {
+        setCaptureStatus(job.status);
+        pollTimer = setTimeout(pollCapture, 250);
+      }
+    } catch (error) {
+      if (activeCapture !== id) return;
+      if (error.status === 404) {
+        await finishCapture({ status: "error", error: "This recording is no longer active. "
+          + "The server may have restarted. Check the saved signals, then record again." });
+        return;
+      }
+      // Stay busy: the capture may still be running on the server.
+      setCaptureStatus("error", `${error.message} Reconnecting to check this recording…`);
+      pollTimer = setTimeout(pollCapture, 1500);
+    }
+  }
+
+  $("record-button").addEventListener("click", async () => {
+    if (busy || mutating) return;
+    busy = true;
+    showError("");
+    $("rename-form").hidden = true;
+    setCaptureStatus("arming");
+    updateControls();
+    try {
+      const job = await api("/api/captures", { method: "POST", body: JSON.stringify({
+        button_id: selectedId, timeout_s: 10, gap_us: 120000, max_duration_s: 3 }) });
+      if (!job.id) throw new Error("The receiver did not return a recording ID. Reconnect and try again.");
+      activeCapture = job.id;
+      updateControls();
+      if (FINISHED.includes(job.status)) {
+        await finishCapture(job);
+      } else {
+        setCaptureStatus(job.status || "arming");
+        pollTimer = setTimeout(pollCapture, 100);
+      }
+    } catch (error) {
+      busy = false;
+      activeCapture = null;
+      setCaptureStatus("error", error.message);
+      updateControls();
+    }
+  });
+
+  $("cancel-capture").addEventListener("click", async () => {
+    if (!activeCapture) return;
+    $("cancel-capture").disabled = true;
+    const id = activeCapture;
+    try {
+      const job = await api(`/api/captures/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" });
+      if (activeCapture !== id) return;
+      if (FINISHED.includes(job.status)) await finishCapture(job);
+      else setCaptureStatus("cancelling");
+    } catch (error) {
+      showError(`Could not cancel: ${error.message} The app will keep checking the receiver.`);
+    } finally {
+      updateControls();
+    }
+  });
+
+  $("test-receiver").addEventListener("click", async () => {
+    if (busy || mutating) return;
+    mutating = true;
+    $("test-receiver").textContent = "Testing receiver…";
+    updateControls();
+    try {
+      health = await api("/api/health");
+      await refreshState();
+    } catch (error) {
+      health = { ok: false, error: error.message };
+    } finally {
+      mutating = false;
+      $("test-receiver").textContent = "Test receiver";
+      renderConnection();
+    }
+  });
+
+  // --- saved signals -----------------------------------------------------------
+
   function signalDurations(signal) {
     const values = signal.durations_us || signal.pulses_us || signal.timings_us || [];
-    return Array.isArray(values) ? values.map(Number).filter((value) => Number.isFinite(value) && value > 0) : [];
+    return Array.isArray(values)
+      ? values.map(Number).filter((value) => Number.isFinite(value) && value > 0) : [];
   }
 
   function readableDate(value, compact = false) {
     if (!value) return "Unknown";
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "Unknown";
-    return date.toLocaleString(undefined, compact ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" } : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const format = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" };
+    return date.toLocaleString(undefined, compact ? format : { ...format, second: "2-digit" });
   }
 
   function renderWaveform(durations) {
@@ -243,7 +405,9 @@
     drawing.setAttribute("viewBox", "0 0 600 60");
     drawing.setAttribute("preserveAspectRatio", "none");
     drawing.setAttribute("role", "img");
-    drawing.setAttribute("aria-label", `${durations.length} alternating pulse and space intervals spanning ${(total / 1000).toFixed(1)} milliseconds`);
+    drawing.setAttribute("aria-label", `${durations.length} alternating pulse and space intervals `
+      + `spanning ${(total / 1000).toFixed(1)} milliseconds`);
+    // Pulses high, spaces low, each as wide as it lasted.
     let elapsed = 0;
     let path = "M 0 48";
     durations.forEach((duration, index) => {
@@ -269,7 +433,9 @@
     saved.forEach((signal, index) => {
       const option = document.createElement("option");
       option.value = index;
-      option.textContent = `Sample ${index + 1} · ${readableDate(signal.captured_at || signal.timestamp)}${signal.simulated || signal.demo || signal.source === "demo" ? " · DEMO" : ""}`;
+      const demo = signal.simulated || signal.demo || signal.source === "demo";
+      option.textContent = `Sample ${index + 1} · ${readableDate(signal.captured_at || signal.timestamp)}`
+        + (demo ? " · DEMO" : "");
       select.append(option);
     });
     select.value = String(selectedSample);
@@ -278,7 +444,8 @@
     renderWaveform(durations);
     $("signal-intervals").textContent = durations.length || "—";
     const carrier = signal.carrier_hz || signal.frequency_hz || 38000;
-    $("signal-carrier").textContent = `${(carrier / 1000).toLocaleString()} kHz ${signal.carrier_source === "measured" ? "measured" : "assumed"}`;
+    $("signal-carrier").textContent = `${(carrier / 1000).toLocaleString()} kHz `
+      + (signal.carrier_source === "measured" ? "measured" : "assumed");
     $("signal-date").textContent = readableDate(signal.captured_at || signal.timestamp, true);
     $("signal-json").textContent = JSON.stringify(signal, null, 2);
     $("export-sample").href = `/api/export/${encodeURIComponent(selectedId)}?sample=${selectedSample}&format=irctl`;
@@ -292,95 +459,6 @@
     renderState();
   }
 
-  async function finishCapture(job) {
-    clearTimeout(pollTimer);
-    activeCapture = null;
-    busy = false;
-    setCaptureStatus(job.status, job.error);
-    if (job.status === "captured") {
-      try {
-        await refreshState();
-        selectedSample = Math.max(0, samples().length - 1);
-        renderSamples();
-      } catch (error) { showError(`The signal was captured, but the library could not be refreshed: ${error.message}`); }
-    }
-    updateControls();
-  }
-
-  async function pollCapture() {
-    if (!activeCapture) return;
-    const id = activeCapture;
-    try {
-      const job = await api(`/api/captures/${encodeURIComponent(id)}`);
-      if (activeCapture !== id) return;
-      if (["captured", "timeout", "cancelled", "error"].includes(job.status)) await finishCapture(job);
-      else {
-        setCaptureStatus(job.status);
-        pollTimer = setTimeout(pollCapture, 250);
-      }
-    } catch (error) {
-      if (activeCapture !== id) return;
-      if (error.status === 404) {
-        await finishCapture({ status: "error", error: "This recording is no longer active. The server may have restarted. Check the saved signals, then record again." });
-        return;
-      }
-      // Keep the association locked while its server-side capture may still be live.
-      setCaptureStatus("error", `${error.message} Reconnecting to check this recording…`);
-      pollTimer = setTimeout(pollCapture, 1500);
-    }
-  }
-
-  $("record-button").addEventListener("click", async () => {
-    if (busy || mutating) return;
-    busy = true;
-    showError("");
-    $("rename-form").hidden = true;
-    setCaptureStatus("arming");
-    updateControls();
-    try {
-      const job = await api("/api/captures", { method: "POST", body: JSON.stringify({ button_id: selectedId, timeout_s: 10, gap_us: 120000, max_duration_s: 3 }) });
-      if (!job.id) throw new Error("The receiver did not return a recording ID. Reconnect and try again.");
-      activeCapture = job.id;
-      updateControls();
-      if (["captured", "timeout", "cancelled", "error"].includes(job.status)) await finishCapture(job);
-      else { setCaptureStatus(job.status || "arming"); pollTimer = setTimeout(pollCapture, 100); }
-    } catch (error) {
-      busy = false;
-      activeCapture = null;
-      setCaptureStatus("error", error.message);
-      updateControls();
-    }
-  });
-
-  $("cancel-capture").addEventListener("click", async () => {
-    if (!activeCapture) return;
-    $("cancel-capture").disabled = true;
-    const id = activeCapture;
-    try {
-      const job = await api(`/api/captures/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" });
-      if (activeCapture !== id) return;
-      if (["captured", "timeout", "cancelled", "error"].includes(job.status)) await finishCapture(job);
-      else setCaptureStatus("cancelling");
-    } catch (error) { showError(`Could not cancel: ${error.message} The app will keep checking the receiver.`); }
-    finally { updateControls(); }
-  });
-
-  $("test-receiver").addEventListener("click", async () => {
-    if (busy || mutating) return;
-    mutating = true;
-    $("test-receiver").textContent = "Testing receiver…";
-    updateControls();
-    try {
-      health = await api("/api/health");
-      await refreshState();
-    } catch (error) { health = { ok: false, error: error.message }; }
-    finally {
-      mutating = false;
-      $("test-receiver").textContent = "Test receiver";
-      renderConnection();
-    }
-  });
-
   $("rename-button").addEventListener("click", () => {
     if (busy || mutating) return;
     $("rename-form").hidden = false;
@@ -388,7 +466,12 @@
     $("button-label").focus();
     $("button-label").select();
   });
-  $("cancel-rename").addEventListener("click", () => { $("rename-form").hidden = true; $("rename-button").focus(); });
+
+  $("cancel-rename").addEventListener("click", () => {
+    $("rename-form").hidden = true;
+    $("rename-button").focus();
+  });
+
   $("rename-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const label = $("button-label").value.trim();
@@ -396,28 +479,47 @@
     mutating = true;
     updateControls();
     try {
-      state = await api(`/api/buttons/${encodeURIComponent(selectedId)}`, { method: "PUT", body: JSON.stringify({ label }) });
+      state = await api(`/api/buttons/${encodeURIComponent(selectedId)}`,
+                        { method: "PUT", body: JSON.stringify({ label }) });
       $("rename-form").hidden = true;
       showError("");
       renderState();
       if (lastStatus === "idle") setCaptureStatus("idle");
-    } catch (error) { showError(error.message); }
-    finally { mutating = false; updateControls(); }
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      mutating = false;
+      updateControls();
+    }
   });
-  $("sample-select").addEventListener("change", () => { selectedSample = Number($("sample-select").value); renderSamples(); });
+
+  $("sample-select").addEventListener("change", () => {
+    selectedSample = Number($("sample-select").value);
+    renderSamples();
+  });
+
   $("delete-sample").addEventListener("click", async () => {
     if (busy || mutating) return;
-    if (!window.confirm(`Delete sample ${selectedSample + 1} for ${buttonMetadata().label}? Other recordings will be kept.`)) return;
+    const question = `Delete sample ${selectedSample + 1} for ${buttonMetadata().label}? `
+      + "Other recordings will be kept.";
+    if (!window.confirm(question)) return;
     mutating = true;
     updateControls();
     try {
-      state = await api(`/api/buttons/${encodeURIComponent(selectedId)}/samples/${selectedSample}`, { method: "DELETE" });
+      state = await api(`/api/buttons/${encodeURIComponent(selectedId)}/samples/${selectedSample}`,
+                        { method: "DELETE" });
       showError("");
       renderState();
       setCaptureStatus("idle");
-    } catch (error) { showError(error.message); }
-    finally { mutating = false; updateControls(); }
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      mutating = false;
+      updateControls();
+    }
   });
+
+  // --- desktop control -----------------------------------------------------------
 
   function showControlError(message) {
     $("control-error").textContent = message || "";
@@ -428,20 +530,21 @@
     if (!control) { $("control-card").hidden = true; return; }
     $("control-card").hidden = false;
     const on = control.control === "on";
+    const manual = control.origin === "manual";
     const badge = $("control-badge");
     badge.className = `status-badge ${on ? "connected" : "disconnected"}`;
-    const manual = control.origin === "manual";
     badge.querySelector("span").textContent = on ? `${manual ? "Manual" : "On"} · ${control.mode}` : "Off";
     $("control-detail").textContent = control.hold || (manual
       ? "Manual confirmation: you said the TV is showing the Pi. Stop control when you switch away."
       : control.detail || "");
-    // A mode belongs to one visit, so the choice reappears on every new one.
+    // A mode belongs to one visit, so the choice comes back on every new visit.
     $("control-modes").hidden = !control.needs_mode;
     $("control-manual").hidden = Boolean(control.session);
     $("control-stop").hidden = !control.session;
     const runtime = control.runtime || {};
-    const problem = [runtime.pointer, runtime.receiver, runtime.desktop,
-      ...(control.mode === "snapping" ? [runtime.targets] : [])].find(part => part?.error);
+    const parts = [runtime.pointer, runtime.receiver, runtime.desktop,
+                   ...(control.mode === "snapping" ? [runtime.targets] : [])];
+    const problem = parts.find((part) => part?.error);
     $("control-runtime-error").textContent = problem?.error || "";
     $("control-runtime-error").hidden = !problem;
   }
@@ -451,17 +554,20 @@
       control = await api("/api/control");
       showControlError(controlActionError);
     } catch (error) {
-      // 404 means this server was started without desktop control.
-      if (error.status === 404) { control = null; renderControl(); return; }
+      if (error.status === 404) {  // started without desktop control
+        control = null;
+        renderControl();
+        return;
+      }
       showControlError(error.message);
       return;
     }
     renderControl();
   }
 
+  // The TV can change input at any moment, so the state is re-read on a timer.
   function pollControl() {
     clearTimeout(controlTimer);
-    // The TV can change input at any time, so the gate is re-read on a timer.
     controlTimer = setTimeout(async () => { await refreshControl(); pollControl(); }, 2500);
   }
 
@@ -486,16 +592,17 @@
   $("mode-pointer").addEventListener("click", () => chooseMode("pointer"));
   $("mode-snapping").addEventListener("click", () => chooseMode("snapping"));
   $("mode-piper").addEventListener("click", () => chooseMode("piper"));
-  // --- how the cursor moves ------------------------------------------------
-  // A preference rather than a mode: it outlives the visit, so it is saved
-  // with the recordings and read back at startup.
-  let pointer = null;
+  $("control-confirm").addEventListener("click", () => controlAction("/api/control/manual", { confirmed: true }));
+  $("control-stop").addEventListener("click", () => controlAction("/api/control/stop", {}));
+
+  // --- cursor settings (saved with the recordings) ---------------------------------
 
   function renderPointer() {
     if (!pointer) return;
     const settings = pointer.settings;
-    $("drive-snap").className = settings.drive === "nudge" ? "button button-outline" : "button button-primary";
-    $("drive-nudge").className = settings.drive === "nudge" ? "button button-primary" : "button button-outline";
+    const nudge = settings.drive === "nudge";
+    $("drive-snap").className = nudge ? "button button-outline" : "button button-primary";
+    $("drive-nudge").className = nudge ? "button button-primary" : "button button-outline";
     $("pointer-step").value = settings.step_px;
     $("pointer-max").value = settings.max_step_px;
     $("pointer-accelerate").value = settings.accelerate_within_s;
@@ -533,8 +640,7 @@
   $("pointer-reset").addEventListener("click", () => savePointer(pointer?.defaults ?? {},
     "Back to the defaults."));
 
-  $("control-confirm").addEventListener("click", () => controlAction("/api/control/manual", { confirmed: true }));
-  $("control-stop").addEventListener("click", () => controlAction("/api/control/stop", {}));
+  // --- start -------------------------------------------------------------------------
 
   async function initialize() {
     try {
@@ -546,7 +652,8 @@
       buildRemote();
       renderState();
       setCaptureStatus("idle");
-      if (state.active_capture && ["arming", "listening", "cancelling"].includes(state.active_capture.status)) {
+      // A capture started earlier (e.g. before a reload) is still running.
+      if (state.active_capture && ACTIVE.includes(state.active_capture.status)) {
         selectedId = state.active_capture.button_id;
         activeCapture = state.active_capture.id;
         busy = true;
@@ -554,7 +661,11 @@
         setCaptureStatus(state.active_capture.status);
         pollTimer = setTimeout(pollCapture, 100);
       }
-      try { health = await api("/api/health"); } catch (error) { health = { ok: false, error: error.message }; }
+      try {
+        health = await api("/api/health");
+      } catch (error) {
+        health = { ok: false, error: error.message };
+      }
       renderConnection();
       await refreshControl();
       pollControl();
@@ -565,5 +676,6 @@
       $("connection-badge").classList.add("disconnected");
     }
   }
+
   initialize();
 })();

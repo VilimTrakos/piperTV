@@ -1,5 +1,4 @@
 import signal
-import sys
 import tempfile
 from pathlib import Path
 from flask import request, jsonify
@@ -46,6 +45,6 @@ except KeyboardInterrupt:
     pass
 finally:
     server.server_close()
-    app.extensions['pipertv'].close()
+    app.extensions['recorder'].close()
     remote.close()
     temporary.cleanup()

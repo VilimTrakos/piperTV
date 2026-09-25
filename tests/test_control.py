@@ -2,11 +2,12 @@ import logging
 import time
 import unittest
 
-from pipertv.control import (BACK_AGAIN_S, STEP_ASIDE_AFTER_S, STEP_HOLD_DELAY_S,
-                             STEP_HOLD_INTERVAL_S, RemoteControl)
+from pipertv.control import BACK_CONFIRM_S, HIDE_INTERFACE_AFTER_S, RemoteControl
+from pipertv.desktop import POINTER_DEFAULTS
 from pipertv.window import validate_window
 
 SCREEN = (1920, 1080)
+STEP_PACE = (POINTER_DEFAULTS["hold_delay_s"], POINTER_DEFAULTS["hold_interval_s"])
 
 logging.getLogger("pipertv.control").addHandler(logging.NullHandler())
 
@@ -86,6 +87,9 @@ class FakeDesktop:
         self.released += 1
         self.active = False
 
+    def configure(self, settings):
+        self.settings = settings
+
     def health(self):
         return {"ok": True, "active": self.active}
 
@@ -129,6 +133,9 @@ class FakeLauncher:
     def policy(self, service_id):
         return self.POLICY.get(service_id, "keys")
 
+    def configure(self, window):
+        self.window = window
+
     def snapshot(self):
         return {"available": self.available, "reason": None, "browser": "/usr/bin/chromium",
                 "services": [{"id": key, "name": name, "control": self.policy(key)}
@@ -146,7 +153,6 @@ class FakeKeys:
 
     def __init__(self):
         self.sent = []
-        self.typed = []
         self.released = self.closed = 0
         self.active = False
 
@@ -154,11 +160,6 @@ class FakeKeys:
         self.sent.append(key)
         self.active = True
         return key
-
-    def write(self, text):
-        self.typed.append(text)
-        self.active = True
-        return len(text)
 
     def release(self):
         self.released += 1
@@ -361,8 +362,7 @@ class SupervisorTests(unittest.TestCase):
                          "the virtual pointer must be taken away at once")
 
     def test_a_mode_chosen_between_passes_is_still_covered(self):
-        # The choice and the TV switching away can land in the same gap between
-        # supervisor passes; the pointer must still be taken away.
+        # Choosing and switching away can both happen between two supervisor passes.
         control, monitor, _controller, _targets = build("active")
         select(control)
         control.desktop.press("right")
@@ -456,7 +456,6 @@ class BrowserActionTests(unittest.TestCase):
 
     def test_a_stale_choice_is_refused(self):
         control, monitor, _controller, _targets = build("active")
-        stale = control.session.snapshot()
         select(control)
         monitor.state = "inactive"
         control._tick()
@@ -672,8 +671,7 @@ class ServiceTests(unittest.TestCase):
                                  button)
 
     def test_back_belongs_to_the_service_not_to_piper(self):
-        # A television's back button leaves a video, and taking it away would
-        # make the service unusable. Exit and home are the way out instead.
+        # Back is how you leave a video in the service; exit and home close it.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("youtube", self.session_id(control))
@@ -691,8 +689,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.desktop.presses, [])
 
     def test_a_site_built_for_a_mouse_is_driven_by_snapping(self):
-        # Arrow keys do nothing on such a page: a cookie dialog's Accept cannot
-        # be reached with them, which is the whole reason this exists.
+        # Arrow keys do nothing on a normal website.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", self.session_id(control))
@@ -704,8 +701,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.keys.sent, [])
 
     def test_back_twice_on_a_page_goes_back_a_page(self):
-        # A page has nothing for escape to close: it is left by going back to
-        # whatever was on the screen before it, on the second press.
+        # On a page, back means the previous page, on the second press.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", self.session_id(control))
@@ -724,8 +720,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.keys.sent, ["page back", "page back"])
 
     def test_a_press_aimed_at_something_else_ends_the_gesture(self):
-        # Back, then a look around the page, then back: that second back is
-        # the start of a new request, not the end of an abandoned one.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", self.session_id(control))
@@ -739,13 +733,12 @@ class ServiceTests(unittest.TestCase):
         select(control, "piper")
         control.launch("prime", self.session_id(control))
         control._press("back")
-        control.going_back._asked_at -= BACK_AGAIN_S + 1
+        control.back_twice._first_at -= BACK_CONFIRM_S + 1
         control._press("back")
         self.assertEqual(control.keys.sent, [])
 
     def test_back_in_an_application_still_closes_what_it_has_open(self):
-        # A television app has its own idea of back, and escape is how it
-        # hears it; there is no page behind it to return to.
+        # A TV app gets escape for back.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("youtube", self.session_id(control))
@@ -753,8 +746,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.keys.sent, ["back"])
 
     def test_back_takes_the_keyboard_away_and_is_spent_on_it(self):
-        # One press turns the keyboard off; it is not also half of a request
-        # to leave the page, which would leave whoever typed somewhere else.
+        # The press that closes the keyboard doesn't count towards going back.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", self.session_id(control))
@@ -776,10 +768,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.desktop.presses, [])
 
     def test_the_cursor_survives_between_presses_while_snapping_a_service(self):
-        # The bug this answers: the supervisor took the pointer away every pass
-        # because the visit chose "piper", and each new device believes it is
-        # at the centre of the screen. Every press then started from the
-        # centre, which is exactly what made snapping look random.
+        # Regression: the supervisor released the pointer on every pass (the
+        # visit's mode is "piper"), so every snap restarted from the centre.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", self.session_id(control))
@@ -827,7 +817,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.keys.released, 1)
 
     def test_nothing_is_typed_into_a_service_with_the_gate_shut(self):
-        # The TV is showing something else and those presses are meant for it.
         control, monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("youtube", self.session_id(control))
@@ -836,8 +825,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.keys.sent, [])
 
     def test_the_way_out_works_in_a_desktop_mode_too(self):
-        # A service opened from the interface is Piper's to close whatever mode
-        # the visit later chose; otherwise its window owns the TV for good.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("youtube", self.session_id(control))
@@ -869,8 +856,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.events(0)["services"]["running"]["id"], "youtube")
 
     def test_a_service_the_tv_switched_away_from_keeps_running(self):
-        # Piper stops controlling, but it does not close what someone opened:
-        # the TV coming back should find it where they left it.
         control, monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("youtube", self.session_id(control))
@@ -886,8 +871,7 @@ class WayOutTests(unittest.TestCase):
         return select(control, mode)["session"]["id"]
 
     def test_a_service_is_closed_even_with_the_gate_shut(self):
-        # How someone gets trapped: the TV stops reporting, control goes off,
-        # and a full-screen YouTube is left with nothing that can close it.
+        # The TV stops reporting, control goes off: exit must still close YouTube.
         control, monitor, _controller, _targets = build("active")
         control.launch("youtube", self.visit(control))
         monitor.state = "unknown"
@@ -908,7 +892,6 @@ class WayOutTests(unittest.TestCase):
         self.assertEqual(control.events(0)["events"], [])
 
     def test_the_receiver_keeps_listening_when_the_gate_shuts(self):
-        # The reason the gate no longer decides whether a press is heard.
         control, monitor, _controller, _targets = build("active")
         select(control, "piper")
         monitor.state = "inactive"
@@ -931,10 +914,10 @@ class WayOutTests(unittest.TestCase):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         now = [100.0]
-        control.leaving.clock = lambda: now[0]
+        control.exit_twice.clock = lambda: now[0]
         control._press("exit")
-        now[0] += control.leaving.window_s + 0.1
-        self.assertFalse(control.leaving.armed())
+        now[0] += control.exit_twice.window_s + 0.1
+        self.assertFalse(control.exit_twice.armed())
         control._press("exit")
         self.assertEqual(control.interface.closed, 0, "the second press asks again")
 
@@ -943,7 +926,7 @@ class WayOutTests(unittest.TestCase):
         select(control, "piper")
         control._press("exit")
         control._press("right")
-        self.assertFalse(control.leaving.armed())
+        self.assertFalse(control.exit_twice.armed())
         control._press("exit")
         self.assertEqual(control.interface.closed, 0)
 
@@ -957,17 +940,14 @@ class WayOutTests(unittest.TestCase):
         self.assertEqual(control.interface.closed, 1)
 
     def test_exit_leaves_a_service_first_and_keeps_piper(self):
-        # One key, read in context: the service goes, the interface stays.
         control, _monitor, _controller, _targets = build("active")
         control.launch("youtube", self.visit(control))
         control._press("exit")
         self.assertEqual(control.launcher.stopped, 1)
         self.assertEqual(control.interface.closed, 0)
-        self.assertFalse(control.leaving.armed())
+        self.assertFalse(control.exit_twice.armed())
 
     def test_leaving_piper_gives_the_remote_to_the_desktop_mouse(self):
-        # Otherwise the visit still belongs to an interface nobody can see,
-        # and the remote does nothing at all.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control._press("exit")
@@ -1010,11 +990,10 @@ class SteppingAsideTests(unittest.TestCase):
         return control
 
     def test_the_interface_stays_until_the_service_has_had_time_to_appear(self):
-        # Closing it at once would show the bare desktop while the service
-        # is still starting.
+        # Closing it at once would show the desktop while the service starts.
         control = self.opened()
         self.assertEqual(control.interface.closed, 0)
-        self.assertEqual([delay for delay, _ in control.later.pending], [STEP_ASIDE_AFTER_S])
+        self.assertEqual([delay for delay, _ in control.later.pending], [HIDE_INTERFACE_AFTER_S])
 
     def test_the_interface_closes_once_the_service_covers_it(self):
         control = self.opened()
@@ -1031,8 +1010,7 @@ class SteppingAsideTests(unittest.TestCase):
         self.assertIsNone(control.snapshot()["interface"]["closed_for"])
 
     def test_a_service_that_ends_by_itself_brings_the_interface_back(self):
-        # Closed from the desktop, or crashed: either way the remote needs
-        # something on the screen to talk to.
+        # Closed from the desktop, or crashed.
         control = self.opened()
         control.later.run()
         control.launcher.open = None
@@ -1064,8 +1042,7 @@ class SteppingAsideTests(unittest.TestCase):
         self.assertEqual(control.interface.closed, 0)
 
     def test_piper_brings_back_only_what_it_sent_away(self):
-        # With no interface on the Pi -- someone driving /tv from a laptop --
-        # closing a service must not start a browser on the television.
+        # E.g. /tv opened from a laptop: don't start a browser on the TV.
         control = self.opened()
         control.interface.visible = False
         control.later.run()
@@ -1083,8 +1060,7 @@ class SteppingAsideTests(unittest.TestCase):
         self.assertEqual(control.interface.opened, ["prime"])
 
     def test_shutting_down_leaves_the_interface_on_the_television(self):
-        # The service goes with the app; without this a restart would leave
-        # the TV on the desktop, with nothing for the remote to talk to.
+        # The service closes with the app; the interface must come back.
         control = self.opened()
         control.later.run()
         control.close()
@@ -1110,8 +1086,7 @@ class BackdropTests(unittest.TestCase):
         return control, calls
 
     def test_the_backdrop_goes_up_before_the_interface(self):
-        # Whatever maps last is on top: the other way round, the backdrop
-        # would cover the interface it is meant to be behind.
+        # The window mapped last is on top.
         control, calls = self.build(backdrop_visible=False)
         control.show_interface()
         self.assertEqual(calls, ["backdrop up", "interface open"])
@@ -1122,7 +1097,6 @@ class BackdropTests(unittest.TestCase):
         self.assertEqual(calls, ["backdrop down", "interface open"])
 
     def test_a_missing_backdrop_is_put_up_before_the_service_opens(self):
-        # After it, it would land on top of the service.
         control, calls = self.build(backdrop_visible=False)
         control.launch("prime", select(control, "piper")["session"]["id"])
         self.assertEqual(calls, ["backdrop up"])
@@ -1130,8 +1104,7 @@ class BackdropTests(unittest.TestCase):
         self.assertEqual(control.interface.closed, 1)
 
     def test_the_interface_stays_when_nothing_would_take_its_place(self):
-        # Without the backdrop, the desktop panel would sit across the top
-        # of the service and the return would show the desktop.
+        # Without the backdrop the desktop panel would show over the service.
         control, _calls = self.build(backdrop_visible=False, fails=True)
         control.launch("prime", select(control, "piper")["session"]["id"])
         control.later.run()
@@ -1168,8 +1141,7 @@ class KeyboardTests(unittest.TestCase):
         return control
 
     def test_a_page_gets_its_keyboard_ready_as_it_opens(self):
-        # Starting it on demand takes ten seconds on this Pi, which is ten
-        # seconds of staring at a search box.
+        # Starting it on demand takes ~10 s on the Pi.
         control = self.build_with_page()
         self.assertEqual(control.onscreen.prepared, 1)
         self.assertFalse(control.onscreen.showing())
@@ -1227,7 +1199,6 @@ class KeyboardTests(unittest.TestCase):
         self.assertEqual(control.launcher.stopped, 1)
 
     def test_the_cursor_still_works_its_keys_while_it_is_up(self):
-        # They are pressed by clicking them, like anything else on a page.
         control = self.build_with_page()
         control._press("ok")
         control.watcher.focus()
@@ -1256,10 +1227,8 @@ class KeyboardTests(unittest.TestCase):
         self.assertFalse(control.onscreen.health()["available"])
 
     def test_clicking_a_search_box_brings_it_up_with_nothing_said_on_the_bus(self):
-        # The one that was failing on a page of results: the box there has been
-        # focused since the page loaded, so clicking into it moves neither the
-        # focus nor the caret and the page announces nothing at all. What the
-        # cursor is standing on is asked about instead, and answers.
+        # A box focused since the page loaded announces nothing when clicked;
+        # what is under the cursor is asked instead.
         control = self.build_with_page()
         control.targets.under = {"role": "combo box", "label": "Search privately"}
         control._look_under_cursor(control.desktop.position)
@@ -1289,7 +1258,6 @@ class KeyboardTests(unittest.TestCase):
         self.assertTrue(control.onscreen.showing())
 
     def test_an_application_with_its_own_keyboard_is_not_asked(self):
-        # YouTube's television app is typed at, not clicked: nothing to look up.
         control, _monitor, _controller, _targets = build("active")
         visit = select(control, "piper")["session"]["id"]
         control.launch("youtube", visit)
@@ -1298,12 +1266,10 @@ class KeyboardTests(unittest.TestCase):
         self.assertEqual(control.targets.asked, [])
 
     def test_a_click_in_a_box_that_was_already_focused_still_brings_it_up(self):
-        # A search box on a page of results is focused already: clicking into
-        # it moves neither the focus nor the caret, so the page says nothing.
         control = self.build_with_page()
         control.watcher.field = {"role": "entry", "label": "Search", "at": 0}
         control._press("ok")
-        control._look_after_click_now()
+        control._check_focus_after_click()
         self.assertTrue(control.onscreen.showing())
 
     def test_a_click_on_something_else_takes_it_away(self):
@@ -1316,20 +1282,17 @@ class KeyboardTests(unittest.TestCase):
         self.assertFalse(control.onscreen.showing())
 
     def test_a_page_saying_nothing_does_not_take_it_away(self):
-        # It flashed up and vanished: the box had been focused since the page
-        # loaded, so the click brought the keyboard up and the page, asked a
-        # moment later what it had focused, answered nothing at all.
+        # Regression: the keyboard flashed up and vanished.
         control = self.build_with_page()
         control.targets.under = {"role": "combo box", "label": "Search privately"}
         control._look_under_cursor((470, 41))
         self.assertTrue(control.onscreen.showing())
         control.watcher.field = None        # the page announced nothing
-        control._look_after_click_now()
+        control._check_focus_after_click()
         self.assertTrue(control.onscreen.showing())
 
     def test_clicking_its_own_keys_never_closes_it(self):
-        # The page underneath does not know the keyboard is there, and would
-        # report whatever each key covers.
+        # The page reports whatever a key covers, not the key.
         control = self.build_with_page()
         control._press("ok")
         control.watcher.focus()
@@ -1351,12 +1314,12 @@ class HoldPaceTests(unittest.TestCase):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("prime", control.session.snapshot()["session"]["id"])
-        self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
+        self.assertEqual(control._hold_pace("up"), STEP_PACE)
 
     def test_snapping_mode_on_the_desktop_asks_for_it_too(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "snapping")
-        self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
+        self.assertEqual(control._hold_pace("up"), STEP_PACE)
 
     def test_nudging_a_cursor_keeps_the_pace_it_was_tuned_for(self):
         control, _monitor, _controller, _targets = build("active")
@@ -1364,16 +1327,13 @@ class HoldPaceTests(unittest.TestCase):
         self.assertIsNone(control._hold_pace("up"))
 
     def test_a_typed_service_steps_too_and_asks_for_the_slower_pace(self):
-        # Kodi's menu moves by one item per press. At the pixel pace a press a
-        # shade too long moved two, and the item being aimed at was skipped.
+        # Kodi's menu moves one item per press; the fast pace skipped items.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.launch("youtube", control.session.snapshot()["session"]["id"])
-        self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
+        self.assertEqual(control._hold_pace("up"), STEP_PACE)
 
     def test_the_hold_threshold_is_a_setting_not_a_constant(self):
-        # How long a press lasts is a habit; the one that suits this room is
-        # saved with the recordings like everything else about the remote.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
         control.pointer = dict(control.pointer, hold_delay_s=1.2, hold_interval_s=0.4)
@@ -1382,7 +1342,7 @@ class HoldPaceTests(unittest.TestCase):
     def test_the_ring_itself_steps_as_well(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
-        self.assertEqual(control._hold_pace("up"), (STEP_HOLD_DELAY_S, STEP_HOLD_INTERVAL_S))
+        self.assertEqual(control._hold_pace("up"), STEP_PACE)
 
     def test_a_nudged_service_keeps_the_fast_repeat_that_makes_it_glide(self):
         control, _monitor, _controller, _targets = build("active")

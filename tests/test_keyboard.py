@@ -4,8 +4,8 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from pipertv import keyboard, pointer
-from pipertv.keyboard import (KEY_ENTER, KEY_ESC, KEY_LEFT, KEY_UP, KEYS,
+from pipertv import keyboard, uinput
+from pipertv.keyboard import (KEY_ENTER, KEY_ESC, KEY_LEFT, KEY_UP,
                               OnScreenKeyboard, ServiceKeys, VirtualKeyboard)
 
 logging.getLogger("pipertv.keyboard").addHandler(logging.NullHandler())
@@ -35,24 +35,24 @@ class FakeUinput:
     def events(self, since=0):
         decoded = []
         for payload in self.writes[since:]:
-            assert len(payload) % pointer.EVENT_SIZE == 0, "events must be whole structs"
-            for offset in range(0, len(payload), pointer.EVENT_SIZE):
+            assert len(payload) % uinput.EVENT_SIZE == 0, "events must be whole structs"
+            for offset in range(0, len(payload), uinput.EVENT_SIZE):
                 _sec, _usec, kind, code, value = struct.unpack_from(
-                    pointer.EVENT, payload, offset)
+                    uinput.EVENT, payload, offset)
                 decoded.append((kind, code, value))
         return decoded
 
     def keys(self, since=0):
         return [(code, value) for kind, code, value in self.events(since)
-                if kind == pointer.EV_KEY]
+                if kind == uinput.EV_KEY]
 
 
 @contextlib.contextmanager
 def fake_keyboard(accept_all=True, **kwargs):
     fake = FakeUinput(accept_all)
-    with (patch.object(keyboard.os, "open", return_value=fake.fd),
-          patch.object(keyboard.os, "write", side_effect=fake.write),
-          patch.object(keyboard.os, "close", side_effect=fake.closed.append),
+    with (patch.object(uinput.os, "open", return_value=fake.fd),
+          patch.object(uinput.os, "write", side_effect=fake.write),
+          patch.object(uinput.os, "close", side_effect=fake.closed.append),
           patch("fcntl.ioctl", side_effect=fake.ioctl)):
         device = VirtualKeyboard(settle_s=0, **kwargs)
         device.open()
@@ -63,15 +63,12 @@ class DeviceTests(unittest.TestCase):
     def test_the_device_declares_exactly_what_piper_can_press(self):
         with fake_keyboard() as (_device, fake):
             declared = [value for request, value in fake.ioctls
-                        if request == keyboard.UI_SET_KEYBIT]
-        self.assertEqual(sorted(declared), keyboard.every_code())
-        # A search box needs letters; a remote does not have them, so they are
-        # here for what the on-screen keyboard composes and nothing else.
-        self.assertIn(keyboard.LETTERS["a"], declared)
+                        if request == uinput.UI_SET_KEYBIT]
+        self.assertEqual(sorted(declared), keyboard.CODES)
         # Alt is declared for the one combination a page understands.
         self.assertIn(keyboard.KEY_LEFTALT, declared)
-        # Function keys, the remaining modifiers, and the rest stay out.
-        for absent in (59, 125, 29):  # F1, Meta, Ctrl
+        # Letters, function keys and the other modifiers stay out.
+        for absent in (30, 59, 125, 29, 42):  # A, F1, Meta, Ctrl, Shift
             with self.subTest(code=absent):
                 self.assertNotIn(absent, declared)
 
@@ -96,29 +93,6 @@ class DeviceTests(unittest.TestCase):
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     device.tap(key)
 
-    def test_a_line_of_text_is_typed_character_by_character(self):
-        with fake_keyboard() as (device, fake):
-            before = len(fake.writes)
-            self.assertEqual(device.write("ab 1"), 4)
-            pressed = [(code, value) for code, value in fake.keys(before) if value == 1]
-            self.assertEqual(pressed, [(keyboard.LETTERS["a"], 1), (keyboard.LETTERS["b"], 1),
-                                       (keyboard.KEY_SPACE, 1), (keyboard.LETTERS["1"], 1)])
-
-    def test_a_capital_is_typed_with_shift_held_around_it(self):
-        with fake_keyboard() as (device, fake):
-            before = len(fake.writes)
-            device.write("A")
-            self.assertEqual(fake.keys(before),
-                             [(keyboard.KEY_LEFTSHIFT, 1), (keyboard.LETTERS["a"], 1),
-                              (keyboard.LETTERS["a"], 0), (keyboard.KEY_LEFTSHIFT, 0)])
-
-    def test_a_character_with_no_key_is_skipped_rather_than_mistyped(self):
-        with fake_keyboard() as (device, fake):
-            before = len(fake.writes)
-            self.assertEqual(device.write("a\u0161b"), 2)  # a, b -- the accented one has no key
-            pressed = [code for code, value in fake.keys(before) if value == 1]
-            self.assertEqual(pressed, [keyboard.LETTERS["a"], keyboard.LETTERS["b"]])
-
     def test_every_event_batch_ends_with_a_report(self):
         # Without the report the kernel holds the press and nothing arrives.
         with fake_keyboard() as (device, fake):
@@ -126,8 +100,8 @@ class DeviceTests(unittest.TestCase):
             for index, payload in enumerate(fake.writes):
                 with self.subTest(batch=index):
                     kind, _code, _value = struct.unpack_from(
-                        pointer.EVENT, payload, len(payload) - pointer.EVENT_SIZE)[2:]
-                    self.assertEqual(kind, pointer.EV_SYN)
+                        uinput.EVENT, payload, len(payload) - uinput.EVENT_SIZE)[2:]
+                    self.assertEqual(kind, uinput.EV_SYN)
 
     def test_closing_releases_every_key_and_destroys_the_device(self):
         with fake_keyboard() as (device, fake):
@@ -135,9 +109,9 @@ class DeviceTests(unittest.TestCase):
             before = len(fake.writes)
             device.close()
             released = {code for code, value in fake.keys(before) if value == 0}
-            self.assertEqual(released, set(keyboard.every_code()),
+            self.assertEqual(released, set(keyboard.CODES),
                              "a held key would repeat into the desktop for ever")
-            self.assertIn(keyboard.UI_DEV_DESTROY, fake.requests())
+            self.assertIn(uinput.UI_DEV_DESTROY, fake.requests())
             self.assertEqual(fake.closed, [88])
 
     def test_a_closed_keyboard_cannot_be_reopened(self):

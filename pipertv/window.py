@@ -1,31 +1,18 @@
-"""How much of the screen Piper takes: all of it, or a window on it.
+"""Whether Piper fills the screen or runs in a window (e.g. when used over VNC).
 
-A television wants the whole screen and nothing else on it. The same Pi seen
-over VNC, with a keyboard and a mouse and work to do, wants Piper in a window
-like any other program -- and until now the only way to get one was to stop
-Piper altogether.
-
-One setting decides it for everything Piper puts on the screen: its own
-interface and whatever service it opens. Kept with the recordings, beside the
-role bindings and the cursor's behaviour, because it belongs to this room
-rather than to this process.
+The setting applies to the interface and to every service it opens, and is
+saved in the library.
 """
 
 from __future__ import annotations
 
 WINDOW_DEFAULTS = {"windowed": False, "width": 1280, "height": 720}
-# Nothing smaller than a usable window, nothing larger than a screen Piper
-# could plausibly be shown on. A size larger than the screen is not refused:
-# the compositor clamps it, and refusing it would be a rule about the monitor
-# rather than about the setting.
+# A size bigger than the screen is allowed; the compositor clamps it.
 WINDOW_LIMITS = {"width": (320, 7680), "height": (240, 4320)}
 
 
 def validate_window(values) -> dict:
-    """Check a window preference, returning a complete, plain copy of it.
-
-    Anything absent keeps its default, so one field can be sent on its own.
-    """
+    """Check window settings; missing fields keep their defaults."""
     if not isinstance(values, dict):
         raise ValueError("Window settings must be a JSON object.")
     settings = dict(WINDOW_DEFAULTS)
@@ -48,15 +35,11 @@ def validate_window(values) -> dict:
 
 
 def geometry(settings, screen) -> tuple[tuple[int, int], tuple[int, int]]:
-    """The size and position a window should have: (width, height), (x, y).
-
-    Full screen means exactly the screen, at its corner. A window is centred
-    on it, and never bigger than the screen it has to fit on -- a window whose
-    title bar is off the top of the screen cannot be moved back.
-    """
+    """((width, height), (x, y)) for a window: the whole screen, or centred on it."""
     checked = validate_window(settings if isinstance(settings, dict) else {})
     width, height = int(screen[0]), int(screen[1])
     if not checked["windowed"]:
         return (width, height), (0, 0)
+    # Never larger than the screen: a title bar above the top edge can't be grabbed.
     size = (min(checked["width"], width), min(checked["height"], height))
     return size, ((width - size[0]) // 2, (height - size[1]) // 2)

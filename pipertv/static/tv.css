@@ -1,14 +1,10 @@
-/* The Piper interface, shown on the Pi's own HDMI output.
+/* The Piper interface on the TV.
  *
- * The design is drawn at 1920x1080. Everything here is expressed in multiples
- * of --u, one design pixel, so the same layout fills a 720p panel or a 4K one
- * without reflowing. --u takes the smaller of the two ratios, which letterboxes
- * rather than cropping on a display that is not 16:9.
+ * Sizes are multiples of --u, one pixel of the 1920x1080 design, so the layout
+ * scales to any screen (letterboxed if it isn't 16:9).
  *
- * Jost and IBM Plex Mono are the drawn typefaces. The Pi has neither, and the
- * page's own policy forbids fetching fonts from elsewhere, so --ui and --mono
- * name what is actually installed. Vendoring the real faces into static/fonts
- * and widening font-src is a change to these two lines.
+ * The design uses Jost and IBM Plex Mono, which the Pi doesn't have (and the
+ * CSP doesn't allow fetching), so --ui and --mono list installed fonts.
  */
 
 :root {
@@ -41,7 +37,7 @@ body {
   color: var(--ink);
   font-family: var(--ui);
   font-weight: 300;
-  /* A TV is watched from across a room and its edges are often overscanned. */
+  /* Keep clear of the edges, which TVs often overscan. */
   cursor: none;
 }
 
@@ -67,8 +63,7 @@ body {
 .wordmark-xl {
   font-weight: 300;
   letter-spacing: .28em;
-  /* The tracking is added to the right of the last letter, so the block reads
-     off-centre unless the same amount is put back on the left. */
+  /* letter-spacing also adds space after the last letter; balance it on the left. */
   padding-left: .28em;
   font-size: calc(var(--u) * 120);
   line-height: 1;
@@ -221,8 +216,7 @@ body {
   justify-content: center;
   font-weight: 500;
   color: rgba(255, 255, 255, .85);
-  /* Width, height and position are set from script: the ring is computed
-     geometry rather than a fixed set of coordinates. */
+  /* Size and position are set from tv.js. */
   transition: width .18s ease, height .18s ease, left .18s ease,
               top .18s ease, box-shadow .18s ease, opacity .18s ease;
 }
@@ -247,8 +241,7 @@ body {
   width: calc(var(--u) * 560);
   margin-left: calc(var(--u) * -280);
   text-align: center;
-  /* It says what is chosen; it does not take part in choosing. Its box lies
-     over the lower tiles, and a mouse aimed at one of them landed on this. */
+  /* It covers the lower tiles; let clicks through to them. */
   pointer-events: none;
 }
 
@@ -272,7 +265,7 @@ body {
   text-align: center;
   font-size: calc(var(--u) * 21);
   color: var(--ink-30);
-  pointer-events: none;          /* it spans the screen and explains, no more */
+  pointer-events: none;
 }
 
 /* --- notices ----------------------------------------------------------- */
@@ -396,9 +389,7 @@ body {
 
 /* --- a mouse, when there is one ---------------------------------------- */
 
-/* The cursor is hidden on a television and appears the moment a mouse moves,
- * the way a video player's does: the same page is worked on over VNC, where
- * clicking a tile has to be possible. */
+/* The cursor is hidden until a mouse moves (e.g. over VNC). */
 body.is-pointing { cursor: default; }
 body.is-pointing .tile,
 body.is-pointing .option,
@@ -407,7 +398,7 @@ body.is-pointing .tile:hover,
 body.is-pointing .option:hover { outline: 1px solid var(--ink-30); }
 body.is-pointing .corner:hover { border-color: var(--ink-30); }
 
-/* --- options: a back a mouse can reach, and the remote in groups -------- */
+/* --- options: mouse buttons and sections --------------------------------- */
 
 .back-button {
   padding: calc(8 * var(--u)) calc(16 * var(--u));
@@ -422,9 +413,7 @@ body.is-pointing .corner:hover { border-color: var(--ink-30); }
 body.is-pointing .back-button { cursor: pointer; }
 body.is-pointing .back-button:hover { color: var(--ink); border-color: var(--ink-30); }
 
-/* Leaving Piper with a mouse; the remote's way is exit pressed twice. Shown
-   only while a mouse is moving, so the television is not left with a button
-   on it that the remote cannot reach. */
+/* Only shown while a mouse moves; with the remote it's exit pressed twice. */
 .exit-button { display: none; }
 body.is-pointing .exit-button { display: inline-block; }
 
@@ -447,15 +436,12 @@ body.is-pointing .exit-button { display: inline-block; }
 
 /* --- the remote, drawn ------------------------------------------------- */
 
-/* The same arrangement as the workbench on a laptop, and the same
- * arrangement as the thing in your hand: the rows come from the button
- * library itself, so the drawing cannot drift from what can be recorded. */
+/* Rows come from the button library, as on the real remote. */
 .remote-body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* Nineteen rows have to fit between the header and the hint, or the keys at
-     the bottom of the remote are the ones nobody can reach. */
+  /* All nineteen rows must fit between the header and the hint. */
   gap: calc(5 * var(--u));
   padding: calc(14 * var(--u)) calc(20 * var(--u));
   width: calc(560 * var(--u));
@@ -487,7 +473,7 @@ body.is-pointing .exit-button { display: inline-block; }
   text-align: center;
   cursor: inherit;
 }
-/* A key with a signal behind it is the point of the whole screen. */
+/* Keys that have a recording. */
 .remote-key.is-saved { color: var(--ink); border-color: rgba(90, 169, 230, .35); }
 .remote-key.is-focused {
   background: var(--panel);

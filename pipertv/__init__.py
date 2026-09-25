@@ -1,3 +1,3 @@
-"""PiperTV: learn a physical remote's infrared signals from a Raspberry Pi."""
+"""PiperTV: drive a Raspberry Pi and its TV interface with an ordinary TV remote."""
 
 __version__ = "0.1.0"

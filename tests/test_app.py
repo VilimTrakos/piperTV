@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from pipertv.app import create_app, main, say_what_happens
+from pipertv.app import create_app, main, setup_logging
 from pipertv.session import ControlSession
 from pipertv.tv import ButtonLog
 
@@ -19,11 +19,10 @@ class AppTests(unittest.TestCase):
         self.path = Path(self.temporary.name) / "recordings.json"
         self.app = create_app(data=self.path, demo=True)
         self.client = self.app.test_client()
-        self.workbench = self.app.extensions["pipertv"]
+        self.recorder = self.app.extensions["recorder"]
 
     def tearDown(self):
-        self.workbench.close()
-        self.workbench.backend.close()
+        self.recorder.close()
         self.temporary.cleanup()
 
     def wait_capture(self, job_id):
@@ -75,8 +74,7 @@ class AppTests(unittest.TestCase):
             state = reloaded.test_client().get("/api/state").get_json()
             self.assertEqual(len(state["recordings"]["power"]["samples"]), 1)
         finally:
-            reloaded.extensions["pipertv"].close()
-            reloaded.extensions["pipertv"].backend.close()
+            reloaded.extensions["recorder"].close()
 
         response = self.client.delete("/api/buttons/power/samples/0", json={})
         self.assertEqual(response.status_code, 200)
@@ -98,7 +96,7 @@ class AppTests(unittest.TestCase):
         rejected = self.client.put("/api/buttons/power", json={"label": "Other"},
                                    base_url=base_url, headers={"Origin": "https://example.com"})
         self.assertEqual(rejected.status_code, 403)
-        self.assertEqual(self.workbench.store.snapshot()["recordings"]["power"]["label"], "Standby")
+        self.assertEqual(self.recorder.store.snapshot()["recordings"]["power"]["label"], "Standby")
 
     def test_cross_site_and_dns_rebinding_requests_are_rejected(self):
         response = self.client.get("/api/state", base_url="http://attacker.example:8765")
@@ -123,15 +121,14 @@ class AppTests(unittest.TestCase):
 
     def test_missing_hardware_explains_setup(self):
         app = create_app(data=self.path, device="/missing/ir/device")
-        workbench = app.extensions["pipertv"]
+        recorder = app.extensions["recorder"]
         try:
             health = app.test_client().get("/api/health").get_json()
             self.assertFalse(health["ok"])
-            self.assertIn("gpio-ir", health["error"])
+            self.assertIn("was not found", health["error"])
             self.assertFalse(health["device_exists"])
         finally:
-            workbench.close()
-            workbench.backend.close()
+            recorder.close()
 
     def test_unknown_routes_and_export_arguments(self):
         self.assertEqual(self.client.get("/api/unknown").status_code, 404)
@@ -271,11 +268,11 @@ class LoggingTests(unittest.TestCase):
         logging.getLogger("werkzeug").setLevel(self.werkzeug)
 
     def test_pipers_own_account_of_a_press_is_kept(self):
-        say_what_happens()
+        setup_logging()
         self.assertTrue(logging.getLogger("pipertv.control").isEnabledFor(logging.INFO))
 
     def test_the_interfaces_four_requests_a_second_are_not(self):
-        say_what_happens()
+        setup_logging()
         self.assertFalse(logging.getLogger("werkzeug").isEnabledFor(logging.INFO))
 
 
@@ -302,9 +299,8 @@ class ReceiverSettingTests(unittest.TestCase):
 
     def build(self, **kwargs):
         app = create_app(data=self.path, demo=True, config=self.config, **kwargs)
-        workbench = app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        recorder = app.extensions["recorder"]
+        self.addCleanup(recorder.close)
         return app
 
     def test_the_pins_are_offered_with_what_holds_them(self):
@@ -323,7 +319,7 @@ class ReceiverSettingTests(unittest.TestCase):
         self.assertEqual(answer.status_code, 200)
         self.assertEqual(answer.get_json()["reading"], "GPIO18 (pin 12)")
         self.assertEqual(self.remote.listening_on, {"kind": "gpio", "pin": 18})
-        self.assertEqual(self.app.extensions["pipertv"].backend.device,
+        self.assertEqual(self.app.extensions["recorder"].device,
                          {"kind": "gpio", "pin": 18})
         self.assertIn("pin = 18", self.config.read_text())
 
@@ -341,13 +337,13 @@ class ReceiverSettingTests(unittest.TestCase):
     def test_the_choice_survives_a_restart(self):
         self.client.put("/api/receiver", json={"pin": 18})
         again = self.build()
-        self.assertEqual(again.extensions["pipertv"].backend.device, {"kind": "gpio", "pin": 18})
+        self.assertEqual(again.extensions["recorder"].device, {"kind": "gpio", "pin": 18})
         self.assertEqual(again.test_client().get("/api/receiver").get_json()["pin"], 18)
 
     def test_a_pin_written_in_the_file_by_hand_is_used_from_the_start(self):
         self.config.write_text("[ir]\npin = GPIO22\n")
         again = self.build()
-        self.assertEqual(again.extensions["pipertv"].backend.device, {"kind": "gpio", "pin": 22})
+        self.assertEqual(again.extensions["recorder"].device, {"kind": "gpio", "pin": 22})
 
     def test_a_pin_something_else_holds_is_refused_with_its_name(self):
         answer = self.client.put("/api/receiver", json={"pin": 4})
@@ -378,9 +374,8 @@ class WindowSettingTests(unittest.TestCase):
         self.remote = FakeRemote()
         self.app = create_app(data=self.path, demo=True, remote=self.remote)
         self.client = self.app.test_client()
-        workbench = self.app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        recorder = self.app.extensions["recorder"]
+        self.addCleanup(recorder.close)
 
     def test_the_default_is_the_whole_screen(self):
         result = self.client.get("/api/window").get_json()
@@ -420,9 +415,8 @@ class PointerSettingTests(unittest.TestCase):
         self.path = Path(self.temporary.name) / "recordings.json"
         self.app = create_app(data=self.path, demo=True)
         self.client = self.app.test_client()
-        workbench = self.app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        recorder = self.app.extensions["recorder"]
+        self.addCleanup(recorder.close)
 
     def test_the_defaults_are_offered_with_their_limits(self):
         state = self.client.get("/api/pointer").get_json()
@@ -436,8 +430,7 @@ class PointerSettingTests(unittest.TestCase):
         self.assertEqual(response.get_json()["settings"]["drive"], "nudge")
 
         reopened = create_app(data=self.path, demo=True)
-        self.addCleanup(reopened.extensions["pipertv"].close)
-        self.addCleanup(reopened.extensions["pipertv"].backend.close)
+        self.addCleanup(reopened.extensions["recorder"].close)
         saved = reopened.test_client().get("/api/pointer").get_json()["settings"]
         self.assertEqual((saved["drive"], saved["step_px"]), ("nudge", 40))
 
@@ -458,9 +451,8 @@ class ControlEndpointTests(unittest.TestCase):
         self.remote = FakeRemote()
         self.app = create_app(data=self.path, demo=True, remote=self.remote)
         self.client = self.app.test_client()
-        workbench = self.app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        recorder = self.app.extensions["recorder"]
+        self.addCleanup(recorder.close)
 
     def visit(self):
         """Open a session the way the manual fallback would."""
@@ -548,9 +540,8 @@ class TvInterfaceTests(unittest.TestCase):
         self.app = create_app(data=Path(self.temporary.name) / "recordings.json",
                               demo=True, remote=self.remote)
         self.client = self.app.test_client()
-        workbench = self.app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        recorder = self.app.extensions["recorder"]
+        self.addCleanup(recorder.close)
 
     def test_the_interface_and_its_assets_are_served(self):
         for path in ("/tv", "/tv.html", "/tv.css", "/tv.js"):
@@ -654,20 +645,19 @@ class ControlDisabledTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.app = create_app(data=Path(self.temporary.name) / "recordings.json", demo=True)
         self.client = self.app.test_client()
-        workbench = self.app.extensions["pipertv"]
-        self.addCleanup(workbench.backend.close)
-        self.addCleanup(workbench.close)
+        recorder = self.app.extensions["recorder"]
+        self.addCleanup(recorder.close)
 
     def test_control_is_off_unless_asked_for(self):
-        self.assertIsNone(self.app.extensions["pipertv_control"])
+        self.assertIsNone(self.app.extensions["remote"])
 
     def test_demo_does_not_construct_a_hardware_controller(self):
         with patch("pipertv.app.RemoteControl") as hardware:
             app = create_app(data=Path(self.temporary.name) / "demo.json",
                              demo=True, control=True)
-        self.addCleanup(app.extensions["pipertv"].close)
+        self.addCleanup(app.extensions["recorder"].close)
         hardware.assert_not_called()
-        self.assertIsNone(app.extensions["pipertv_control"])
+        self.assertIsNone(app.extensions["remote"])
 
     def test_the_control_endpoints_report_that_it_is_not_running(self):
         cases = [self.client.get("/api/control"),

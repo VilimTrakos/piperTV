@@ -1,50 +1,37 @@
-"""Offer the desktop's accessible controls as snapping targets.
+"""Clickable controls on the screen, read from the accessibility bus (AT-SPI).
 
-Targets require application-reported screen coordinates from the accessibility
-bus. Support and coordinate accuracy depend on the toolkit and compositor:
-https://docs.gtk.org/atk/
+Used for snapping. What is visible here depends on the desktop:
+
+* an application must be on the bus (NO_AT_BRIDGE=1 hides it) and expose
+  its controls individually, which not all do;
+* coordinates can be "unplaced" sentinels, and controls in a covered
+  background window still say they are showing, so only the active window
+  is used.
+
+Walking the tree costs D-Bus round trips, so results are cached briefly.
+
 https://www.freedesktop.org/wiki/Accessibility/AT-SPI2/
-
-Two things decide what is visible here, and both are properties of the desktop
-rather than of this code:
-
-* An application must register with the bus and expose its individual controls.
-  NO_AT_BRIDGE=1 opts a process out. Some desktops expose no per-icon children.
-* Screen extents may be unplaced sentinels. Even SHOWING controls can belong to
-  a covered background window; only an ACTIVE window is eligible for snapping.
-
-Walking the tree costs D-Bus round trips, so results are cached briefly: a held
-direction key must not re-walk the desktop between repeats.
 """
 
 from __future__ import annotations
 
-import logging
 import itertools
+import logging
 import threading
 import time
 
 LOG = logging.getLogger(__name__)
 
-# AT-SPI reports this for anything that is not placed on screen.
-UNPLACED = -2147483648
+UNPLACED = -2147483648  # what AT-SPI reports for anything not on screen
 DESKTOP_COORDS = 0
-# A web page is a deep tree: a browser puts its controls twelve to twenty
-# levels down, below the window, the tab and the document. Stopping at a
-# desktop-sized depth found the browser and nothing inside it.
+# Browsers put page controls 12-20 levels below the window.
 MAX_NODES = 2000
 MAX_DEPTH = 25
 CACHE_S = 1.5
 SCAN_S = .9
-# Asking what covers one point is a descent, not a walk: every level answers
-# with the child under the point, and the answer stops changing at the
-# innermost control. A page nests deeply, so allow for the same depth as a walk.
-POINT_DEPTH = MAX_DEPTH
 
-# Roles worth moving a cursor to: things a person would click. Browsers report
-# their page controls with the short names -- "button", not "push button", and
-# "entry" for a search box -- so both spellings belong here or a page offers
-# nothing to snap to.
+# Things a person would click. Browsers use the short names ("button",
+# "entry"), GTK the long ones ("push button").
 ACTIONABLE = frozenset({
     "push button", "button", "toggle button", "check box", "radio button",
     "link", "icon", "list item", "menu item", "check menu item",
@@ -52,14 +39,12 @@ ACTIONABLE = frozenset({
     "entry", "text box", "search box", "image map",
 })
 WINDOW_ROLES = frozenset({"frame", "window", "dialog", "alert", "desktop frame"})
-# How far to look for the active window itself, not for what is inside it.
-WINDOW_DEPTH = 3
-# Centres closer than this are the same control reported twice.
-SAME_CONTROL_PX = 8
+WINDOW_DEPTH = 3       # how deep to look for the active window itself
+SAME_CONTROL_PX = 8    # centres this close are the same control reported twice
 
 
 def valid_extent(box, screen) -> bool:
-    """Reject sentinels, empty boxes, and anything off the visible screen."""
+    """False for sentinels, empty boxes and anything off the screen."""
     width, height = screen
     try:
         x, y, box_width, box_height = box.x, box.y, box.width, box.height
@@ -74,51 +59,7 @@ def valid_extent(box, screen) -> bool:
     return 0 <= x < width and 0 <= y < height
 
 
-def target_point(node, screen, coords=DESKTOP_COORDS):
-    """Reduce one accessible object to the point a cursor should land on."""
-    if not actionable_state(node):
-        return None
-    try:
-        box = node.queryComponent().getExtents(coords)
-    except Exception:
-        return None  # No Component interface, or it went away mid-walk.
-    if not valid_extent(box, screen):
-        return None
-    try:
-        label = node.name or ""
-    except Exception:
-        label = ""
-    # A partly clipped control is still usable, but its full rectangle's centre
-    # may be offscreen. Aim inside the visible intersection instead.
-    right, bottom = min(screen[0], box.x + box.width), min(screen[1], box.y + box.height)
-    left, top = max(0, box.x), max(0, box.y)
-    return {"x": (left + right) // 2, "y": (top + bottom) // 2,
-            "left": left, "top": top, "right": right, "bottom": bottom,
-            "label": str(label)[:80]}
-
-
-def deepest_at(node, x, y, coords=DESKTOP_COORDS, depth=POINT_DEPTH):
-    """The innermost accessible object covering a point, from a window down.
-
-    Snapping asks the desktop where its controls are; this asks about one
-    place. A click needs the second question: the page's own search box may
-    have been focused since it loaded, so clicking into it announces nothing,
-    and a nudged cursor was never snapped to a target to begin with.
-    """
-    found = None
-    for _ in range(depth):
-        try:
-            child = node.queryComponent().getAccessibleAtPoint(int(x), int(y), coords)
-        except Exception:
-            break  # No Component interface, or the window went away mid-descent.
-        if child is None or child == node:
-            break  # Nothing of its own under the point: this is the innermost.
-        node, found = child, child
-    return found
-
-
 def state_names(node):
-    """Read AT-SPI states without importing its bindings in geometry tests."""
     try:
         states = node.getState().getStates()
         return {str(getattr(state, "value_nick", state)).lower().replace("_", "-")
@@ -128,40 +69,73 @@ def state_names(node):
 
 
 def actionable_state(node):
-    # Coordinates alone do not prove that a hidden/disabled widget can be used.
+    # Valid coordinates alone don't mean a control is visible and enabled.
     return {"showing", "visible", "enabled"} <= state_names(node)
+
+
+def target_point(node, screen, coords=DESKTOP_COORDS):
+    """The point to click on for one accessible object, with its box and label."""
+    if not actionable_state(node):
+        return None
+    try:
+        box = node.queryComponent().getExtents(coords)
+    except Exception:
+        return None  # no Component interface, or it went away
+    if not valid_extent(box, screen):
+        return None
+    try:
+        label = node.name or ""
+    except Exception:
+        label = ""
+    # Aim at the middle of the visible part of a partly clipped control.
+    right, bottom = min(screen[0], box.x + box.width), min(screen[1], box.y + box.height)
+    left, top = max(0, box.x), max(0, box.y)
+    return {"x": (left + right) // 2, "y": (top + bottom) // 2,
+            "left": left, "top": top, "right": right, "bottom": bottom,
+            "label": str(label)[:80]}
+
+
+def deepest_at(node, x, y, coords=DESKTOP_COORDS, depth=MAX_DEPTH):
+    """The innermost accessible object at a point, descending from `node`."""
+    found = None
+    for _ in range(depth):
+        try:
+            child = node.queryComponent().getAccessibleAtPoint(int(x), int(y), coords)
+        except Exception:
+            break
+        if child is None or child == node:
+            break
+        node, found = child, child
+    return found
 
 
 def collect_targets(root, screen, roles=ACTIONABLE, coords=DESKTOP_COORDS,
                     max_nodes=MAX_NODES, max_depth=MAX_DEPTH,
                     deadline=None, clock=time.monotonic, active_windows_only=False):
-    """Flatten an accessibility tree into clickable screen points.
+    """Flatten an accessibility tree into clickable points.
 
-    The walk is bounded in both depth and node count: a desktop can present a
-    very large tree, and a remote button press must not wait on all of it. Any
-    node that fails is skipped rather than ending the walk, because applications
-    close while their tree is being read.
+    Bounded by depth, node count and time. A node that fails is skipped:
+    applications close while their tree is being read.
     """
     found = []
-    budget = [max_nodes]
+    budget = max_nodes
     deadline = clock() + SCAN_S if deadline is None else deadline
 
     def visit(node, depth, window=None):
-        if depth > max_depth or budget[0] <= 0 or clock() >= deadline:
+        nonlocal budget
+        if depth > max_depth or budget <= 0 or clock() >= deadline:
             return
         try:
             children = iter(node)
         except Exception:
             return
-        # Do not list() an entire application before applying the node budget.
-        while budget[0] > 0 and clock() < deadline:
+        # Iterate lazily: an application may have thousands of children.
+        while budget > 0 and clock() < deadline:
             try:
                 child = next(children)
-            except StopIteration:
-                break
             except Exception:
                 break
-            budget[0] -= 1
+            budget -= 1
             try:
                 role = child.getRoleName()
             except Exception:
@@ -183,13 +157,10 @@ def collect_targets(root, screen, roles=ACTIONABLE, coords=DESKTOP_COORDS,
 
 
 def distinct_targets(found):
-    """Drop the wrappers a page reports around its own controls.
+    """Drop duplicates and wrappers, keeping the innermost control.
 
-    A browser exposes a link inside a row inside a panel, each actionable and
-    each covering the same pixels. Snapping through all three feels broken:
-    two presses in a row appear to do nothing, and the third jumps. The
-    innermost is what a person would say they are on, so a larger control is
-    kept only if it holds no smaller one already kept.
+    A browser reports a link inside a row inside a panel, all clickable and
+    covering the same pixels; snapping through all three would feel stuck.
     """
     kept: list[dict] = []
     for target in sorted(found, key=lambda t: ((t["right"] - t["left"]) * (t["bottom"] - t["top"])
@@ -200,24 +171,19 @@ def distinct_targets(found):
         if "right" in target and any(
                 target["left"] <= other["x"] <= target["right"]
                 and target["top"] <= other["y"] <= target["bottom"] for other in kept):
-            continue  # a wrapper around something already offered
+            continue  # wraps a control we already have
         kept.append(target)
     return kept
 
 
 class AtspiTargets:
-    """Snapping targets read from the accessibility bus, cached briefly.
-
-    Never raises on a failed read: the caller runs on the IR reader thread, and
-    an empty target list simply means nothing to snap to right now.
-    """
+    """Targets in the active window, cached for CACHE_S. Never raises."""
 
     name = "accessibility"
 
     def __init__(self, screen, cache_s: float = CACHE_S, clock=time.monotonic,
                  registry=None, roles=ACTIONABLE):
-        width, height = screen
-        self.screen = (int(width), int(height))
+        self.screen = (int(screen[0]), int(screen[1]))
         self.cache_s = float(cache_s)
         self.clock = clock
         self.roles = roles
@@ -229,25 +195,21 @@ class AtspiTargets:
         self._applications = 0
 
     def _desktop(self):
-        registry = self._registry
-        if registry is None:
-            import pyatspi  # Imported late: it pulls in GTK and a D-Bus client.
+        if self._registry is None:
+            import pyatspi  # late: it loads GTK and a D-Bus client
             from gi.repository import Atspi
 
-            # A hung application must not hold the IR reader lock indefinitely.
+            # Don't let a hung application stall the remote.
             Atspi.set_timeout(150, 150)
-
-            registry = self._registry = pyatspi.Registry
-        return registry.getDesktop(0)
+            self._registry = pyatspi.Registry
+        return self._registry.getDesktop(0)
 
     def _active_windows(self, applications):
-        """The windows on top, found without walking anything underneath them.
+        """Active windows, found without walking what is inside other windows.
 
-        Only an active window is eligible anyway, and looking for it first is
-        what makes a browser usable: a page puts its controls twenty levels
-        down, and a walk that starts at the desktop spends its whole time
-        budget on panels, file managers and background windows before it ever
-        reaches them.
+        Looking for them first matters for browsers: a walk from the desktop
+        spends its whole time budget on panels and background windows before
+        reaching page controls twenty levels down.
         """
         windows = []
 
@@ -263,7 +225,7 @@ class AtspiTargets:
             if "active" in state_names(node):
                 windows.append(node)
                 return
-            # A dialog can be the active thing inside a frame that is not.
+            # A dialog can be active inside a frame that isn't.
             try:
                 children = itertools.islice(iter(node), 16)
             except Exception:
@@ -286,8 +248,7 @@ class AtspiTargets:
             if self._cached is not None and now - self._cached_at < self.cache_s:
                 return self._cached
             try:
-                desktop = self._desktop()
-                applications = list(itertools.islice(iter(desktop), 64))
+                applications = list(itertools.islice(iter(self._desktop()), 64))
                 found = []
                 deadline = time.monotonic() + SCAN_S
                 for window in self._active_windows(applications):
@@ -299,8 +260,7 @@ class AtspiTargets:
                 self._applications = len(applications)
                 self._error = None
             except Exception as exc:
-                # A missing pyatspi or a stopped bus is a desktop condition,
-                # not a reason to stop responding to the remote.
+                # No pyatspi or no bus: nothing to snap to, but the remote keeps working.
                 self._error = str(exc) or type(exc).__name__
                 self._applications = 0
                 found = []
@@ -309,7 +269,7 @@ class AtspiTargets:
             return found
 
     def resolve(self, target):
-        """Re-check a cached target before moving to it; windows can move/close."""
+        """Re-read a cached target before moving to it; windows move and close."""
         node = target.get("_node")
         window = target.get("_window")
         if node is None or window is None or "active" not in state_names(window):
@@ -322,12 +282,7 @@ class AtspiTargets:
         return dict(point, role=target.get("role"), _node=node, _window=window)
 
     def at_point(self, x, y):
-        """What sits under a point on the screen, as {role, label}, or None.
-
-        Costs a handful of round trips rather than a walk, and is not cached:
-        it is asked once, right after a click, and the answer is about the page
-        as it is at that moment.
-        """
+        """{role, label} of what is under a point in the active window, or None."""
         try:
             applications = list(itertools.islice(iter(self._desktop()), 64))
             for window in self._active_windows(applications):
@@ -338,12 +293,11 @@ class AtspiTargets:
                     return {"role": found.getRoleName(), "label": str(found.name or "")[:80]}
                 except Exception:
                     continue
-        except Exception as exc:  # noqa: BLE001 - a stopped bus is a desktop condition
+        except Exception as exc:
             LOG.warning("Asking what is under the cursor: %s", exc)
         return None
 
     def invalidate(self):
-        """Drop the cache, so the next press sees the desktop as it is now."""
         with self._lock:
             self._cached, self._cached_at = None, -float("inf")
 
@@ -359,6 +313,5 @@ class AtspiTargets:
                     "No clickable controls were found in the active accessible window. "
                     "Background windows are excluded because their controls may be covered. "
                     "Some apps do not expose icons or usable screen coordinates; use Pointer "
-                    "mode there. NO_AT_BRIDGE=1 also hides an app from accessibility."
-                )
+                    "mode there. NO_AT_BRIDGE=1 also hides an app from accessibility.")
             return result

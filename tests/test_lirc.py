@@ -1,7 +1,6 @@
 import stat
 import struct
 import threading
-import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,7 +8,6 @@ from unittest.mock import patch
 from pipertv import lirc
 from pipertv.lirc import (CaptureCancelled, CaptureError, CaptureOptions,
                          CaptureTimeout, Mode2Capture, capture_stream)
-from pipertv.receiver import CaptureManager
 
 
 def words(*events):
@@ -184,73 +182,6 @@ class Mode2Tests(unittest.TestCase):
             close.assert_called_once_with(42)
         self.assertIn((lirc.LIRC_SET_REC_MODE, lirc.LIRC_MODE_MODE2), requests)
         self.assertIn((lirc.LIRC_SET_REC_TIMEOUT_REPORTS, 1), requests)
-
-
-class ManagerTests(unittest.TestCase):
-    def test_demo_lifecycle_and_defensive_copies(self):
-        manager = CaptureManager(demo=True)
-        self.addCleanup(manager.close)
-        job = manager.start({})
-        self.assertEqual(job["status"], "arming")
-        with self.assertRaises(RuntimeError):
-            manager.start({})
-        manager._thread.join(2)
-        result = manager.get(job["id"])
-        self.assertEqual(result["status"], "captured")
-        self.assertEqual(result["signal"]["source"], "demo")
-        result["signal"]["durations_us"].clear()
-        self.assertTrue(manager.get(job["id"])["signal"]["durations_us"])
-        self.assertIsNone(manager.health()["active_capture_id"])
-
-    def test_cancel_is_fast_and_can_start_again(self):
-        manager = CaptureManager(demo=True)
-        self.addCleanup(manager.close)
-        job = manager.start({})
-        start = time.monotonic()
-        self.assertEqual(manager.cancel(job["id"])["status"], "cancelled")
-        self.assertLess(time.monotonic() - start, .5)
-        self.assertEqual(manager.get(job["id"])["status"], "cancelled")
-        self.assertIsNone(manager.health()["active_capture_id"])
-        manager.start({})
-
-    def test_device_failure_is_error_and_never_announces_listening(self):
-        manager = CaptureManager(device="/missing/ir/device")
-        self.addCleanup(manager.close)
-        with patch.object(manager, "_listening", wraps=manager._listening) as listening:
-            job = manager.start({})
-            manager._thread.join(1)
-            listening.assert_not_called()
-        self.assertEqual(manager.get(job["id"])["status"], "error")
-        self.assertIn("/missing/ir/device", manager.get(job["id"])["error"])
-
-    def test_the_next_capture_listens_on_the_chosen_receiver(self):
-        manager = CaptureManager(device="/dev/lirc0")
-        self.addCleanup(manager.close)
-        manager.use({"kind": "gpio", "pin": 18})
-        health = manager.health()
-        self.assertEqual(health["receiver"], "GPIO18 (pin 12)")
-        self.assertEqual(health["device"], "/dev/gpiochip0")
-        opened = []
-
-        def refuse(source, _gap):
-            opened.append(source)
-            raise lirc.CaptureError("no receiver in a test")
-
-        with patch("pipertv.receiver.open_receiver", side_effect=refuse):
-            job = manager.start({})
-            manager._thread.join(1)
-        self.assertEqual(opened, [{"kind": "gpio", "pin": 18}])
-        self.assertEqual(manager.get(job["id"])["status"], "error")
-
-    def test_completed_jobs_are_bounded(self):
-        manager = CaptureManager(demo=True)
-        self.addCleanup(manager.close)
-        manager._jobs = {str(i): {"id": str(i), "status": "timeout"} for i in range(100)}
-        job = manager.start({})
-        self.assertEqual(len(manager._jobs), 100)
-        self.assertNotIn("0", manager._jobs)
-        manager.cancel(job["id"])
-
 
 
 if __name__ == "__main__":

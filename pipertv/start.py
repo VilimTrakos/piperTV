@@ -1,31 +1,15 @@
-"""Start Piper from the Pi's own desktop, and have the remote there before it.
+"""Start Piper from the Pi's desktop.
 
-Until now Piper was started by deploy.sh over SSH: a way in for whoever works
-on it, and none at all for whoever is at the television. After a restart the
-TV showed the desktop, and the remote did nothing, because nothing was
-listening to it.
+    python -m pipertv.start             put Piper on the screen (the PiperTV icon)
+    python -m pipertv.start --remote    only the remote, as the mouse (run at login)
+    python -m pipertv.start --install   install the icons and the login entry
 
-Two things run from the desktop now, and only one of them by itself:
-
-  At login, the remote alone. The app starts without its interface and the
-  remote moves the desktop's mouse -- which is how, from the sofa, anyone gets
-  to the PiperTV icon at all. Piper itself stays off the screen until asked.
-
-  The PiperTV icon, which does what a deploy does once the files are there:
-  the app if nothing answers on its port, the interface on the screen, and a
-  visit for the remote in the interface's hands.
-
-Opening a visit is not a formality. This television never reports over CEC
-which input it shows, so the remote stays inert until someone says the Pi is
-what the screen is showing -- and someone at the Pi's own desktop has.
-
-The black backdrop goes up first, so a double-click is answered within a
-second or two rather than after the half-minute a cold start takes; a second,
-impatient double-click then finds a start already under way and leaves it be.
-
-    python -m pipertv.start             put Piper on the screen
-    python -m pipertv.start --remote    only the remote, as the mouse (at login)
-    python -m pipertv.start --install   the icons, the login entry, no "Execute?"
+At login only the app starts, without its interface, and the remote moves
+the mouse, so the PiperTV icon can be reached with the remote. The icon
+starts the app if nothing answers on its port, shows the interface, and
+opens a visit so the remote drives it. This TV never reports its input over
+CEC, so starting from the Pi's own desktop counts as confirming that the TV
+shows the Pi.
 """
 
 from __future__ import annotations
@@ -45,21 +29,18 @@ from .backdrop import ROOT, Backdrop
 from .ini import ini_get, ini_set
 from .labwc import SYSTEM_ENVIRONMENT, SYSTEM_RC, add_window_rules, allow_accessibility
 
-# Named rather than __name__, which is "__main__" when run with -m.
+# Not __name__, which is "__main__" when run with -m.
 LOG = logging.getLogger("pipertv.start")
 
-# The app loads the accessibility bus and the receiver before it answers; just
-# after a boot a Pi 3B+ takes a while over that, and a minute means it is not
-# going to.
+# Just after boot a Pi 3B+ can take a while to start the app.
 APP_START_S = 60.0
 POLL_S = 0.5
 LOG_FILE = ROOT / "pipertv.log"
 LOCK_FILE = ROOT / ".start.lock"
 STORE = ROOT / "data" / "recordings.json"
 ENTRY = "pipertv.desktop"
-# The command finds the package by itself rather than through Path=: the
-# login's autostart reads Exec and nothing about a working directory, and from
-# the home folder "-m pipertv.start" would not import at all.
+# PYTHONPATH rather than Path=: autostart ignores Path=, and from the home
+# folder "-m pipertv.start" wouldn't import.
 COMMAND = 'env "PYTHONPATH={root}" "{python}" -m pipertv.start'
 DESKTOP_ENTRY = """[Desktop Entry]
 Type=Application
@@ -79,9 +60,7 @@ Comment=The remote moves the mouse from login; Piper waits for its icon
 Exec=""" + COMMAND + """ --remote
 Terminal=false
 """
-# The panel reads its user settings from a file in a folder of its own. A
-# wf-panel-pi.ini directly in ~/.config is an older place it no longer looks:
-# the autohide setting on this Pi sat there, and never took effect.
+# The panel reads ~/.config/wf-panel-pi/wf-panel-pi.ini (not ~/.config/wf-panel-pi.ini).
 PANEL_CONFIG = Path(".config") / "wf-panel-pi" / "wf-panel-pi.ini"
 PANEL_DEFAULTS = Path("/etc/xdg/wf-panel-pi/wf-panel-pi.ini")
 PANEL_FALLBACK = ("x-www-browser", "pcmanfm", "x-terminal-emulator")
@@ -90,8 +69,7 @@ LIBFM_CONFIG = Path(".config") / "libfm" / "libfm.conf"
 LIBFM_DEFAULTS = Path("/etc/xdg/libfm/libfm.conf")
 
 
-def ask(port: int, method: str, path: str, payload=None, timeout: float = 5.0) -> dict:
-    """One call to Piper's own API on this Pi."""
+def call_api(port: int, method: str, path: str, payload=None, timeout: float = 5.0) -> dict:
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}", data=data, method=method,
@@ -101,7 +79,7 @@ def ask(port: int, method: str, path: str, payload=None, timeout: float = 5.0) -
 
 
 def saved_windowed(store: Path = STORE) -> bool:
-    """Whether Piper was last set to a window rather than the whole screen."""
+    """Whether Piper is set to run in a window rather than full screen."""
     try:
         document = json.loads(store.read_text(encoding="utf-8"))
         return document.get("window", {}).get("windowed") is True
@@ -110,42 +88,38 @@ def saved_windowed(store: Path = STORE) -> bool:
 
 
 class Starter:
-    """Everything one double-click does, in order -- or one login."""
-
-    def __init__(self, port: int = 8765, ask=ask, spawn=subprocess.Popen, backdrop=None,
+    def __init__(self, port: int = 8765, api=call_api, spawn=subprocess.Popen, backdrop=None,
                  clock=time.monotonic, sleep=time.sleep, windowed=saved_windowed,
                  log_file: Path = LOG_FILE):
         self.port = port
-        self.ask = ask
+        self.api = api
         self.spawn = spawn
-        self.backdrop = Backdrop() if backdrop is None else backdrop
+        self.backdrop = backdrop or Backdrop()
         self.clock = clock
         self.sleep = sleep
         self.windowed = windowed
         self.log_file = Path(log_file)
 
-    def answering(self) -> bool:
+    def is_up(self) -> bool:
         try:
-            self.ask(self.port, "GET", "/api/health", timeout=2.0)
+            self.api(self.port, "GET", "/api/health", timeout=2.0)
             return True
         except (OSError, ValueError):
             return False
 
     def _start_app(self) -> None:
-        # Detached, and writing where deploy.sh's app writes, so there is one
-        # log to read whichever way Piper was started.
+        # Detached, and logging to the same file deploy.sh uses.
         with open(self.log_file, "ab") as log:
             self.spawn([sys.executable, "main.py", "--port", str(self.port)], cwd=str(ROOT),
                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                        start_new_session=True, close_fds=True)
 
-    def _app_running(self, backdrop: bool) -> str | None:
-        """Start the app if nothing answers. Returns what went wrong, or None."""
-        if self.answering():
+    def _ensure_app(self, backdrop: bool) -> str | None:
+        """Start the app unless it's already up. Returns an error message or None."""
+        if self.is_up():
             return None
         if backdrop:
-            # Something on the screen at once, where the interface will be.
-            self.backdrop.show()
+            self.backdrop.show()  # something on screen right away
         LOG.info("Starting the Piper app from the desktop")
         try:
             self._start_app()
@@ -154,48 +128,47 @@ class Starter:
                 self.backdrop.close()
             return f"Piper could not be started: {exc}"
         deadline = self.clock() + APP_START_S
-        while not self.answering():
+        while not self.is_up():
             if self.clock() >= deadline:
                 if backdrop:
-                    # A black screen with nothing behind it would be a trap.
-                    self.backdrop.close()
+                    self.backdrop.close()  # don't leave the screen black
                 return f"Piper did not start. The end of {self.log_file} says why."
             self.sleep(POLL_S)
         return None
 
-    def _visit(self, mode: str, feed: dict) -> str | None:
-        """Give the remote to `mode`, in the visit that is open or a new one."""
+    def _open_visit(self, mode: str, feed: dict) -> str | None:
+        """Set `mode` for the open visit, opening one first if there is none."""
         session = feed.get("session_id") if feed.get("control") == "on" else None
         if not session:
-            visit = self.ask(self.port, "POST", "/api/control/manual", {"confirmed": True})
+            visit = self.api(self.port, "POST", "/api/control/manual", {"confirmed": True})
             session = (visit.get("session") or {}).get("id")
         if not session:
             return "The remote could not be connected to the Pi."
-        self.ask(self.port, "POST", "/api/control/mode", {"mode": mode, "session_id": session})
+        self.api(self.port, "POST", "/api/control/mode", {"mode": mode, "session_id": session})
         return None
 
     def run(self) -> str | None:
-        """Put Piper on the screen. Returns what went wrong, or None."""
-        problem = self._app_running(backdrop=not self.windowed())
+        """Put Piper on the screen. Returns an error message or None."""
+        problem = self._ensure_app(backdrop=not self.windowed())
         if problem:
             return problem
-        shown = self.ask(self.port, "POST", "/api/tv/interface", {}, timeout=60.0)
+        shown = self.api(self.port, "POST", "/api/tv/interface", {}, timeout=60.0)
         if not shown.get("showing"):
             return shown.get("error") or "The Piper interface did not appear."
-        feed = self.ask(self.port, "GET", "/api/tv/events?after=0")
+        feed = self.api(self.port, "GET", "/api/tv/events?after=0")
         if feed.get("control") == "on" and feed.get("mode") == "piper":
             return None
-        return self._visit("piper", feed)
+        return self._open_visit("piper", feed)
 
     def remote(self) -> str | None:
-        """Only the remote, as the desktop's mouse; Piper stays off the screen."""
-        problem = self._app_running(backdrop=False)
+        """Only the remote, as the desktop's mouse."""
+        problem = self._ensure_app(backdrop=False)
         if problem:
             return problem
-        feed = self.ask(self.port, "GET", "/api/tv/events?after=0")
+        feed = self.api(self.port, "GET", "/api/tv/events?after=0")
         if feed.get("control") == "on" and feed.get("mode"):
-            return None  # a visit already chose; a login does not overrule it
-        return self._visit("pointer", feed)
+            return None  # a mode was already chosen; don't override it
+        return self._open_visit("pointer", feed)
 
 
 def _read(path: Path) -> str | None:
@@ -206,10 +179,10 @@ def _read(path: Path) -> str | None:
 
 
 def add_to_panel(home: Path, defaults: Path = PANEL_DEFAULTS) -> Path | None:
-    """Put PiperTV beside the browser, the files and the terminal on the panel.
+    """Add PiperTV to the panel's launchers. Returns the file if it changed.
 
-    The user's own ini overrides the system one key by key, so the list written
-    there is the one the panel shows now, with PiperTV added at its end.
+    The user's ini overrides the system one key by key, so the user's list
+    has to be the full current list plus PiperTV.
     """
     config = home / PANEL_CONFIG
     text = _read(config) or ""
@@ -229,14 +202,10 @@ def add_to_panel(home: Path, defaults: Path = PANEL_DEFAULTS) -> Path | None:
 
 
 def launch_without_asking(home: Path, defaults: Path = LIBFM_DEFAULTS) -> Path | None:
-    """Let a double-click on a desktop launcher start it, without "Execute?".
+    """Turn off the file manager's "Execute?" question for desktop launchers.
 
-    This Pi's file manager asks of every launcher on the desktop, whatever its
-    permissions, and a remote's double OK on the PiperTV icon would otherwise
-    end on a question. The setting is the file manager's own "don't ask"; it
-    holds for every executable file it is asked to open, not only this one.
-    A file of the user's own starts as a copy of the system one, so nothing
-    else about the file manager changes.
+    Otherwise a double OK on the PiperTV icon ends in a dialog. This is
+    pcmanfm's own "don't ask" option, so it applies to every launcher.
     """
     config = home / LIBFM_CONFIG
     text = _read(config)
@@ -253,7 +222,7 @@ def launch_without_asking(home: Path, defaults: Path = LIBFM_DEFAULTS) -> Path |
 
 
 def desktop_folder(home: Path) -> Path:
-    """The desktop as this user's session names it -- not always "Desktop"."""
+    """The desktop folder, which is localised (e.g. "Radna površina")."""
     try:
         text = (home / ".config" / "user-dirs.dirs").read_text(encoding="utf-8")
     except OSError:
@@ -265,7 +234,6 @@ def desktop_folder(home: Path) -> Path:
 
 
 def accessibility_setting(run=subprocess.run) -> bool:
-    """Turn on the desktop's accessibility toolkit setting, where it exists."""
     try:
         run(["gsettings", "set", "org.gnome.desktop.interface", "toolkit-accessibility",
              "true"], check=True, capture_output=True, timeout=10)
@@ -279,10 +247,10 @@ def install(home: Path | None = None, python: str = sys.executable,
             libfm_defaults: Path = LIBFM_DEFAULTS,
             labwc_defaults: tuple[Path, Path] = (SYSTEM_RC, SYSTEM_ENVIRONMENT),
             run=subprocess.run) -> list[Path]:
-    """Everything in the user's own folder: icons, the remote at login, the desktop.
+    """Install the icons, the login entry and the desktop settings Piper needs.
 
-    The icons and the login entry are rewritten every time; the other
-    programs' settings are only added to, and only when something is missing.
+    Our own files are rewritten every time; other programs' settings are only
+    added to, and only when something is missing.
     """
     home = Path.home() if home is None else home
     written = []
@@ -308,8 +276,8 @@ def install(home: Path | None = None, python: str = sys.executable,
     return written
 
 
-def tell(message: str) -> None:
-    """Say what went wrong on the screen, where the double-click came from."""
+def show_error(message: str) -> None:
+    """Show an error dialog on the Pi's screen (best effort; it's logged anyway)."""
     try:
         import gi
 
@@ -321,7 +289,7 @@ def tell(message: str) -> None:
                                    secondary_text=message)
         dialog.run()
         dialog.destroy()
-    except Exception:  # noqa: BLE001 - the log already has it
+    except Exception:
         pass
 
 
@@ -329,9 +297,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Put Piper on this Pi's screen.")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--remote", action="store_true",
-                        help="Only let the remote move the mouse; leave Piper off the screen.")
+                        help="only let the remote move the mouse; leave Piper off the screen")
     parser.add_argument("--install", action="store_true",
-                        help="Add the icons and the login entry, then stop.")
+                        help="add the icons and the login entry, then stop")
     args = parser.parse_args(argv)
     if args.install:
         for path in install():
@@ -344,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            # An impatient second double-click: let the first one finish.
             LOG.info("Piper is already being started; leaving that start to finish")
             return 0
         try:
@@ -354,8 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     if problem:
         LOG.warning("%s", problem)
         if not args.remote:
-            # Nobody asked at login; a dialog then would be a surprise.
-            tell(problem)
+            show_error(problem)  # no dialogs at login
         return 1
     LOG.info("The remote moves the mouse" if args.remote else "Piper is on the screen")
     return 0

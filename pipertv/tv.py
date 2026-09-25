@@ -1,15 +1,10 @@
-"""Feed recognised remote buttons to the Piper interface on the TV.
+"""The queue of button presses that the TV interface polls.
 
-The interface runs in a browser on the Pi's own HDMI output and asks this app
-what was pressed, rather than the app synthesising keystrokes into whatever
-happens to hold focus. A press is therefore data with a sequence number: the
-page reports the last number it saw and receives everything after it, so a slow
-poll or a reload costs latency rather than events.
-
-Two cases have to be visible to the page instead of silently losing presses:
-falling far enough behind that older events were discarded, and the app being
-restarted, which resets numbering to zero while the page still holds a high
-number. Both are reported as a gap so the page can redraw from current state.
+The interface (a browser page on the Pi's HDMI output) asks for everything
+after the last sequence number it saw, so a slow poll or a reload only adds
+latency. Two situations are reported as `missed` so the page can resync:
+falling behind the retained window, and holding a number from before an app
+restart (a new stream_id also tells the page about the restart).
 """
 
 from __future__ import annotations
@@ -19,21 +14,18 @@ import time
 import uuid
 from collections import deque
 
-from .ir_control import DIRECTIONS
+from .roles import ROLES
 
 MAX_EVENTS = 200
+# What the interface acts on; other presses are still recorded.
+NAVIGATION = frozenset(ROLES)
 
-# "no action" is a real outcome -- a key whose role moved elsewhere performs
-# nothing -- so it cannot share a value with "caller said nothing".
+# action=None is meaningful (a key whose role moved away), so "not given" needs its own marker.
 _UNSET = object()
-
-# What the TV interface itself acts on. Other buttons are still recorded, so
-# the page can show them, but they are not navigation.
-NAVIGATION = frozenset(set(DIRECTIONS) | {"ok", "back", "home", "menu", "exit"})
 
 
 class ButtonLog:
-    """A bounded, ordered record of recognised presses, safe for all threads."""
+    """A bounded, numbered, thread-safe log of recognised presses."""
 
     def __init__(self, limit: int = MAX_EVENTS, clock=time.monotonic):
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10_000:
@@ -46,12 +38,7 @@ class ButtonLog:
 
     def append(self, button: str, mode: str | None = None,
                session_id: str | None = None, action=_UNSET) -> dict:
-        """Record one press and return it, numbered.
-
-        `button` is what the remote sent; `action` is what it now performs,
-        which differs once a role has been bound to another key. The press is
-        recorded either way, so the page can show keys that do nothing.
-        """
+        """Record a press. `button` is what the remote sent, `action` the role it performs."""
         performed = button if action is _UNSET else action
         with self._lock:
             self._sequence += 1
@@ -63,14 +50,11 @@ class ButtonLog:
             return dict(event)
 
     def since(self, after: int = 0) -> dict:
-        """Everything numbered above `after`, and whether anything was missed."""
         if isinstance(after, bool) or not isinstance(after, int) or after < 0:
             raise ValueError("The last seen press must be a whole number, zero or more.")
         with self._lock:
             events = [dict(event) for event in self._events if event["sequence"] > after]
             oldest = self._events[0]["sequence"] if self._events else self._sequence + 1
-            # Behind the retained window, or holding a number from before a
-            # restart: either way the page cannot trust its own continuity.
             missed = after > self._sequence or (after + 1 < oldest and after != 0)
             return {"sequence": self._sequence, "stream_id": self._stream_id,
                     "events": events, "missed": missed}
@@ -80,7 +64,7 @@ class ButtonLog:
             return dict(self._events[-1]) if self._events else None
 
     def clear(self) -> None:
-        """Forget recorded presses without resetting numbering."""
+        """Drop the retained presses; numbering continues."""
         with self._lock:
             self._events.clear()
 

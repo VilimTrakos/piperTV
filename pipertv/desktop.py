@@ -1,15 +1,11 @@
-"""Turn recognised remote buttons into movements of this Pi's real cursor.
+"""Move the Pi's real cursor with the remote.
 
-Pointer mode nudges the cursor and accelerates while a direction is held.
-Snapping mode jumps it straight to the next target in that direction, so the
-desktop mouse really moves rather than a highlight moving on its own.
+Pointer mode nudges the cursor and speeds up while a direction is held.
+Snapping mode jumps to the next clickable control in that direction; the
+controls come from a target provider (see targets.py).
 
-Targets come from a provider rather than from this module: the desktop exposes
-its icons through accessibility, and a later PiperTV interface can offer its own
-targets to the same gate. A provider only has to return screen positions.
-
-This runs on the IR reader thread, so desktop queries must stay bounded and a
-press must not raise into the receiver. The gate is checked after slow queries.
+Runs on the IR reader thread: a press must never raise, and the gate is
+checked again after anything slow.
 """
 
 from __future__ import annotations
@@ -18,22 +14,18 @@ import logging
 import threading
 import time
 
-from .ir_control import DIRECTIONS
 from .pointer import VirtualPointer
+from .roles import DIRECTIONS
+from .session import DESKTOP_MODES
 
 LOG = logging.getLogger(__name__)
 
 CLICKS = {"ok": "left", "menu": "right"}
 
-# How a service built for a mouse is driven, and how the cursor behaves while
-# it is. Snapping jumps between the controls a page reports; nudging moves the
-# cursor itself and gathers speed while a direction is held, which is steadier
-# on a page whose controls Piper cannot see cleanly.
+# How a page Piper opened is driven: snap between its controls, or nudge the cursor.
 DRIVES = ("snap", "nudge")
-# How a press moves things, kept in one place: the cursor's own behaviour, and
-# how long a key must be held before it counts as held. The second is not the
-# cursor's business, but it is the same question -- what one press does -- and
-# it belongs where a person goes to tune it.
+# hold_delay_s/hold_interval_s: how long a key must be held before it
+# repeats, and how often. reserved_top_px: see below.
 POINTER_DEFAULTS = {"drive": "snap", "step_px": 24, "max_step_px": 180,
                     "accelerate_within_s": 0.25, "scroll_clicks": 2,
                     "hold_delay_s": 0.65, "hold_interval_s": 0.25,
@@ -43,36 +35,29 @@ POINTER_LIMITS = {"step_px": (2, 200), "max_step_px": (8, 600),
                   "hold_delay_s": (0.2, 3.0), "hold_interval_s": (0.05, 1.0),
                   "reserved_top_px": (0, 400)}
 SECONDS = ("accelerate_within_s", "hold_delay_s", "hold_interval_s")
-# The cursor is at an edge when a step would not move it any further. A page
-# then scrolls instead, which is what a hand would do with the wheel rather
-# than carry the cursor off to a scrollbar.
+
+# At an edge the page scrolls instead of the cursor moving.
 EDGE_PX = 2
-# A strip along the top of the screen that is not the page's, whatever is
-# drawn there. Measured on this Pi: the desktop's panel hides itself but keeps
-# its whole 36-pixel height as an input region, and a wheel turned inside that
-# strip reaches the panel instead of the page -- at y=35 nothing moved, at
-# y=36 the page scrolled. The cursor stays below it, so scrolling up works the
-# way scrolling down always did. A Pi with nothing up there sets it to zero.
-# Only while a service is on the screen: on the desktop that strip is the
-# panel itself, and the panel is somewhere the remote has to be able to reach.
-#
-# Two presses of OK this close together, on the same spot, mean a double-click.
-# Nobody presses a remote twice inside the desktop's own double-click time of
-# 0.4 seconds, so an icon on the desktop could never be opened from the sofa;
-# the second press is sent as a double-click of its own instead.
+# reserved_top_px: labwc's hidden panel still takes input in the top 36 px,
+# so a wheel turned there scrolls nothing. While a service is open the cursor
+# stays below that strip. (On the desktop it doesn't: the panel is there.)
+
+# The desktop's double-click time is 0.4 s, too short for a remote, so a
+# second OK on the same spot within this time is sent as a double-click.
 DOUBLE_OK_S = 0.8
-# Far enough apart that the input stack does not take the pair for one bouncing
-# switch, close enough that the desktop counts them as one double-click.
 DOUBLE_CLICK_GAP_S = 0.06
+
+# Snapping geometry, in pixels.
+SIDE_WEIGHT = 1.5    # cost of sideways offset when nothing is straight ahead
+SPREAD = 3.0         # how wide the cone "in that direction" is...
+MARGIN_PX = 200      # ...plus this, so the menu at the top is reachable from mid-page
+SAME_LINE_PX = 4     # centres this close along the axis of travel are on the same line
 
 
 def validate_pointer(values) -> dict:
-    """Check a pointer preference, returning a complete, plain copy of it.
+    """Check pointer settings; missing fields keep their defaults.
 
-    Anything absent keeps its default, so the studio can send one field. A
-    value outside its range is refused rather than clamped: a step of a
-    thousand pixels is a mistake worth seeing, not a preference to honour
-    quietly.
+    Out-of-range values are rejected, not clamped.
     """
     if not isinstance(values, dict):
         raise ValueError("Pointer settings must be a JSON object.")
@@ -95,23 +80,10 @@ def validate_pointer(values) -> dict:
     if settings["step_px"] > settings["max_step_px"]:
         raise ValueError("The first step cannot be larger than the fastest one.")
     return settings
-# What a sideways offset costs when nothing shares the cursor's band.
-SIDE_WEIGHT = 1.5
-# How far off the line of travel a target may sit and still be a step that way
-# rather than a jump across the layout. Generous on purpose: the menu at the
-# top of a page is a long way to the side of a cursor halfway down it.
-SPREAD = 3.0
-MARGIN_PX = 200
-# Centres this close along the axis of travel are the same row or column, not
-# a step in that direction.
-SAME_LINE_PX = 4
 
 
-def _box(target, fallback_point=None):
-    """The target's rectangle, or its point when it reports no extent."""
-    if fallback_point is not None:
-        x, y = fallback_point
-        return (x, y, x, y)
+def _box(target):
+    """(left, top, right, bottom) of a target, or its point if it has no extent."""
     try:
         left, top = int(target["left"]), int(target["top"])
         right, bottom = int(target["right"]), int(target["bottom"])
@@ -127,30 +99,25 @@ def _box(target, fallback_point=None):
 
 
 def _overlap(low, high, other_low, other_high) -> int:
-    """How much two spans share along one axis; zero when they merely touch."""
     return max(0, min(high, other_high) - max(low, other_low))
 
 
 def choose_target(position, targets, direction, box=None):
-    """Pick the control that is really next in one direction.
+    """The control that is next in `direction` from the cursor.
 
-    Which one a person means by "down" is not the nearest thing in a wide cone
-    from the cursor -- that picks diagonals, and a row of buttons is then
-    walked in an order nobody can predict. It is the nearest control whose
-    extent still lies in the band the cursor occupies: directly below, in the
-    same column of the layout. Only when nothing shares that band does a
-    target off to the side become the answer, and then within a narrow cone.
+    Prefer the nearest control that overlaps the cursor's band (the same
+    column for up/down, the same row for left/right). Only if there is none,
+    take the best one off to the side within a cone, and as a last resort
+    anything ahead at all, so a press never does nothing when there is
+    somewhere to go.
 
-    `box` is the rectangle the cursor is currently on, so that a wide element
-    hands over to whatever sits under any part of it, not only under its
-    centre. When none is given, the control the cursor is standing in serves
-    as one, so the first press of a session behaves like every later press.
+    `box` is the control the cursor is on; when not given, the innermost
+    control under the cursor is used.
     """
     if direction not in DIRECTIONS:
         return None
     x, y = position
-    origin = box if box is not None else standing_box(position, targets)
-    left, top, right, bottom = origin
+    left, top, right, bottom = box if box is not None else standing_box(position, targets)
     vertical = direction in ("up", "down")
     best = None
     for target in targets:
@@ -162,8 +129,6 @@ def choose_target(position, targets, direction, box=None):
         if vertical:
             ahead = (t_y - y) if direction == "down" else (y - t_y)
             aside = abs(t_x - x)
-            # The band is the cursor's own width: anything under any part of a
-            # wide element is "below" it.
             shared = _overlap(left, right, t_left, t_right)
             edge = (t_top - bottom) if direction == "down" else (top - t_bottom)
         else:
@@ -172,19 +137,12 @@ def choose_target(position, targets, direction, box=None):
             shared = _overlap(top, bottom, t_top, t_bottom)
             edge = (t_left - right) if direction == "right" else (left - t_right)
         if ahead <= SAME_LINE_PX:
-            continue  # beside the cursor, or behind it: not a step that way
+            continue  # level with the cursor or behind it
         if shared > 0:
-            # The same column or row: order by how far along it is, and let the
-            # sideways offset only break ties.
             rank = (0, max(edge, 0), aside)
         elif aside <= ahead * SPREAD + MARGIN_PX:
-            # Nothing shares the band, but this is still recognisably that way:
-            # the menu at the top of the screen, from halfway down it.
             rank = (1, ahead + aside * SIDE_WEIGHT, aside)
         else:
-            # Barely ahead and wildly off to the side. Better than nothing --
-            # a press that does nothing at all leaves the remote stuck -- but
-            # only when the screen offers nothing better.
             rank = (2, ahead + aside * SIDE_WEIGHT, aside)
         if best is None or rank < best[0]:
             best = (rank, target)
@@ -192,13 +150,10 @@ def choose_target(position, targets, direction, box=None):
 
 
 def standing_box(position, targets):
-    """The smallest control the cursor is inside, as a rectangle.
+    """The smallest control containing the cursor, or the cursor's own point.
 
-    Snapping from a bare point treats the cursor as infinitely thin, so a wide
-    control under it offers no band to travel in and the first press of a
-    session behaves unlike all the ones after it. The innermost control wins:
-    a page nests a link inside a row inside a panel, and the link is the thing
-    a person would say they are on.
+    Pages nest a link inside a row inside a panel; the link is what the
+    cursor is "on".
     """
     x, y = position
     smallest = None
@@ -216,27 +171,29 @@ def standing_box(position, targets):
 
 
 class DesktopControl:
-    """Apply button presses to the cursor for the session's chosen mode.
+    """Applies presses to the cursor in the session's mode.
 
-    The virtual pointer exists only while control is on: it opens on the first
-    press of a session and is removed as soon as the session ends, so no device
-    is left behind that could move the cursor after the TV switches away.
+    The virtual pointer is created on the first press of a session and
+    removed as soon as control ends, so nothing can move the cursor after
+    the TV has switched away.
     """
 
     def __init__(self, session, screen, pointer_factory=VirtualPointer, targets=None,
-                 step_px=24, max_step_px=180, accelerate_within_s=0.25,
+                 step_px=POINTER_DEFAULTS["step_px"], max_step_px=POINTER_DEFAULTS["max_step_px"],
+                 accelerate_within_s=POINTER_DEFAULTS["accelerate_within_s"],
                  clock=time.monotonic, enabled=None, sleep=time.sleep):
-        width, height = screen
         if not 2 <= step_px <= max_step_px:
             raise ValueError("Pointer step sizes must grow from at least 2 pixels.")
         self.session = session
-        self.enabled = session.enabled if enabled is None else enabled
-        self.screen = (int(width), int(height))
+        self.enabled = enabled or session.enabled
+        self.screen = (int(screen[0]), int(screen[1]))
         self.pointer_factory = pointer_factory
         self.targets = targets
         self.step_px = int(step_px)
         self.max_step_px = int(max_step_px)
         self.accelerate_within_s = float(accelerate_within_s)
+        self.scroll_clicks = POINTER_DEFAULTS["scroll_clicks"]
+        self.reserved_top_px = POINTER_DEFAULTS["reserved_top_px"]
         self.clock = clock
         self.sleep = sleep
         self._lock = threading.RLock()
@@ -245,15 +202,13 @@ class DesktopControl:
         self._last_button = None
         self._last_at = -float("inf")
         self._streak = 0
+        # The control the last snap landed on, and where the cursor was put.
         self._standing = None
         self._standing_at = None
         self._clicked_at = -float("inf")
         self._clicked_where = None
-        self.scroll_clicks = POINTER_DEFAULTS["scroll_clicks"]
-        self.reserved_top_px = POINTER_DEFAULTS["reserved_top_px"]
 
-    def configure(self, settings: dict) -> dict:
-        """Apply a checked pointer preference to the live cursor."""
+    def configure(self, settings: dict) -> None:
         checked = validate_pointer(settings)
         with self._lock:
             self.step_px = checked["step_px"]
@@ -262,40 +217,46 @@ class DesktopControl:
             self.scroll_clicks = checked["scroll_clicks"]
             self.reserved_top_px = checked["reserved_top_px"]
             self._streak = 0
-            return self.settings()
 
-    def settings(self) -> dict:
+    def press(self, button, mode=None):
+        """Act on one button. Returns the cursor position, or None.
+
+        `mode` overrides the session's mode while a service Piper opened is
+        on screen (a web page is always snapped through). It only changes how
+        the cursor moves, never whether it may.
+        """
         with self._lock:
-            return {"step_px": self.step_px, "max_step_px": self.max_step_px,
-                    "accelerate_within_s": self.accelerate_within_s,
-                    "scroll_clicks": self.scroll_clicks,
-                    "reserved_top_px": self.reserved_top_px}
-
-    def reachable(self, y: int, top=None) -> int:
-        """Keep a cursor position out of the strip that is not the page's."""
-        return max(int(self.reserved_top_px if top is None else top), int(y))
-
-    def _scroll(self, pointer, button) -> tuple:
-        """Turn the wheel in the direction the cursor cannot go any further."""
-        pointer.scroll(self.scroll_clicks if button == "up" else -self.scroll_clicks)
-        return pointer.position
-
-    def _at_edge(self, pointer, button, top: int) -> bool:
-        x, y = pointer.position
-        if button == "up":
-            return y <= top + EDGE_PX
-        if button == "down":
-            return y >= self.screen[1] - 1 - EDGE_PX
-        return False
-
-    def _step(self, button, now):
-        """Grow the step while one direction is held, and reset when released."""
-        if button == self._last_button and now - self._last_at <= self.accelerate_within_s:
-            self._streak += 1
-        else:
-            self._streak = 0
-        self._last_button, self._last_at = button, now
-        return min(self.max_step_px, round(self.step_px * (1 + self._streak * 0.35)))
+            try:
+                if not self.enabled():
+                    self.release()
+                    return None
+                if button not in DIRECTIONS and button not in CLICKS:
+                    return None  # volume, power...: don't even create a pointer
+                original = self.session.snapshot()
+                serving = mode is not None
+                top = self.reserved_top_px if serving else 0
+                mode = mode or original.get("mode")
+                if mode not in DESKTOP_MODES:
+                    self.release()
+                    return None
+                pointer = self._open()
+                if not self._same_visit(original):
+                    self.release()
+                    return None
+                if button in CLICKS:
+                    position = self._click(pointer, button, double=button == "ok" and not serving)
+                elif mode == "snapping":
+                    position = self._snap(pointer, button, original, top)
+                else:
+                    position = self._nudge(pointer, button, top)
+                self._error = None
+                return position
+            except Exception as exc:
+                # The IR reader thread must survive whatever the desktop does.
+                self._error = str(exc) or type(exc).__name__
+                LOG.warning("Desktop control: %s", exc)
+                self.release()
+                return None
 
     def _open(self):
         if self._pointer is None:
@@ -303,41 +264,62 @@ class DesktopControl:
             self._pointer.open()
         return self._pointer
 
-    def _current(self, original):
-        """A slow device/desktop query must not act in a different TV visit."""
-        # The predicate may refresh CEC and replace the visit. Read the session
-        # after it, not before, or an old identity could validate a new visit.
+    def _same_visit(self, original):
+        """Whether control is still on, for the visit the press started in."""
+        # enabled() may refresh detection and replace the session, so read
+        # the session after it.
         allowed = self.enabled()
         current = self.session.snapshot()
         return (allowed and current.get("mode") == original.get("mode")
                 and (current.get("session") or {}).get("id")
                 == (original.get("session") or {}).get("id"))
 
+    def _step(self, button, now):
+        """Step size: grows while the same direction keeps being pressed."""
+        if button == self._last_button and now - self._last_at <= self.accelerate_within_s:
+            self._streak += 1
+        else:
+            self._streak = 0
+        self._last_button, self._last_at = button, now
+        return min(self.max_step_px, round(self.step_px * (1 + self._streak * 0.35)))
+
+    def _at_edge(self, pointer, button, top: int) -> bool:
+        _x, y = pointer.position
+        if button == "up":
+            return y <= top + EDGE_PX
+        if button == "down":
+            return y >= self.screen[1] - 1 - EDGE_PX
+        return False
+
+    def _scroll(self, pointer, button):
+        pointer.scroll(self.scroll_clicks if button == "up" else -self.scroll_clicks)
+        return pointer.position
+
+    def _nudge(self, pointer, button, top: int):
+        if self._at_edge(pointer, button, top):
+            return self._scroll(pointer, button)
+        step = self._step(button, self.clock())
+        dx = {"left": -step, "right": step}.get(button, 0)
+        dy = {"up": -step, "down": step}.get(button, 0)
+        x, y = pointer.position
+        return pointer.move_to(x + dx, max(top, y + dy))
+
     def _snap(self, pointer, button, original, top: int):
         if self.targets is None:
             raise RuntimeError("Snapping has no source of targets on this desktop.")
-        # Where the cursor stands is a control, not a point, whenever the last
-        # press put it on one: a wide button hands over to whatever sits under
-        # any part of it, which is what makes a row walk in order.
         standing = self._standing if self._standing_at == pointer.position else None
-        # A control in the strip along the top cannot be clicked -- the press
-        # would land on whatever owns that strip -- so it is not offered.
-        within = [target for target in self.targets.targets()
-                  if target.get("y", 0) >= top]
-        found = choose_target(pointer.position, within, button, box=standing)
-        if found is not None and hasattr(self.targets, "resolve"):
+        # Controls in the reserved strip at the top can't be clicked.
+        targets = [target for target in self.targets.targets() if target.get("y", 0) >= top]
+        found = choose_target(pointer.position, targets, button, box=standing)
+        if found is not None:
+            # The target list is cached; make sure it's still there and still that way.
             found = self.targets.resolve(found)
-            # Revalidation can return a moved window. A RIGHT press must never
-            # jump left just because its cached target used to be on the right.
             if found is not None:
                 found = choose_target(pointer.position, [found], button)
         if found is None:
-            # Nothing that way on this screenful. Below the fold there may be
-            # plenty, so scroll rather than leaving the press to do nothing.
-            if button in ("up", "down"):
-                return self._scroll(pointer, button)
-            return None  # Sideways, the cursor stays where the user left it.
-        if not self._current(original):
+            # Nothing more that way on screen: scroll for more when going up or down.
+            return self._scroll(pointer, button) if button in ("up", "down") else None
+        if not self._same_visit(original):
             self.release()
             return None
         position = pointer.move_to(int(found["x"]), int(found["y"]))
@@ -345,71 +327,16 @@ class DesktopControl:
         self._standing_at = position
         return position
 
-    def press(self, button, mode=None):
-        """Act on one recognised button. Returns the cursor position, or None.
-
-        `mode` overrides the visit's choice, for a service that Piper opened:
-        a page built for a mouse is driven by snapping whatever the browser was
-        asked to do with the desktop. The gate is unchanged -- an override
-        decides how the cursor moves, never whether it may.
-        """
-        with self._lock:
-            try:
-                if not self.enabled():
-                    # The TV switched away, or recording started: remove the device.
-                    self.release()
-                    return None
-                if button not in DIRECTIONS and button not in CLICKS:
-                    return None  # TV volume/power/source must not even open a pointer.
-                original = self.session.snapshot()
-                # A mode handed in means a service is on the screen.
-                serving = mode is not None
-                top = self.reserved_top_px if serving else 0
-                mode = mode or original.get("mode")
-                if mode not in ("pointer", "snapping"):
-                    self.release()
-                    return None
-                pointer = self._open()
-                if not self._current(original):
-                    self.release()
-                    return None
-                if button in DIRECTIONS:
-                    if mode == "snapping":
-                        position = self._snap(pointer, button, original, top)
-                        self._error = None
-                        return position
-                    if self._at_edge(pointer, button, top):
-                        # The cursor has nowhere further to go that way, so the
-                        # page moves under it instead.
-                        position = self._scroll(pointer, button)
-                        self._error = None
-                        return position
-                    step = self._step(button, self.clock())
-                    dx = step if button == "right" else -step if button == "left" else 0
-                    dy = step if button == "down" else -step if button == "up" else 0
-                    x, y = pointer.position
-                    position = pointer.move_to(x + dx, self.reachable(y + dy, top))
-                    self._error = None
-                    return position
-                if button in CLICKS:
-                    pointer.click(CLICKS[button])
-                    if button == "ok" and not serving:
-                        self._double_ok(pointer)
-                    self._error = None
-                    self._last_button, self._streak = None, 0
-                    if self.targets is not None and hasattr(self.targets, "invalidate"):
-                        self.targets.invalidate()
-                    return pointer.position
-                return None
-            except Exception as exc:
-                # The reader thread must survive a desktop problem.
-                self._error = str(exc) or type(exc).__name__
-                LOG.warning("Desktop control: %s", exc)
-                self.release()
-                return None
+    def _click(self, pointer, button, double: bool):
+        pointer.click(CLICKS[button])
+        if double:
+            self._double_ok(pointer)
+        self._last_button, self._streak = None, 0
+        if self.targets is not None:
+            self.targets.invalidate()  # the click probably changed the screen
+        return pointer.position
 
     def _double_ok(self, pointer) -> None:
-        """Make a second OK on the same spot a double-click, as a hand would."""
         now = self.clock()
         if now - self._clicked_at <= DOUBLE_OK_S and pointer.position == self._clicked_where:
             self.sleep(DOUBLE_CLICK_GAP_S)
@@ -419,7 +346,7 @@ class DesktopControl:
             self._clicked_at, self._clicked_where = now, pointer.position
 
     def release(self):
-        """Remove the virtual pointer, ending any influence over the cursor."""
+        """Remove the virtual pointer."""
         with self._lock:
             pointer, self._pointer = self._pointer, None
             self._last_button, self._streak = None, 0
@@ -427,7 +354,7 @@ class DesktopControl:
             if pointer is not None:
                 try:
                     pointer.close()
-                except Exception as exc:  # noqa: BLE001 - closing must not raise
+                except Exception as exc:
                     LOG.warning("Closing the virtual pointer: %s", exc)
 
     def health(self):

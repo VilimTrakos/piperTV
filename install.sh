@@ -12,9 +12,8 @@
 #   ./install.sh --yes         ask nothing, take every default
 #   ./install.sh --dry-run     say what would be done, and change nothing
 #
-# Run it as the person who uses the Pi's desktop, not as root: it asks for the
-# sudo password itself, for the parts only root may do. Running it again is
-# safe and quick -- it does only what is not done yet.
+# Run it as the desktop user, not as root; it uses sudo where needed. Running
+# it again only does what is still missing.
 set -euo pipefail
 
 USER=${USER:-$(id -un)}
@@ -28,7 +27,7 @@ while [ $# -gt 0 ]; do
     --pin) PIN=${2:?--pin needs a GPIO number, or auto}; shift 2 ;;
     --yes|-y) YES=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "install.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -42,19 +41,17 @@ step() { printf '\n%s== %s%s\n' "$BOLD" "$*" "$OFF"; }
 ok()   { printf '  %s✓%s %s\n' "$GREEN" "$OFF" "$*"; }
 note() { printf '  %s!%s %s\n' "$YELLOW" "$OFF" "$*"; }
 die()  { printf '\n%sinstall.sh: %s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
-# What was just done -- which, in a dry run, nothing was.
+# Report something done (in a dry run nothing was).
 did()  { [ "$DRY" = 1 ] || ok "$@"; }
 
-# Everything that changes the Pi goes through act, so a dry run shows all of it
-# and does none of it.
+# Everything that changes the system goes through act, so --dry-run can print it instead.
 act() {
   if [ "$DRY" = 1 ]; then printf '  %swould run:%s %s\n' "$DIM" "$OFF" "$*"; else "$@"; fi
 }
 root() { act sudo "$@"; }
 
-# A file only root may write. Its text goes through a temporary file that
-# belongs to this user -- never through sudo's own input, where a password
-# typed at the wrong moment would end up in the file.
+# Write a root-owned file. The text goes through a temporary file, never through
+# sudo's stdin, where a password typed at the wrong moment would end up in it.
 CHANGED=0
 root_file() {
   local path=$1 mode=$2 text=$3 temporary
@@ -74,8 +71,8 @@ root_file() {
   ok "wrote $path"
 }
 
-# A question, read from the terminal even when this script arrived through a
-# pipe; with --yes, or with no terminal at all, the default is the answer.
+# Ask on the terminal (also under curl | bash). With --yes or without a
+# terminal, the default is the answer.
 ask() {
   local answer=""
   if [ "$YES" = 0 ] && { exec 3</dev/tty; } 2>/dev/null; then
@@ -102,8 +99,7 @@ esac
 
 # --- the program itself ------------------------------------------------------
 
-# Run from a copy of the project, it installs that copy. Arriving through a
-# pipe, it fetches one first and carries on from there.
+# Run from a checkout, install that; run through a pipe, clone the project first.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)
 if [ -n "$HERE" ] && [ -f "$HERE/pipertv/app.py" ]; then
   DIR=$HERE
@@ -121,7 +117,7 @@ else
   else
     act git clone "$REPO" "$TARGET"
   fi
-  # The installer that came with the program knows that program best.
+  # Carry on with the installer from the fetched copy.
   if [ -f "$TARGET/install.sh" ]; then
     exec bash "$TARGET/install.sh" "${ARGS[@]}"
   fi
@@ -137,14 +133,13 @@ printf '%sPiperTV%s in %s\n' "$BOLD" "$OFF" "$DIR"
 # --- 1. what Piper runs on ---------------------------------------------------
 
 step "Programs"
-# Needed: Python with GTK and the accessibility bus, the on-screen keyboard,
-# the screen's size, HDMI-CEC, and chromium, which shows Piper and opens the
-# streaming services. Raspberry Pi OS has called chromium by two names.
+# Python with GTK and AT-SPI, the on-screen keyboard (wvkbd), wlr-randr for the
+# screen size, cec-ctl (v4l-utils), setcap, and chromium (it has two package names).
 NEEDED=(python3-venv python3-gi gir1.2-gtk-3.0 python3-pyatspi wvkbd wlr-randr
         v4l-utils libcap2-bin)
 if installed chromium-browser; then NEEDED+=(chromium-browser); else NEEDED+=(chromium); fi
-# Wanted, but a tile says so when one is missing: the web browser, Kodi, and
-# the DRM module Netflix, Prime Video, Disney+ and HBO Max need.
+# Optional; the tile says so when one is missing: Firefox, Kodi, and Widevine
+# for Netflix, Prime Video, Disney+ and HBO Max.
 EXTRAS=(firefox kodi libwidevinecdm0)
 missing=(); extras=()
 for package in "${NEEDED[@]}"; do installed "$package" || missing+=("$package"); done
@@ -191,8 +186,8 @@ if [ "$CHANGED" = 1 ]; then
   root udevadm trigger --name-match=uinput
 fi
 
-# Watching the TV's input over CEC needs one capability on one binary.
-# An upgrade of v4l-utils drops it; running this again puts it back.
+# CEC monitor mode needs CAP_NET_ADMIN on cec-ctl. Upgrading v4l-utils drops
+# it; running this script again puts it back.
 CEC=$(command -v cec-ctl || true)
 GETCAP=$(command -v getcap || echo /usr/sbin/getcap)
 if [ -z "$CEC" ]; then
@@ -204,8 +199,8 @@ else
   did "cec-ctl may now watch the TV's input"
 fi
 
-# The kernel's IR receiver, only where config.txt sets one up. Otherwise Piper
-# reads the receiver's pin itself, which needs nothing but the gpio group.
+# Only if config.txt sets up the kernel's IR receiver. Otherwise Piper reads
+# the pin itself, which only needs the gpio group.
 BOOT=/boot/firmware/config.txt
 [ -f "$BOOT" ] || BOOT=/boot/config.txt
 if grep -qs '^[[:space:]]*dtoverlay=gpio-ir' "$BOOT"; then
@@ -217,10 +212,8 @@ if grep -qs '^[[:space:]]*dtoverlay=gpio-ir' "$BOOT"; then
   root_file /etc/udev/rules.d/99-pipertv-ir.rules 0644 \
     'SUBSYSTEM=="lirc", KERNEL=="lirc[0-9]*", GROUP="ircapture", MODE="0660"'
   root_file /etc/udev/rules.d/99-pipertv-ir-protocols.rules 0644 \
-'# The gpio IR receiver decodes to key presses as well as to raw LIRC, and the
-# desktop then receives every remote press twice: once from PiperTV, which
-# reads the raw stream, and once from the kernel, which repeats it rapidly
-# while a button is held. Only the raw stream is wanted here.
+'# Raw LIRC only. Otherwise the kernel also decodes the remote into key presses
+# and the desktop gets every press twice.
 ACTION=="add", SUBSYSTEM=="rc", KERNELS=="ir-receiver@*", ATTR{protocols}="lirc"'
   if [ "$CHANGED" = 1 ]; then
     root udevadm control --reload-rules
@@ -233,7 +226,7 @@ fi
 # --- 3. Piper's own Python ---------------------------------------------------
 
 step "Python"
-# System packages come through: GTK and the accessibility bus are not on PyPI.
+# --system-site-packages: GTK and pyatspi come from apt, not from PyPI.
 if [ -x .venv/bin/python3 ] && .venv/bin/python3 -c "import gi, flask" 2>/dev/null; then
   ok "the Python environment is ready"
 else
@@ -268,9 +261,7 @@ fi
 # --- 5. the desktop ----------------------------------------------------------
 
 step "Desktop"
-# The icons (panel, desktop, menu), the remote as the mouse from login, no
-# "Execute?" on the icon, title-less windows for services, and the
-# accessibility bus -- all in this user's own folder.
+# Icons, the login entry and the desktop settings, all in the user's home (see pipertv/start.py).
 if [ "$DRY" = 1 ]; then
   act .venv/bin/python3 -m pipertv.start --install
 else
