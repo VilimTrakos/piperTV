@@ -26,6 +26,10 @@ By default, PiperTV expects the IR receiver signal pin to be connected to **phys
 
 However, this can be changed in the configuration, so you can use almost any suitable GPIO pin.
 
+# Disclaimer 
+Since I only have built in Netflix and Youtube on my TV, I'm not sure how Piper will open Prime for example. Or even if you have some other TV if opening Netflix and Youtube are working same way as for me ... So please leave some feedback via Issues if this won't work like it does work for me, will try to fix it as much as I can, or you can also fix it and do pull request for other people with different TV's than mine. 
+
+
 ## Installation
 **Note**: you need Raspberry Pi OS with the desktop, not Lite. The interface is a window on the Pi's screen, so there has to be a screen to put it on!
 
