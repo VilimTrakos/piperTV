@@ -692,6 +692,7 @@ class ServiceTests(unittest.TestCase):
         # Arrow keys do nothing on a normal website.
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
+        control.pointer = dict(control.pointer, drive="snap")
         control.launch("prime", self.session_id(control))
         for button in ("down", "right", "ok"):
             control._press(button)
@@ -699,6 +700,15 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(control.desktop.modes, ["snapping"] * 3,
                          "the visit chose piper; the service asks for snapping")
         self.assertEqual(control.keys.sent, [])
+
+    def test_a_site_is_nudged_unless_snapping_is_asked_for(self):
+        # Streaming sites expose few controls to snap between, so out of the
+        # box the cursor moves freely instead.
+        control, _monitor, _controller, _targets = build("active")
+        select(control, "piper")
+        control.launch("prime", self.session_id(control))
+        control._press("down")
+        self.assertEqual(control.desktop.modes, ["pointer"])
 
     def test_back_twice_on_a_page_goes_back_a_page(self):
         # On a page, back means the previous page, on the second press.
@@ -1313,6 +1323,7 @@ class HoldPaceTests(unittest.TestCase):
     def test_snapping_a_service_asks_for_the_slower_pace(self):
         control, _monitor, _controller, _targets = build("active")
         select(control, "piper")
+        control.pointer = dict(control.pointer, drive="snap")
         control.launch("prime", control.session.snapshot()["session"]["id"])
         self.assertEqual(control._hold_pace("up"), STEP_PACE)
 

@@ -22,11 +22,13 @@ LOG = logging.getLogger(__name__)
 
 CLICKS = {"ok": "left", "menu": "right"}
 
-# How a page Piper opened is driven: snap between its controls, or nudge the cursor.
+# How a page Piper opened is driven: nudge the cursor, or snap between its
+# controls. Nudging is the default; snapping only works where the page exposes
+# its controls, and most streaming sites expose few or none.
 DRIVES = ("snap", "nudge")
 # hold_delay_s/hold_interval_s: how long a key must be held before it
 # repeats, and how often. reserved_top_px: see below.
-POINTER_DEFAULTS = {"drive": "snap", "step_px": 24, "max_step_px": 180,
+POINTER_DEFAULTS = {"drive": "nudge", "step_px": 24, "max_step_px": 180,
                     "accelerate_within_s": 0.25, "scroll_clicks": 2,
                     "hold_delay_s": 0.65, "hold_interval_s": 0.25,
                     "reserved_top_px": 36}

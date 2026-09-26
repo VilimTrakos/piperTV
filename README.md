@@ -103,7 +103,7 @@ input over HDMI-CEC (many cannot), the confirmation is the manual one, and it
 is shown as manual rather than as evidence.
 
 Note in a note:
-Snapping is not that good, can't find a way to make it better currently
+Snapping is not that good, can't find a way to make it better currently. So when Piper opens something like HBO, the cursor just moves around the page instead - that's what it does out of the box. If you want it to jump between the page's buttons, set "drive": "snap" in desktop.py.
 
 
 
