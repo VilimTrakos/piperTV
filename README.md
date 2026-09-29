@@ -59,16 +59,6 @@ sudo reboot
 
 Once the Raspberry Pi starts again, PiperTV should be ready for the initial setup.
 
-## Using PiperTV
-
-Open **`http://PI_ADDRESS:8765`** from any browser on your network. That is the
-studio: record buttons, bind them to actions, and set how the cursor behaves.
-
-On the Pi's own screen there is a **PiperTV icon** on the desktop and on the
-panel. Opening it puts the TV interface on the television. The remote works
-before that too: after a reboot it moves the desktop's mouse, and two presses
-of OK on the icon start Piper.
-
 ## Remote setup
 
 Before using PiperTV, you first need to teach it the IR signals produced by your remote control.
